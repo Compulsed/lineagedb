@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
     sync::mpsc::{self, Receiver, Sender},
-    thread, time,
+    thread::{self},
+    time,
 };
 
 const START_AT_INDEX: usize = 1;
@@ -74,13 +75,13 @@ impl PersonVersion {
 }
 
 #[derive(Debug)]
-struct PersonData {
+struct PersonRow {
     versions: Vec<PersonVersion>,
 }
 
-impl PersonData {
+impl PersonRow {
     fn apply_add(person: Person, transaction_id: usize) -> Self {
-        PersonData {
+        PersonRow {
             versions: vec![PersonVersion {
                 version: START_AT_INDEX,
                 state: PersonVersionState::State(person),
@@ -91,7 +92,7 @@ impl PersonData {
 
     fn apply_update(
         &mut self,
-        update: &UpdatePersonData,
+        update: UpdatePersonData,
         transaction_id: usize,
     ) -> Result<(), ErrorString> {
         let current_version = self.current_version();
@@ -187,123 +188,110 @@ impl PersonData {
 
 type ErrorString = String;
 
-fn process_action_mutation(
-    user_data: &mut HashMap<String, PersonData>,
-    transaction: &Transaction,
-) -> Result<(), ErrorString> {
-    match &transaction.action {
-        Action::Add(person) => {
-            let id = person.id.clone();
-
-            if user_data.get(&id).is_some() {
-                return Err(format!("Duplicate record [id: {}], already exists", id));
-            }
-
-            user_data.insert(
-                id,
-                PersonData::apply_add(person.to_owned(), transaction.transaction_id),
-            );
-        }
-        Action::Update(id, update_person) => {
-            let person_data = user_data.get_mut(id);
-
-            match person_data {
-                Some(person_data) => {
-                    person_data.apply_update(update_person, transaction.transaction_id)?;
-                }
-                None => return Err(format!("Cannot update record [id: {}], does not exist", id)),
-            }
-        }
-        Action::Remove(id) => {
-            let person_data = user_data.get_mut(id);
-
-            match person_data {
-                Some(person_data) => {
-                    person_data.apply_delete(transaction.transaction_id)?;
-                }
-                None => {
-                    return Err(format!(
-                        "Cannot delete a record [id: {}], does not exist",
-                        id
-                    ))
-                }
-            }
-        }
-        Action::Get(_) | Action::GetVersion(_, _) | Action::List(_) => {
-            panic!("Should only contain mutation actions")
-        }
-    }
-
-    Ok(())
+struct PersonTable {
+    user_data: HashMap<String, PersonRow>,
 }
 
-fn process_action_query(
-    user_data: &mut HashMap<String, PersonData>,
-    user_action: &Action,
-) -> Result<(), ErrorString> {
-    match user_action {
-        Action::Get(id) => match user_data.get(id) {
-            Some(person_data) => println!("Get Result: {:#?}", person_data.current_state()),
-            None => return Err(format!("No record at [id: {}]", id)),
-        },
-        Action::GetVersion(id, version) => match user_data.get(id) {
-            Some(person_data) => println!("Get Result: {:#?}", person_data.at_version(*version)),
-            None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
-        },
-        // TODO: List by transaction Id
-        Action::List(transaction_id) => {
-            let people_at_transaction_id: Vec<Person> = user_data
-                .into_iter()
-                .filter_map(|(_, value)| {
-                    return value.at_transaction_id(*transaction_id);
-                })
-                .collect();
-
-            println!("List Results: {:#?}", people_at_transaction_id)
-        }
-        Action::Add(_) | Action::Update(_, _) | Action::Remove(_) => {
-            panic!("Should only contain mutation actions")
+impl PersonTable {
+    fn new() -> Self {
+        Self {
+            user_data: HashMap::<String, PersonRow>::new(),
         }
     }
 
-    Ok(())
+    fn apply(&mut self, action: Action, transaction_id: usize) -> Result<(), ErrorString> {
+        match action {
+            Action::Add(person) => {
+                let id = person.id.clone();
+
+                if self.user_data.get(&id).is_some() {
+                    return Err(format!("Duplicate record [id: {}], already exists", id));
+                }
+
+                self.user_data
+                    .insert(id, PersonRow::apply_add(person, transaction_id));
+            }
+            Action::Update(id, update_person) => {
+                let person_data = self.user_data.get_mut(&id);
+
+                match person_data {
+                    Some(person_data) => {
+                        person_data.apply_update(update_person, transaction_id)?;
+                    }
+                    None => {
+                        return Err(format!("Cannot update record [id: {}], does not exist", id))
+                    }
+                }
+            }
+            Action::Remove(id) => {
+                let person_data = self.user_data.get_mut(&id);
+
+                match person_data {
+                    Some(person_data) => {
+                        person_data.apply_delete(transaction_id)?;
+                    }
+                    None => {
+                        return Err(format!(
+                            "Cannot delete a record [id: {}], does not exist",
+                            id
+                        ))
+                    }
+                }
+            }
+            Action::Get(id) => match &self.user_data.get(&id) {
+                Some(person_data) => println!("Get Result: {:#?}", person_data.current_state()),
+                None => return Err(format!("No record at [id: {}]", id)),
+            },
+            Action::GetVersion(id, version) => match &self.user_data.get(&id) {
+                Some(person_data) => println!("Get Result: {:#?}", person_data.at_version(version)),
+                None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
+            },
+            Action::List(transaction_id) => {
+                let people_at_transaction_id: Vec<Person> = self
+                    .user_data
+                    .iter()
+                    .filter_map(|(_, value)| {
+                        return value.at_transaction_id(transaction_id);
+                    })
+                    .collect();
+
+                println!("List Results: {:#?}", people_at_transaction_id)
+            }
+        }
+
+        return Ok(());
+    }
 }
 
 fn process_action(
-    user_data: &mut HashMap<String, PersonData>,
+    person_table: &mut PersonTable,
     processed_transactions: &mut Vec<Transaction>,
-    user_action: &Action,
+    user_action: Action,
 ) -> Result<(), ErrorString> {
-    match user_action.is_mutation() {
-        true => {
-            let new_transaction_id = processed_transactions
-                .last()
-                .and_then(|t| Some(t.transaction_id + 1))
-                .unwrap_or(START_AT_INDEX);
+    let mut transaction_id = processed_transactions
+        .last()
+        .and_then(|t| Some(t.transaction_id))
+        .unwrap_or(START_AT_INDEX);
 
-            let new_transaction = Transaction {
-                transaction_id: new_transaction_id,
-                action: user_action.clone(),
-            };
+    if user_action.is_mutation() {
+        transaction_id = transaction_id + 1;
 
-            // Apply to world state
-            process_action_mutation(user_data, &new_transaction)?;
+        let new_transaction = Transaction {
+            transaction_id: transaction_id,
+            action: user_action.clone(),
+        };
 
-            // Push to history (is this the same as persisting to file?)
-            processed_transactions.push(new_transaction)
-        }
-        false => process_action_query(user_data, user_action)?,
+        processed_transactions.push(new_transaction)
     }
+
+    person_table.apply(user_action, transaction_id)?;
 
     Ok(())
 }
 
-static NTHREADS: i32 = 3;
-
-/*
-    1. Start with multiple threads which can read / write data, accept information via channels
-*/
 fn main() {
+    static NTHREADS: i32 = 3;
+
     let (tx, rx): (Sender<Action>, Receiver<Action>) = mpsc::channel();
 
     for id in 0..NTHREADS {
@@ -325,31 +313,42 @@ fn main() {
             loop {
                 counter = counter + 1;
 
-                let transaction = Action::Update(id.clone(), UpdatePersonData {
-                    full_name: UpdateAction::Set(format!("[Count {}] Dale Salter", counter)),
-                    email: UpdateAction::NoChanges,
-                });
+                let transaction = Action::Update(
+                    id.clone(),
+                    UpdatePersonData {
+                        full_name: UpdateAction::Set(format!("[Count {}] Dale Salter", counter)),
+                        email: UpdateAction::NoChanges,
+                    },
+                );
 
                 thread_tx.send(transaction).unwrap();
 
-                thread::sleep(time::Duration::from_millis(10000));
+                thread::sleep(time::Duration::from_millis(5000));
             }
         });
     }
 
-    let mut user_data = HashMap::<String, PersonData>::new();
+    let mut person_table = PersonTable::new();
     let mut processed_transactions: Vec<Transaction> = vec![];
 
     loop {
         let action = rx.recv().unwrap();
-
-        let response = process_action(&mut user_data, &mut processed_transactions, &action);
+        let response = process_action(
+            &mut person_table,
+            &mut processed_transactions,
+            action.clone(),
+        );
 
         if let Err(err) = response {
             println!("Error applying transaction: {}", err);
             println!("Action: {:?}", action)
         }
 
-        process_action(&mut user_data, &mut processed_transactions, &Action::List(1000)).unwrap();
+        process_action(
+            &mut person_table,
+            &mut processed_transactions,
+            Action::List(1000),
+        )
+        .unwrap();
     }
 }
