@@ -44,6 +44,11 @@ fn process_action(
     return action_result;
 }
 
+struct ChannelRequest {
+    action: Action,
+    sender: oneshot::Sender<ActionResult>,
+}
+
 fn main() {
     static NTHREADS: i32 = 3;
 
@@ -75,11 +80,33 @@ fn main() {
             loop {
                 counter = counter + 1;
 
-                let transaction = Action::ListLatestVersions(1000);
+                // UPDATE
+                let update_transaction = Action::Update(
+                    record_id.clone(),
+                    UpdatePersonData {
+                        full_name: UpdateAction::Set(format!("[Count {}] Dale Salter", counter)),
+                        email: UpdateAction::NoChanges,
+                    },
+                );
 
                 let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
 
-                let request = (transaction, response_sender);
+                let request = (update_transaction, response_sender);
+
+                thread_tx.send(request).unwrap();
+
+                match response_receiver.recv_timeout(Duration::from_secs(1)) {
+                    Ok(result) => println!("💪 {:#?}", result),
+                    Err(oneshot::RecvTimeoutError::Timeout) => eprintln!("Processor was too slow"),
+                    Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
+                }
+
+                // GET
+                let get_action = Action::Get(record_id.clone());
+
+                let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+
+                let request = (get_action, response_sender);
 
                 thread_tx.send(request).unwrap();
 
