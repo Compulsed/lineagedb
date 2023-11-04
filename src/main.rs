@@ -44,21 +44,45 @@ fn process_action(
     return action_result;
 }
 
-struct ChannelRequest {
+struct Request {
+    response_sender: oneshot::Sender<ActionResult>,
     action: Action,
-    sender: oneshot::Sender<ActionResult>,
+}
+
+struct RequestManager {
+    database_sender: Sender<Request>,
+}
+
+impl RequestManager {
+    pub fn new(database_sender: Sender<Request>) -> Self {
+        Self { database_sender }
+    }
+
+    pub fn send_request(&self, action: Action) -> Result<ActionResult, ErrorString> {
+        let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+
+        let request = Request {
+            response_sender,
+            action,
+        };
+
+        self.database_sender.send(request).unwrap();
+
+        match response_receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(result) => Ok(result),
+            Err(oneshot::RecvTimeoutError::Timeout) => Err("Processor was too slow".to_string()),
+            Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
+        }
+    }
 }
 
 fn main() {
     static NTHREADS: i32 = 3;
 
-    let (tx, rx): (
-        Sender<(Action, oneshot::Sender<ActionResult>)>,
-        Receiver<(Action, oneshot::Sender<ActionResult>)>,
-    ) = mpsc::channel();
+    let (database_sender, rx): (Sender<Request>, Receiver<Request>) = mpsc::channel();
 
     for thread_id in 0..NTHREADS {
-        let thread_tx = tx.clone();
+        let request_manager = RequestManager::new(database_sender.clone());
 
         thread::spawn(move || {
             let record_id = format!("[Thread {}]", thread_id.to_string());
@@ -69,11 +93,11 @@ fn main() {
                 email: Some(format!("dalejsalter-{}@outlook.com", thread_id)),
             });
 
-            let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+            let response = request_manager
+                .send_request(add_transaction)
+                .expect("Should not timeout");
 
-            let request = (add_transaction, response_sender);
-
-            thread_tx.send(request).unwrap();
+            println!("{:#?}", response);
 
             let mut counter = 0;
 
@@ -89,32 +113,20 @@ fn main() {
                     },
                 );
 
-                let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+                let update_response = request_manager
+                    .send_request(update_transaction)
+                    .expect("Should not timeout");
 
-                let request = (update_transaction, response_sender);
-
-                thread_tx.send(request).unwrap();
-
-                match response_receiver.recv_timeout(Duration::from_secs(1)) {
-                    Ok(result) => println!("💪 {:#?}", result),
-                    Err(oneshot::RecvTimeoutError::Timeout) => eprintln!("Processor was too slow"),
-                    Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
-                }
+                println!("{:#?}", update_response);
 
                 // GET
                 let get_action = Action::Get(record_id.clone());
 
-                let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+                let get_response = request_manager
+                    .send_request(get_action)
+                    .expect("Should not timeout");
 
-                let request = (get_action, response_sender);
-
-                thread_tx.send(request).unwrap();
-
-                match response_receiver.recv_timeout(Duration::from_secs(1)) {
-                    Ok(result) => println!("🎉 {:#?}", result),
-                    Err(oneshot::RecvTimeoutError::Timeout) => eprintln!("Processor was too slow"),
-                    Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
-                }
+                println!("{:#?}", get_response);
 
                 thread::sleep(time::Duration::from_millis(5000));
             }
@@ -130,7 +142,10 @@ fn main() {
     }
 
     loop {
-        let (action, response) = rx.recv().unwrap();
+        let Request {
+            action,
+            response_sender,
+        } = rx.recv().unwrap();
 
         let action_response = process_action(
             &mut person_table,
@@ -139,21 +154,9 @@ fn main() {
             false,
         );
 
-        match action_response {
-            Ok(action_response) => response.send(action_response),
-            Err(err) => response.send(ActionResult::Status(format!("ERROR: {}", err))),
+        let _ = match action_response {
+            Ok(action_response) => response_sender.send(action_response),
+            Err(err) => response_sender.send(ActionResult::Status(format!("ERROR: {}", err))),
         };
-
-        // if let Err(err) = action_response {}
-
-        // let list_response = process_action(
-        //     &mut person_table,
-        //     &mut transaction_log,
-        //     Action::ListLatestVersions(1000),
-        //     false,
-        // )
-        // .expect("List calls should never fail");
-
-        // println!("{:#?}", list_response);
     }
 }
