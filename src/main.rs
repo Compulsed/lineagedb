@@ -1,20 +1,22 @@
 use database::request_manager::{DatabaseRequest, RequestManager};
 use model::action::Action;
-use row::row::UpdateAction;
 use std::{
     sync::mpsc::{self, Receiver, Sender},
     thread::{self},
     time::{self},
 };
 
-use crate::{database::database::Database, model::person::Person, row::row::UpdatePersonData};
+use crate::{
+    database::{
+        database::Database,
+        table::row::{UpdateAction, UpdatePersonData},
+    },
+    model::person::Person,
+};
 
 mod consts;
 mod database;
 mod model;
-mod row;
-mod table;
-mod transaction;
 
 fn spawn_workers(threads: i32, database_sender: Sender<DatabaseRequest>) {
     for thread_id in 0..threads {

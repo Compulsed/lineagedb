@@ -6,8 +6,9 @@ use crate::{
         action::{Action, ActionResult},
         person::Person,
     },
-    row::row::{ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, UpdateAction},
 };
+
+use super::row::{ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, UpdateAction};
 
 type RowPrimaryKey = String;
 

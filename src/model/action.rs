@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::row::row::{PersonVersion, UpdatePersonData};
+use crate::database::table::row::{PersonVersion, UpdatePersonData};
 
 use super::person::Person;
 

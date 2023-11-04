@@ -3,11 +3,11 @@ use std::sync::mpsc::Receiver;
 use crate::{
     consts::consts::ErrorString,
     model::action::{Action, ActionResult},
-    table::table::PersonTable,
-    transaction::transaction::TransactionLog,
 };
 
-use super::request_manager::DatabaseRequest;
+use super::{
+    request_manager::DatabaseRequest, table::table::PersonTable, transaction::TransactionLog,
+};
 
 pub struct Database {
     person_table: PersonTable,
