@@ -1,11 +1,11 @@
 use std::{
     sync::mpsc::{self, Receiver, Sender},
     thread::{self},
-    time,
+    time::{self, Duration},
 };
 
 use consts::consts::ErrorString;
-use model::action::Action;
+use model::action::{Action, ActionResult};
 use row::row::UpdateAction;
 use table::table::PersonTable;
 use transaction::transaction::TransactionLog;
@@ -23,7 +23,7 @@ fn process_action(
     transaction_log: &mut TransactionLog,
     user_action: Action,
     restore: bool,
-) -> Result<(), ErrorString> {
+) -> Result<ActionResult, ErrorString> {
     let mut transaction_id = transaction_log.get_current_transaction_id();
 
     let is_mutation = user_action.is_mutation();
@@ -32,25 +32,25 @@ fn process_action(
         transaction_id = transaction_log.add_applying(user_action.clone());
     }
 
-    let apply_result = person_table.apply(user_action, transaction_id);
+    let action_result = person_table.apply(user_action, transaction_id);
 
     if is_mutation {
-        match apply_result {
+        match action_result {
             Ok(_) => transaction_log.update_committed(restore),
             Err(_) => transaction_log.update_failed(),
         }
     }
 
-    // If there was an error processing the action, return it to the caller
-    apply_result?;
-
-    Ok(())
+    return action_result;
 }
 
 fn main() {
     static NTHREADS: i32 = 3;
 
-    let (tx, rx): (Sender<Action>, Receiver<Action>) = mpsc::channel();
+    let (tx, rx): (
+        Sender<(Action, oneshot::Sender<ActionResult>)>,
+        Receiver<(Action, oneshot::Sender<ActionResult>)>,
+    ) = mpsc::channel();
 
     for thread_id in 0..NTHREADS {
         let thread_tx = tx.clone();
@@ -64,22 +64,30 @@ fn main() {
                 email: Some(format!("dalejsalter-{}@outlook.com", thread_id)),
             });
 
-            thread_tx.send(add_transaction).unwrap();
+            let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+
+            let request = (add_transaction, response_sender);
+
+            thread_tx.send(request).unwrap();
 
             let mut counter = 0;
 
             loop {
                 counter = counter + 1;
 
-                let transaction = Action::Update(
-                    record_id.clone(),
-                    UpdatePersonData {
-                        full_name: UpdateAction::Set(format!("[Count {}] Dale Salter", counter)),
-                        email: UpdateAction::NoChanges,
-                    },
-                );
+                let transaction = Action::ListLatestVersions(1000);
 
-                thread_tx.send(transaction).unwrap();
+                let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+
+                let request = (transaction, response_sender);
+
+                thread_tx.send(request).unwrap();
+
+                match response_receiver.recv_timeout(Duration::from_secs(1)) {
+                    Ok(result) => println!("🎉 {:#?}", result),
+                    Err(oneshot::RecvTimeoutError::Timeout) => eprintln!("Processor was too slow"),
+                    Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
+                }
 
                 thread::sleep(time::Duration::from_millis(5000));
             }
@@ -95,25 +103,30 @@ fn main() {
     }
 
     loop {
-        let action = rx.recv().unwrap();
-        let response = process_action(
+        let (action, response) = rx.recv().unwrap();
+
+        let action_response = process_action(
             &mut person_table,
             &mut transaction_log,
             action.clone(),
             false,
         );
 
-        if let Err(err) = response {
-            println!("Error applying transaction: {}", err);
-            println!("Action: {:?}", action)
-        }
+        match action_response {
+            Ok(action_response) => response.send(action_response),
+            Err(err) => response.send(ActionResult::Status(format!("ERROR: {}", err))),
+        };
 
-        process_action(
-            &mut person_table,
-            &mut transaction_log,
-            Action::ListLatestVersions(1000),
-            false,
-        )
-        .unwrap();
+        // if let Err(err) = action_response {}
+
+        // let list_response = process_action(
+        //     &mut person_table,
+        //     &mut transaction_log,
+        //     Action::ListLatestVersions(1000),
+        //     false,
+        // )
+        // .expect("List calls should never fail");
+
+        // println!("{:#?}", list_response);
     }
 }

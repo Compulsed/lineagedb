@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use crate::{
     consts::consts::ErrorString,
-    model::{action::Action, person::Person},
+    model::{
+        action::{Action, ActionResult},
+        person::Person,
+    },
     row::row::{ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, UpdateAction},
 };
 
@@ -25,8 +28,12 @@ impl PersonTable {
     //  - Verifying validity / constraints (uniqueness)
     //  - Applying action
     //  - Clean up
-    pub fn apply(&mut self, action: Action, transaction_id: usize) -> Result<(), ErrorString> {
-        match action {
+    pub fn apply(
+        &mut self,
+        action: Action,
+        transaction_id: usize,
+    ) -> Result<ActionResult, ErrorString> {
+        let action_result = match action {
             Action::Add(person) => {
                 let id = person.id.clone();
                 let person_to_persist = person.clone();
@@ -57,6 +64,8 @@ impl PersonTable {
                 if let Some(email) = person.email {
                     self.unique_email_index.insert(email, person.id);
                 }
+
+                ActionResult::Status("Successfully added person".to_string())
             }
             Action::Update(id, update_person) => {
                 let person_update_to_persist = update_person.clone();
@@ -88,6 +97,8 @@ impl PersonTable {
                     }
                     _ => {}
                 }
+
+                ActionResult::Status("Successfully updated person".to_string())
             }
             Action::Remove(id) => {
                 let person_row = self.person_rows.get_mut(&id).ok_or(format!(
@@ -100,15 +111,25 @@ impl PersonTable {
                 if let Some(email) = previous.email {
                     self.unique_email_index.remove(&email);
                 }
+
+                ActionResult::Status("Successfully removed person".to_string())
             }
-            Action::Get(id) => match &self.person_rows.get(&id) {
-                Some(person_data) => println!("Get Result: {:#?}", person_data.current_state()),
-                None => return Err(format!("No record at [id: {}]", id)),
-            },
-            Action::GetVersion(id, version) => match &self.person_rows.get(&id) {
-                Some(person_data) => println!("Get Result: {:#?}", person_data.at_version(version)),
-                None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
-            },
+            Action::Get(id) => {
+                let person = match &self.person_rows.get(&id) {
+                    Some(person_data) => person_data.current_state(),
+                    None => return Err(format!("No record at [id: {}]", id)),
+                };
+
+                ActionResult::Single(person)
+            }
+            Action::GetVersion(id, version) => {
+                let person = match &self.person_rows.get(&id) {
+                    Some(person_data) => person_data.at_version(version),
+                    None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
+                };
+
+                ActionResult::Single(person)
+            }
             Action::List(transaction_id) => {
                 let people_at_transaction_id: Vec<Person> = self
                     .person_rows
@@ -118,7 +139,7 @@ impl PersonTable {
                     })
                     .collect();
 
-                println!("List Results: {:#?}", people_at_transaction_id)
+                ActionResult::List(people_at_transaction_id)
             }
             Action::ListLatestVersions(transaction_id) => {
                 let people_at_transaction_id: Vec<PersonVersion> = self
@@ -129,13 +150,10 @@ impl PersonTable {
                     })
                     .collect();
 
-                println!(
-                    "List Latest Versions Results: {:#?}",
-                    people_at_transaction_id
-                )
+                ActionResult::ListVersion(people_at_transaction_id)
             }
-        }
+        };
 
-        return Ok(());
+        return Ok(action_result);
     }
 }

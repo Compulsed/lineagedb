@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::row::row::UpdatePersonData;
+use crate::row::row::{PersonVersion, UpdatePersonData};
 
 use super::person::Person;
 
@@ -13,6 +13,14 @@ pub enum Action {
     GetVersion(String, usize),
     List(usize),
     ListLatestVersions(usize),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ActionResult {
+    Status(String),
+    Single(Option<Person>),
+    List(Vec<Person>),
+    ListVersion(Vec<PersonVersion>),
 }
 
 impl Action {

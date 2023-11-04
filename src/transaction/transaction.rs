@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{prelude::*, SeekFrom};
-use std::path::Path;
+use std::io::prelude::*;
 
 use crate::consts::consts::TRANSACTION_LOG_LOCATION;
 use crate::model::action::Action;

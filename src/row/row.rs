@@ -28,13 +28,13 @@ pub enum UpdateAction {
     NoChanges,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum PersonVersionState {
     State(Person),
     Delete,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PersonVersion {
     pub state: PersonVersionState,
     pub version: usize,

@@ -12,7 +12,7 @@
 1. Uniqueness constraints ✅
 1. Restore ✅
 1. Persist to file ✅
-
+1. Pass result back to caller
 
 - Transaction queue (max length, 5s timeout)
 - Transaction return type with data (latch?)
