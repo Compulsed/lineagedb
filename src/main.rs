@@ -66,9 +66,11 @@ impl RequestManager {
             action,
         };
 
+        // Sends the request to the database worker, database will response
+        //  on the response_receiver once it's finished processing it's request
         self.database_sender.send(request).unwrap();
 
-        match response_receiver.recv_timeout(Duration::from_secs(1)) {
+        match response_receiver.recv_timeout(Duration::from_secs(2)) {
             Ok(result) => Ok(result),
             Err(oneshot::RecvTimeoutError::Timeout) => Err("Processor was too slow".to_string()),
             Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
@@ -76,12 +78,8 @@ impl RequestManager {
     }
 }
 
-fn main() {
-    static NTHREADS: i32 = 3;
-
-    let (database_sender, rx): (Sender<Request>, Receiver<Request>) = mpsc::channel();
-
-    for thread_id in 0..NTHREADS {
+fn spawn_workers(threads: i32, database_sender: Sender<Request>) {
+    for thread_id in 0..threads {
         let request_manager = RequestManager::new(database_sender.clone());
 
         thread::spawn(move || {
@@ -132,7 +130,9 @@ fn main() {
             }
         });
     }
+}
 
+fn run_database(database_receiver: Receiver<Request>) {
     let mut person_table = PersonTable::new();
     let mut transaction_log = TransactionLog::new();
 
@@ -145,7 +145,7 @@ fn main() {
         let Request {
             action,
             response_sender,
-        } = rx.recv().unwrap();
+        } = database_receiver.recv().unwrap();
 
         let action_response = process_action(
             &mut person_table,
@@ -159,4 +159,16 @@ fn main() {
             Err(err) => response_sender.send(ActionResult::Status(format!("ERROR: {}", err))),
         };
     }
+}
+
+fn main() {
+    static NTHREADS: i32 = 3;
+
+    let (database_sender, database_receiver): (Sender<Request>, Receiver<Request>) =
+        mpsc::channel();
+
+    // Spawns threads which generate work for the database layer
+    spawn_workers(NTHREADS, database_sender);
+
+    run_database(database_receiver);
 }
