@@ -8,9 +8,9 @@
     1. World state ✅
     1. Version history ✅
     1. Transaction list ✅
-1. Multiple producers single consumer
+1. Multiple producers single consumer ✅
+1. Uniqueness constraints ✅
 
-1. Uniqueness constraints
 1. Restore
 1. Persist to file
 1. WAL
@@ -29,3 +29,4 @@
 - Read whilst writing — may require thread safe data structures 
 - Writing out transaction log to file, world state 
 - Transaction log listener (can run another db in another location)
+- Turn indexing into a class
