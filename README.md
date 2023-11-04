@@ -10,10 +10,10 @@
     1. Transaction list ✅
 1. Multiple producers single consumer ✅
 1. Uniqueness constraints ✅
+1. Restore ✅
+1. Persist to file ✅
 
-1. Restore
-1. Persist to file
-1. WAL
+
 - Transaction queue (max length, 5s timeout)
 - Transaction return type with data (latch?)
 - Transaction levels
@@ -30,3 +30,4 @@
 - Writing out transaction log to file, world state 
 - Transaction log listener (can run another db in another location)
 - Turn indexing into a class
+- WAL

@@ -4,10 +4,11 @@ use std::{
     time,
 };
 
-use consts::consts::{ErrorString, START_AT_INDEX};
+use consts::consts::ErrorString;
 use model::action::Action;
 use row::row::UpdateAction;
 use table::table::PersonTable;
+use transaction::transaction::TransactionLog;
 
 use crate::{model::person::Person, row::row::UpdatePersonData};
 
@@ -15,35 +16,33 @@ mod consts;
 mod model;
 mod row;
 mod table;
-
-#[derive(Debug)]
-struct Transaction {
-    transaction_id: usize,
-    action: Action,
-}
+mod transaction;
 
 fn process_action(
     person_table: &mut PersonTable,
-    processed_transactions: &mut Vec<Transaction>,
+    transaction_log: &mut TransactionLog,
     user_action: Action,
+    restore: bool,
 ) -> Result<(), ErrorString> {
-    let mut transaction_id = processed_transactions
-        .last()
-        .and_then(|t| Some(t.transaction_id))
-        .unwrap_or(START_AT_INDEX);
+    let mut transaction_id = transaction_log.get_current_transaction_id();
 
-    if user_action.is_mutation() {
-        transaction_id = transaction_id + 1;
+    let is_mutation = user_action.is_mutation();
 
-        let new_transaction = Transaction {
-            transaction_id: transaction_id,
-            action: user_action.clone(),
-        };
-
-        processed_transactions.push(new_transaction)
+    if is_mutation {
+        transaction_id = transaction_log.add_applying(user_action.clone());
     }
 
-    person_table.apply(user_action, transaction_id)?;
+    let apply_result = person_table.apply(user_action, transaction_id);
+
+    if is_mutation {
+        match apply_result {
+            Ok(_) => transaction_log.update_committed(restore),
+            Err(_) => transaction_log.update_failed(),
+        }
+    }
+
+    // If there was an error processing the action, return it to the caller
+    apply_result?;
 
     Ok(())
 }
@@ -88,14 +87,20 @@ fn main() {
     }
 
     let mut person_table = PersonTable::new();
-    let mut processed_transactions: Vec<Transaction> = vec![];
+    let mut transaction_log = TransactionLog::new();
+
+    for action in TransactionLog::restore() {
+        process_action(&mut person_table, &mut transaction_log, action, true)
+            .expect("Should not error when replaying valid transactions");
+    }
 
     loop {
         let action = rx.recv().unwrap();
         let response = process_action(
             &mut person_table,
-            &mut processed_transactions,
+            &mut transaction_log,
             action.clone(),
+            false,
         );
 
         if let Err(err) = response {
@@ -105,8 +110,9 @@ fn main() {
 
         process_action(
             &mut person_table,
-            &mut processed_transactions,
-            Action::List(1000),
+            &mut transaction_log,
+            Action::ListLatestVersions(1000),
+            false,
         )
         .unwrap();
     }

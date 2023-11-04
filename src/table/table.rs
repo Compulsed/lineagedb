@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     consts::consts::ErrorString,
     model::{action::Action, person::Person},
-    row::row::{ApplyDeleteResult, ApplyUpdateResult, PersonRow, UpdateAction},
+    row::row::{ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, UpdateAction},
 };
 
 type RowPrimaryKey = String;
@@ -17,19 +17,22 @@ impl PersonTable {
     pub fn new() -> Self {
         Self {
             person_rows: HashMap::<RowPrimaryKey, PersonRow>::new(),
-            // TODO: Turn this into a class
             unique_email_index: HashMap::<String, RowPrimaryKey>::new(),
         }
     }
 
+    // Each mutation action can be broken up into 3 steps
+    //  - Verifying validity / constraints (uniqueness)
+    //  - Applying action
+    //  - Clean up
     pub fn apply(&mut self, action: Action, transaction_id: usize) -> Result<(), ErrorString> {
         match action {
             Action::Add(person) => {
                 let id = person.id.clone();
                 let person_to_persist = person.clone();
 
-                // Check if a person with an email already exists
                 if let Some(email) = &person.email {
+                    // Check if a person with an email already exists
                     if self.unique_email_index.contains_key(email) {
                         return Err(format!(
                             "Cannot add row as a person already exists with this email: {}",
@@ -116,6 +119,20 @@ impl PersonTable {
                     .collect();
 
                 println!("List Results: {:#?}", people_at_transaction_id)
+            }
+            Action::ListLatestVersions(transaction_id) => {
+                let people_at_transaction_id: Vec<PersonVersion> = self
+                    .person_rows
+                    .iter()
+                    .filter_map(|(_, value)| {
+                        return value.version_at_transaction_id(transaction_id);
+                    })
+                    .collect();
+
+                println!(
+                    "List Latest Versions Results: {:#?}",
+                    people_at_transaction_id
+                )
             }
         }
 
