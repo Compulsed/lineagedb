@@ -6,14 +6,18 @@
 `cargo run`
 
 **Run the database**
-`echo "a" | nc 127.0.0.1 8080` # Adds
-`echo "l" | nc 127.0.0.1 8080` # Lists
-`echo "u" | nc 127.0.0.1 8080` # Updates
-`echo "l" | nc 127.0.0.1 8080` # Lists
+```
+echo "a" | nc 127.0.0.1 8080 # Adds
+echo "l" | nc 127.0.0.1 8080 # Lists
+echo "u" | nc 127.0.0.1 8080 # Updates
+echo "l" | nc 127.0.0.1 8080 # Lists
+```
 
 **Performance test**
-`echo "a" | nc 127.0.0.1 8080`
-`while true; do echo "u" | nc 127.0.0.1 8080; done`
+```
+echo "a" | nc 127.0.0.1 8080
+while true; do echo "u" | nc 127.0.0.1 8080; done
+```
 
 ## Features
 1. Input parser
