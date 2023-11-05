@@ -49,8 +49,13 @@
 - Run on cloud via docker / lambda
 
 **Performance**
+- Create a tx/s metrics
 - Read at a transaction id whilst there is a writer — may require thread safe data structures
 - Move away from a single thread per request (could implement a thread pool w/ channels)
+- Reduce the amount of clones
+- State backups
+    - Maybe trim the transaction log
+    - Perform a state backup every N number of TXs
 
 **Design Improvements**
 - Turn index into a class
