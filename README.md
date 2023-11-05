@@ -12,17 +12,17 @@
 1. Uniqueness constraints ✅
 1. Restore ✅
 1. Persist to file ✅
-1. Pass result back to caller
+1. Pass result back to caller ✅
+1. Transaction return type with data (latch?) ✅
+1. Network based requests
 
 - Transaction queue (max length, 5s timeout)
-- Transaction return type with data (latch?)
 - Transaction levels
 - Transactions with multiple actions
 - Transaction rollbacks
 - Where clause in list
 - Update conditions
 - Multiple updates based on a condition (select)
-
 - Counter (id counter)
 - Multiple tables support
 - Referential integrity

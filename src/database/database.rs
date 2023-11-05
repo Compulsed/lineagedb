@@ -1,4 +1,4 @@
-use std::sync::mpsc::Receiver;
+use std::{sync::mpsc::Receiver, time::Instant};
 
 use crate::{
     consts::consts::ErrorString,
@@ -25,11 +25,21 @@ impl Database {
     }
 
     pub fn run(&mut self) {
+        println!("Restoring database from disk");
+
+        let now = Instant::now();
+
         // On spin-up restore database from disk
         for action in TransactionLog::restore() {
             self.process_action(action, true)
                 .expect("Should not error when replaying valid transactions");
         }
+
+        println!(
+            "Restored database from transaction log. [Duration {}ms, Tx Count {}]",
+            now.elapsed().as_millis(),
+            self.transaction_log.get_current_transaction_id()
+        );
 
         // Process incoming requests from the channel
         loop {
