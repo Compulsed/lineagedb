@@ -50,7 +50,7 @@ use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 
 mod schema;
 
-use crate::schema::{create_schema, Schema};
+use crate::schema::{create_schema, GraphQLDatabase, Schema};
 
 /// GraphiQL playground UI
 #[get("/graphiql")]
@@ -60,8 +60,11 @@ async fn graphql_playground() -> impl Responder {
 
 /// GraphQL endpoint
 #[route("/graphql", method = "GET", method = "POST")]
-async fn graphql(st: web::Data<Schema>, data: web::Json<GraphQLRequest>) -> impl Responder {
-    let user = data.execute(&st, &()).await;
+async fn graphql(schema: web::Data<Schema>, data: web::Json<GraphQLRequest>) -> impl Responder {
+    let graphql_database = GraphQLDatabase {};
+
+    let user = data.execute(&schema, &graphql_database).await;
+
     HttpResponse::Ok().json(user)
 }
 
