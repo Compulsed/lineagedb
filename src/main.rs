@@ -1,41 +1,18 @@
-// use std::{
-//     sync::mpsc::{self, Receiver, Sender},
-//     thread,
-// };
+use std::{
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+};
 
-// use crate::{
-//     clients::{server::Server, worker::spawn_workers},
-//     database::database::Database,
-// };
-// use database::request_manager::DatabaseRequest;
+use crate::{
+    clients::{server::Server, worker::spawn_workers},
+    database::database::Database,
+};
+use database::request_manager::DatabaseRequest;
 
-// mod clients;
-// mod consts;
-// mod database;
-// mod model;
-
-// fn main() {
-//     let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
-//         mpsc::channel();
-
-//     // static NTHREADS: i32 = 3;
-//     // Spawns threads which generate work for the database layer
-//     // spawn_workers(NTHREADS, database_sender);
-
-//     thread::spawn(move || {
-//         let server = Server::new("127.0.0.1:8080".to_string());
-
-//         server.run(database_sender);
-//     });
-
-//     let mut database = Database::new(database_receiver);
-
-//     database.run();
-// }
-
-//! Actix Web juniper example
-//!
-//! A simple example integrating juniper in Actix Web
+mod clients;
+mod consts;
+mod database;
+mod model;
 
 use std::{io, sync::Arc};
 
@@ -62,6 +39,19 @@ async fn graphql_playground() -> impl Responder {
 #[route("/graphql", method = "GET", method = "POST")]
 async fn graphql(schema: web::Data<Schema>, data: web::Json<GraphQLRequest>) -> impl Responder {
     let graphql_database = GraphQLDatabase {};
+
+    let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
+        mpsc::channel();
+
+    thread::spawn(move || {
+        let server = Server::new("127.0.0.1:8080".to_string());
+
+        server.run(database_sender);
+    });
+
+    let mut database = Database::new(database_receiver);
+
+    database.run();
 
     let user = data.execute(&schema, &graphql_database).await;
 
