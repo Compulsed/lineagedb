@@ -1,15 +1,21 @@
 use juniper::{EmptySubscription, FieldResult, RootNode};
 use std::sync::Mutex;
+use uuid::Uuid;
 
 use crate::{
     database::request_manager::RequestManager,
-    model::action::{Action, ActionResult},
+    model::{
+        action::{Action, ActionResult},
+        person::Person,
+    },
 };
 
-pub struct RequestManagerContext(pub Mutex<RequestManager>);
+pub struct GraphQLContext {
+    pub request_manager: Mutex<RequestManager>,
+}
 
-// Mark the Database as a valid context type for Juniper
-impl juniper::Context for RequestManagerContext {}
+// https://graphql-rust.github.io/juniper/master/types/objects/using_contexts.html
+impl juniper::Context for GraphQLContext {}
 
 #[derive(GraphQLEnum)]
 enum Episode {
@@ -39,7 +45,7 @@ struct NewHuman {
 
 pub struct QueryRoot;
 
-#[juniper::graphql_object(context = RequestManagerContext)]
+#[juniper::graphql_object(context = GraphQLContext)]
 impl QueryRoot {
     fn human(_id: String) -> FieldResult<Human> {
         Ok(Human {
@@ -53,35 +59,37 @@ impl QueryRoot {
 
 pub struct MutationRoot;
 
-#[juniper::graphql_object(context = RequestManagerContext)]
+#[juniper::graphql_object(context = GraphQLContext)]
 impl MutationRoot {
-    fn create_human(
-        new_human: NewHuman,
-        context: &'db RequestManagerContext,
-    ) -> FieldResult<Human> {
-        let mut human = Human {
-            id: "1234".to_owned(),
-            name: new_human.name,
+    fn create_human(new_human: NewHuman, context: &'db GraphQLContext) -> FieldResult<Human> {
+        let id = Uuid::new_v4();
+
+        let human = Human {
+            id: id.to_string(),
+            name: new_human.name.clone(),
             appears_in: new_human.appears_in,
             home_planet: new_human.home_planet,
         };
 
-        // let data = context.0.lock().unwrap();
+        let add_transaction = Action::Add(Person {
+            id: id.to_string(),
+            full_name: new_human.name,
+            email: Some(format!("Fake Email - {}", id.to_string())),
+        });
 
-        // let person_result = data
-        //     .send_request(Action::List(10000000))
-        //     .expect("Should not timeout");
+        let data = context.request_manager.lock().unwrap();
 
-        // if let ActionResult::List(l) = person_result {
-        //     human.name = l[0].full_name.clone()
-        // }
+        let db_response = data
+            .send_request(add_transaction)
+            .expect("Should not timeout");
+
+        println!("{:?}", db_response);
 
         Ok(human)
     }
 }
 
-pub type Schema =
-    RootNode<'static, QueryRoot, MutationRoot, EmptySubscription<RequestManagerContext>>;
+pub type Schema = RootNode<'static, QueryRoot, MutationRoot, EmptySubscription<GraphQLContext>>;
 
 pub fn create_schema() -> Schema {
     Schema::new(QueryRoot {}, MutationRoot {}, EmptySubscription::new())

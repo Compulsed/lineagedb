@@ -9,7 +9,7 @@ use std::{
 use crate::{
     clients::{server::Server, worker::spawn_workers},
     database::{database::Database, request_manager::RequestManager},
-    schema::RequestManagerContext,
+    schema::GraphQLContext,
 };
 use database::request_manager::DatabaseRequest;
 
@@ -39,22 +39,20 @@ async fn graphql_playground() -> impl Responder {
     Html(graphiql_source("/graphql", None))
 }
 
-/// GraphQL endpoint
+/// GraphQL endpoint -- triggered once per request
 #[route("/graphql", method = "GET", method = "POST")]
-async fn graphql(schema: web::Data<Schema>, data: web::Json<GraphQLRequest>) -> impl Responder {
-    let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
-        mpsc::channel();
+async fn graphql(
+    schema: web::Data<Schema>,
+    database_sender: web::Data<Sender<DatabaseRequest>>,
+    data: web::Json<GraphQLRequest>,
+) -> impl Responder {
+    let sender = database_sender.as_ref();
 
-    let request_manager =
-        RequestManagerContext(Mutex::new(RequestManager::new(database_sender.clone())));
+    let graphql_context = GraphQLContext {
+        request_manager: Mutex::new(RequestManager::new(sender.clone())),
+    };
 
-    thread::spawn(move || {
-        let mut database = Database::new(database_receiver);
-
-        database.run();
-    });
-
-    let user = data.execute(&schema, &request_manager).await;
+    let user = data.execute(&schema, &graphql_context).await;
 
     HttpResponse::Ok().json(user)
 }
@@ -69,17 +67,28 @@ async fn main() -> io::Result<()> {
     log::info!("starting HTTP server on port 9000");
     log::info!("GraphiQL playground: http://localhost:9000/graphiql");
 
+    let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
+        mpsc::channel();
+
+    thread::spawn(move || {
+        let mut database = Database::new(database_receiver);
+
+        database.run();
+    });
+
     // Start HTTP server
     HttpServer::new(move || {
+        // Triggered based for N workers
         App::new()
             .app_data(Data::from(schema.clone()))
+            .app_data(web::Data::new(database_sender.clone()))
             .service(graphql)
             .service(graphql_playground)
             // the graphiql UI requires CORS to be enabled
             .wrap(Cors::permissive())
             .wrap(middleware::Logger::default())
     })
-    .workers(2)
+    .workers(8)
     .bind(("127.0.0.1", 9000))?
     .run()
     .await
