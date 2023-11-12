@@ -1,11 +1,15 @@
 use std::{
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
+    },
     thread,
 };
 
 use crate::{
     clients::{server::Server, worker::spawn_workers},
-    database::database::Database,
+    database::{database::Database, request_manager::RequestManager},
+    schema::RequestManagerContext,
 };
 use database::request_manager::DatabaseRequest;
 
@@ -27,7 +31,7 @@ use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 
 mod schema;
 
-use crate::schema::{create_schema, GraphQLDatabase, Schema};
+use crate::schema::{create_schema, Schema};
 
 /// GraphiQL playground UI
 #[get("/graphiql")]
@@ -38,22 +42,19 @@ async fn graphql_playground() -> impl Responder {
 /// GraphQL endpoint
 #[route("/graphql", method = "GET", method = "POST")]
 async fn graphql(schema: web::Data<Schema>, data: web::Json<GraphQLRequest>) -> impl Responder {
-    let graphql_database = GraphQLDatabase {};
-
     let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
         mpsc::channel();
 
-    thread::spawn(move || {
-        let server = Server::new("127.0.0.1:8080".to_string());
+    let request_manager =
+        RequestManagerContext(Mutex::new(RequestManager::new(database_sender.clone())));
 
-        server.run(database_sender);
+    thread::spawn(move || {
+        let mut database = Database::new(database_receiver);
+
+        database.run();
     });
 
-    let mut database = Database::new(database_receiver);
-
-    database.run();
-
-    let user = data.execute(&schema, &graphql_database).await;
+    let user = data.execute(&schema, &request_manager).await;
 
     HttpResponse::Ok().json(user)
 }
