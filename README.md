@@ -8,7 +8,7 @@
 Open `http://localhost:9000/graphiql`
 
 ## Features
-1. Input parser
+1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅
 1. Read ✅
 1. Write ✅ 
@@ -61,3 +61,6 @@ Open `http://localhost:9000/graphiql`
 - Clippy
 - CI/CD Pipeline
 - Tests
+
+**Current Performance**
+- ~1-2ms for a create call

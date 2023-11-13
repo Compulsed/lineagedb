@@ -7,7 +7,6 @@ use std::{
 };
 
 use crate::{
-    clients::{server::Server, worker::spawn_workers},
     database::{database::Database, request_manager::RequestManager},
     schema::GraphQLContext,
 };
