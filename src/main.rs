@@ -1,11 +1,14 @@
 use std::{
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
+    },
     thread,
 };
 
 use crate::{
-    clients::{server::Server, worker::spawn_workers},
-    database::database::Database,
+    database::{database::Database, request_manager::RequestManager},
+    schema::GraphQLContext,
 };
 use database::request_manager::DatabaseRequest;
 
@@ -14,21 +17,78 @@ mod consts;
 mod database;
 mod model;
 
-fn main() {
+use std::{io, sync::Arc};
+
+use actix_cors::Cors;
+use actix_web::{
+    get, middleware, route,
+    web::{self, Data},
+    App, HttpResponse, HttpServer, Responder,
+};
+use actix_web_lab::respond::Html;
+use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
+
+mod schema;
+
+use crate::schema::{create_schema, Schema};
+
+/// GraphiQL playground UI
+#[get("/graphiql")]
+async fn graphql_playground() -> impl Responder {
+    Html(graphiql_source("/graphql", None))
+}
+
+/// GraphQL endpoint -- triggered once per request
+#[route("/graphql", method = "GET", method = "POST")]
+async fn graphql(
+    schema: web::Data<Schema>,
+    database_sender: web::Data<Sender<DatabaseRequest>>,
+    data: web::Json<GraphQLRequest>,
+) -> impl Responder {
+    let sender = database_sender.as_ref();
+
+    let graphql_context = GraphQLContext {
+        request_manager: Mutex::new(RequestManager::new(sender.clone())),
+    };
+
+    let user = data.execute(&schema, &graphql_context).await;
+
+    HttpResponse::Ok().json(user)
+}
+
+#[actix_web::main]
+async fn main() -> io::Result<()> {
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+
+    // Create Juniper schema
+    let schema = Arc::new(create_schema());
+
+    log::info!("starting HTTP server on port 9000");
+    log::info!("GraphiQL playground: http://localhost:9000/graphiql");
+
     let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
         mpsc::channel();
 
-    // static NTHREADS: i32 = 3;
-    // Spawns threads which generate work for the database layer
-    // spawn_workers(NTHREADS, database_sender);
-
     thread::spawn(move || {
-        let server = Server::new("127.0.0.1:8080".to_string());
+        let mut database = Database::new(database_receiver);
 
-        server.run(database_sender);
+        database.run();
     });
 
-    let mut database = Database::new(database_receiver);
-
-    database.run();
+    // Start HTTP server
+    HttpServer::new(move || {
+        // Triggered based for N workers
+        App::new()
+            .app_data(Data::from(schema.clone()))
+            .app_data(web::Data::new(database_sender.clone()))
+            .service(graphql)
+            .service(graphql_playground)
+            // the graphiql UI requires CORS to be enabled
+            .wrap(Cors::permissive())
+            .wrap(middleware::Logger::default())
+    })
+    .workers(8)
+    .bind(("127.0.0.1", 9000))?
+    .run()
+    .await
 }

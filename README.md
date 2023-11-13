@@ -5,22 +5,10 @@
 **Start the database**
 `cargo run`
 
-**Run the database**
-```
-echo "a" | nc 127.0.0.1 8080 # Adds
-echo "l" | nc 127.0.0.1 8080 # Lists
-echo "u" | nc 127.0.0.1 8080 # Updates
-echo "l" | nc 127.0.0.1 8080 # Lists
-```
-
-**Performance test**
-```
-echo "a" | nc 127.0.0.1 8080
-while true; do echo "u" | nc 127.0.0.1 8080; done
-```
+Open `http://localhost:9000/graphiql`
 
 ## Features
-1. Input parser
+1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅
 1. Read ✅
 1. Write ✅ 
@@ -36,7 +24,13 @@ while true; do echo "u" | nc 127.0.0.1 8080; done
 1. Transaction return type with data (latch?) ✅
 1. Network based requests ✅
 
-**Features**
+**GraphQL Feature**
+- List
+- Update
+- Get
+- Delete
+
+**DB Features**
 - Multiple tables support
 - Counter (id counter)
 - Multiple updates based on a condition (select)
@@ -55,14 +49,18 @@ while true; do echo "u" | nc 127.0.0.1 8080; done
 **Performance**
 - Create a tx/s metrics
 - Read at a transaction id whilst there is a writer — may require thread safe data structures
-- Move away from a single thread per request (could implement a thread pool w/ channels)
+- Move away from a single thread per request (could implement a thread pool w/ channels?)
 - Reduce the amount of clones
 - State backups
     - Maybe trim the transaction log
     - Perform a state backup every N number of TXs
+- Investigate ~6k TX stall from AB
 
 **Design Improvements**
 - Turn index into a class
 - Clippy
 - CI/CD Pipeline
 - Tests
+
+**Current Performance**
+- ~1-2ms for a create call

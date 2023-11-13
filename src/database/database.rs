@@ -1,5 +1,7 @@
 use std::{sync::mpsc::Receiver, time::Instant};
 
+use num_format::{Locale, ToFormattedString};
+
 use crate::{
     consts::consts::ErrorString,
     model::action::{Action, ActionResult},
@@ -38,7 +40,9 @@ impl Database {
         println!(
             "Restored database from transaction log. [Duration {}ms, Tx Count {}]",
             now.elapsed().as_millis(),
-            self.transaction_log.get_current_transaction_id()
+            self.transaction_log
+                .get_current_transaction_id()
+                .to_formatted_string(&Locale::en)
         );
 
         // Process incoming requests from the channel
