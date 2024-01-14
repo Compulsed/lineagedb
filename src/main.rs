@@ -63,7 +63,7 @@ async fn main() -> io::Result<()> {
     // Create Juniper schema
     let schema = Arc::new(create_schema());
 
-    log::info!("starting HTTP server on port 9000");
+    log::info!("starting HTTP server on port 9000.");
     log::info!("GraphiQL playground: http://localhost:9000/graphiql");
 
     let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
