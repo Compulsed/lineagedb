@@ -26,7 +26,7 @@ pub struct TransactionLog {
 
 impl TransactionLog {
     pub fn new() -> Self {
-        fs::create_dir_all("/data").expect("Should always be able to create a path at data/");
+        fs::create_dir_all("./data").expect("Should always be able to create a path at data/");
 
         let log_file = OpenOptions::new()
             .append(true)
