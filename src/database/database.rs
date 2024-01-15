@@ -38,7 +38,7 @@ impl Database {
         }
 
         println!(
-            "Restored database from transaction log. [Duration {}ms, Tx Count {}]",
+            "Restored database from transaction log. [Duration {}ms, Tx Count {}].",
             now.elapsed().as_millis(),
             self.transaction_log
                 .get_current_transaction_id()
