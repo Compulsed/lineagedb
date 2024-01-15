@@ -3,7 +3,11 @@
 on:
   release:
     types: [created]
-    
+
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  RUST_BACKTRACE: 1
+
 jobs:
   release:
     name: Release - ${{ matrix.platform.release_for }}
@@ -48,5 +52,16 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: "--locked --release"
           strip: true
-
-    # more packaging stuff goes here ...
+      - name: Publish release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: lineage-${{ matrix.platform.os_name }}
+          path: "lineage-*"
+      - name: Generate SHA-256
+        run: shasum -a 256 ${{ matrix.platform.name }}
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          files: "lineage-*"
+          body_path: Changes.md
