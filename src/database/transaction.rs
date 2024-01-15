@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 
 use crate::consts::consts::TRANSACTION_LOG_LOCATION;
@@ -26,6 +26,8 @@ pub struct TransactionLog {
 
 impl TransactionLog {
     pub fn new() -> Self {
+        fs::create_dir_all("/data").expect("Should always be able to create a path at data/")
+
         let log_file = OpenOptions::new()
             .append(true)
             .create(true)
