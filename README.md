@@ -7,6 +7,27 @@
 
 Open `http://localhost:9000/graphiql`
 
+Can use the below mutations to persist / get data
+```
+mutation writeHuman {
+  createHuman(newHuman: { fullName: "Frank Walker", email: "fwalker@gmail.com" }) {
+    id
+    fullName
+    email
+  }
+}
+
+# Use ID in mutation response to get the human
+query queryHuman {
+  human (id: "7e4f0ec4-eb4a-4fd2-a6e0-5c67ec89056e") {
+    id
+    fullName
+    email
+  }
+}
+
+```
+
 ## Features
 1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅
@@ -25,9 +46,11 @@ Open `http://localhost:9000/graphiql`
 1. Network based requests ✅
 
 **GraphQL Feature**
+- Create ✅ 
+- Get ✅
 - List
 - Update
-- Get
+- GetVersion
 - Delete
 
 **DB Features**
@@ -57,9 +80,13 @@ Open `http://localhost:9000/graphiql`
 - Investigate ~6k TX stall from AB
 
 **Design Improvements**
+- Clippy ✅
+- CI/CD Pipeline ✅
+- CLI
+    - List version
+    - Specify port to bind
+    - Specify IP to bind
 - Turn index into a class
-- Clippy
-- CI/CD Pipeline
 - Tests
 
 **Current Performance**
