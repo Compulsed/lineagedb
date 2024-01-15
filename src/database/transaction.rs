@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 
-use crate::consts::consts::TRANSACTION_LOG_LOCATION;
+use crate::consts::consts::{TransactionId, TRANSACTION_LOG_LOCATION};
 use crate::model::action::Action;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -13,7 +13,7 @@ pub enum TransactionStatus {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Transaction {
-    id: usize,
+    id: TransactionId,
     action: Action,
     status: TransactionStatus,
 }
@@ -40,11 +40,11 @@ impl TransactionLog {
         }
     }
 
-    pub fn get_current_transaction_id(&self) -> usize {
+    pub fn get_current_transaction_id(&self) -> TransactionId {
         self.transactions.len()
     }
 
-    pub fn add_applying(&mut self, action: Action) -> usize {
+    pub fn add_applying(&mut self, action: Action) -> TransactionId {
         let new_transaction_id = self.get_current_transaction_id() + 1;
 
         self.transactions.push(Transaction {

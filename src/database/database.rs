@@ -56,7 +56,9 @@ impl Database {
 
             let _ = match action_response {
                 Ok(action_response) => response_sender.send(action_response),
-                Err(err) => response_sender.send(ActionResult::Status(format!("ERROR: {}", err))),
+                Err(err) => {
+                    response_sender.send(ActionResult::ErrorStatus(format!("ERROR: {}", err)))
+                }
             };
         }
     }

@@ -43,7 +43,7 @@ impl Server {
                                 println!("Request: {}", request);
 
                                 let action = match request {
-                                    "l" => Some(Action::List(10000000)),
+                                    "l" => Some(Action::List),
                                     "a" => Some(Action::Add(Person {
                                         id: "test".to_string(),
                                         full_name: format!("[Count 0] Dale Salter"),

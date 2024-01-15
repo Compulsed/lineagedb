@@ -1,8 +1,9 @@
-use juniper::{EmptySubscription, FieldResult, RootNode};
+use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, RootNode};
 use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    consts::consts::EntityId,
     database::request_manager::RequestManager,
     model::{
         action::{Action, ActionResult},
@@ -28,16 +29,12 @@ struct Human {
 }
 
 impl Human {
-    pub fn from_person(person: Option<Person>) -> Option<Human> {
-        if let Some(person) = person {
-            return Some(Human {
-                id: person.id,
-                full_name: person.full_name,
-                email: person.email,
-            });
+    pub fn from_person(person: Person) -> Human {
+        Human {
+            id: person.id,
+            full_name: person.full_name,
+            email: person.email,
         }
-
-        return None;
     }
 }
 
@@ -62,21 +59,32 @@ pub struct QueryRoot;
 
 #[juniper::graphql_object(context = GraphQLContext)]
 impl QueryRoot {
-    fn human(id: String, context: &'db GraphQLContext) -> FieldResult<Option<Human>> {
-        let get_transaction = Action::Get(id);
-
+    fn human(id: EntityId, context: &'db GraphQLContext) -> FieldResult<Option<Human>> {
         let data = context.request_manager.lock().unwrap();
 
         let db_response = data
-            .send_request(get_transaction)
+            .send_request(Action::Get(id))
             .expect("Should not timeout");
 
-        // TODO: Convert to a from trait
-        if let ActionResult::Single(h) = db_response {
-            return Ok(Human::from_person(h));
+        if let Some(person) = db_response.get_single() {
+            return Ok(Some(Human::from_person(person)));
         }
 
-        panic!("Error")
+        return Ok(None);
+    }
+
+    fn list_human(context: &'db GraphQLContext) -> FieldResult<Vec<Human>> {
+        let data = context.request_manager.lock().unwrap();
+
+        let db_response = data.send_request(Action::List).expect("Should not timeout");
+
+        let humans = db_response
+            .list()
+            .into_iter()
+            .map(|p| Human::from_person(p))
+            .collect();
+
+        return Ok(humans);
     }
 }
 
@@ -85,11 +93,11 @@ pub struct MutationRoot;
 #[juniper::graphql_object(context = GraphQLContext)]
 impl MutationRoot {
     fn create_human(new_human: NewHuman, context: &'db GraphQLContext) -> FieldResult<Human> {
+        let data = context.request_manager.lock().unwrap();
+
         let person = new_human.to_person();
 
         let add_transaction = Action::Add(person.clone());
-
-        let data = context.request_manager.lock().unwrap();
 
         let db_response = data
             .send_request(add_transaction)
@@ -97,12 +105,14 @@ impl MutationRoot {
 
         println!("{:?}", db_response);
 
-        // TODO: This mapping feels janky, should be done on the class itself
-        Ok(Human {
-            id: person.id,
-            full_name: person.full_name,
-            email: person.email,
-        })
+        if let ActionResult::ErrorStatus(s) = db_response {
+            return Err(FieldError::new(
+                s.clone(),
+                graphql_value!({ "client_error": s }),
+            ));
+        }
+
+        Ok(Human::from_person(db_response.single()))
     }
 }
 

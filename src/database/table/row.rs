@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    consts::consts::{ErrorString, START_AT_INDEX},
+    consts::consts::{ErrorString, TransactionId, VersionId, START_AT_INDEX},
     model::person::Person,
 };
 
 #[derive(Debug)]
 pub struct ApplyUpdateResult {
     pub previous: Person,
+    pub current: Person,
 }
 
 #[derive(Debug)]
@@ -34,11 +35,11 @@ pub enum PersonVersionState {
     Delete,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PersonVersion {
     pub state: PersonVersionState,
-    pub version: usize,
-    pub transaction_id: usize,
+    pub version: VersionId,
+    pub transaction_id: TransactionId,
 }
 
 impl PersonVersion {
@@ -57,7 +58,7 @@ pub struct PersonRow {
 }
 
 impl PersonRow {
-    pub fn new(person: Person, transaction_id: usize) -> Self {
+    pub fn new(person: Person, transaction_id: TransactionId) -> Self {
         PersonRow {
             versions: vec![PersonVersion {
                 state: PersonVersionState::State(person),
@@ -68,7 +69,11 @@ impl PersonRow {
     }
 
     /// Handles the case of adding an item back after it was deleted
-    pub fn apply_add(&mut self, person: Person, transaction_id: usize) -> Result<(), ErrorString> {
+    pub fn apply_add(
+        &mut self,
+        person: Person,
+        transaction_id: TransactionId,
+    ) -> Result<(), ErrorString> {
         let current_version = self.current_version();
 
         // Verify
@@ -89,7 +94,7 @@ impl PersonRow {
     pub fn apply_update(
         &mut self,
         update: UpdatePersonData,
-        transaction_id: usize,
+        transaction_id: TransactionId,
     ) -> Result<ApplyUpdateResult, ErrorString> {
         let previous_version = self.current_version();
 
@@ -120,18 +125,19 @@ impl PersonRow {
         // Apply
         self.apply_new_version(
             &previous_version,
-            PersonVersionState::State(current_person),
+            PersonVersionState::State(current_person.clone()),
             transaction_id,
         );
 
         Ok(ApplyUpdateResult {
             previous: previous_person,
+            current: current_person,
         })
     }
 
     pub fn apply_delete(
         &mut self,
-        transaction_id: usize,
+        transaction_id: TransactionId,
     ) -> Result<ApplyDeleteResult, ErrorString> {
         let current_version = self.current_version();
 
@@ -155,7 +161,7 @@ impl PersonRow {
         &mut self,
         current_version: &PersonVersion,
         new_state: PersonVersionState,
-        transaction_id: usize,
+        transaction_id: TransactionId,
     ) {
         self.versions.push(PersonVersion {
             state: new_state,
@@ -175,14 +181,14 @@ impl PersonRow {
         self.current_version().get_person()
     }
 
-    pub fn at_version(&self, version_id: usize) -> Option<Person> {
+    pub fn at_version(&self, version_id: VersionId) -> Option<Person> {
         match self.versions.get(version_id) {
             Some(version) => version.get_person(),
             None => None,
         }
     }
 
-    pub fn at_transaction_id(&self, transaction_id: usize) -> Option<Person> {
+    pub fn at_transaction_id(&self, transaction_id: VersionId) -> Option<Person> {
         // Can optimize this with a binary search
         for version in self.versions.iter().rev() {
             // May contain newer uncommited versions, we want to find the closest committed version
@@ -194,7 +200,10 @@ impl PersonRow {
         None
     }
 
-    pub fn version_at_transaction_id(&self, transaction_id: usize) -> Option<PersonVersion> {
+    pub fn version_at_transaction_id(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Option<PersonVersion> {
         // Can optimize this with a binary search
         for version in self.versions.iter().rev() {
             // May contain newer uncommited versions, we want to find the closest committed version

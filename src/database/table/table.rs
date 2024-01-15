@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    consts::consts::ErrorString,
+    consts::consts::{ErrorString, TransactionId},
     model::{
         action::{Action, ActionResult},
         person::Person,
@@ -32,7 +32,7 @@ impl PersonTable {
     pub fn apply(
         &mut self,
         action: Action,
-        transaction_id: usize,
+        transaction_id: TransactionId,
     ) -> Result<ActionResult, ErrorString> {
         let action_result = match action {
             Action::Add(person) => {
@@ -62,11 +62,12 @@ impl PersonTable {
                 }
 
                 // Persist the email so it cannot be added again
-                if let Some(email) = person.email {
-                    self.unique_email_index.insert(email, person.id);
+                if let Some(email) = &person.email {
+                    self.unique_email_index
+                        .insert(email.clone(), person.id.clone());
                 }
 
-                ActionResult::Status("Successfully added person".to_string())
+                ActionResult::Single(person)
             }
             Action::Update(id, update_person) => {
                 let person_update_to_persist = update_person.clone();
@@ -85,8 +86,8 @@ impl PersonTable {
                     }
                 }
 
-                let ApplyUpdateResult { previous } =
-                    person_row.apply_update(person_update_to_persist, transaction_id)?;
+                let ApplyUpdateResult { current, previous } =
+                    person_row.apply_update(person_update_to_persist.clone(), transaction_id)?;
 
                 // Persist / remove email from index
                 match (&update_person.email, &previous.email) {
@@ -99,7 +100,7 @@ impl PersonTable {
                     _ => {}
                 }
 
-                ActionResult::Status("Successfully updated person".to_string())
+                ActionResult::Single(current)
             }
             Action::Remove(id) => {
                 let person_row = self.person_rows.get_mut(&id).ok_or(format!(
@@ -109,11 +110,11 @@ impl PersonTable {
 
                 let ApplyDeleteResult { previous } = person_row.apply_delete(transaction_id)?;
 
-                if let Some(email) = previous.email {
-                    self.unique_email_index.remove(&email);
+                if let Some(email) = &previous.email {
+                    self.unique_email_index.remove(email);
                 }
 
-                ActionResult::Status("Successfully removed person".to_string())
+                ActionResult::Single(previous)
             }
             Action::Get(id) => {
                 let person = match &self.person_rows.get(&id) {
@@ -121,7 +122,7 @@ impl PersonTable {
                     None => return Err(format!("No record at [id: {}]", id)),
                 };
 
-                ActionResult::Single(person)
+                ActionResult::GetSingle(person)
             }
             Action::GetVersion(id, version) => {
                 let person = match &self.person_rows.get(&id) {
@@ -129,9 +130,9 @@ impl PersonTable {
                     None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
                 };
 
-                ActionResult::Single(person)
+                ActionResult::GetSingle(person)
             }
-            Action::List(transaction_id) => {
+            Action::List => {
                 let people_at_transaction_id: Vec<Person> = self
                     .person_rows
                     .iter()
@@ -142,7 +143,7 @@ impl PersonTable {
 
                 ActionResult::List(people_at_transaction_id)
             }
-            Action::ListLatestVersions(transaction_id) => {
+            Action::ListLatestVersions => {
                 let people_at_transaction_id: Vec<PersonVersion> = self
                     .person_rows
                     .iter()
