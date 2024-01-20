@@ -71,13 +71,18 @@ query queryHuman {
 
 **Performance**
 - Create a tx/s metrics
+- Is there a way to improve the performance of transaction writes?
+  - i.e. we set the transaction log file to be larger than what we need
+- Is there a way to monitor rust performance? Like where are we spending the most time
 - Read at a transaction id whilst there is a writer — may require thread safe data structures
 - Move away from a single thread per request (could implement a thread pool w/ channels?)
-- Reduce the amount of clones
+- Reduce the amount of rust clones
 - State backups
     - Maybe trim the transaction log
-    - Perform a state backup every N number of TXs
-- Investigate ~6k TX stall from AB
+    - Perform a state backup every N number of TXs (called a 'backup copy') -- (DI P12). 
+      - This is usually async / buffered. I suspect the async part is the state backup and not TX log as the log has to be written
+        to consider the transaction as 'committed'.
+- Investigate ~6k TX stall from load testing (was using AB, and running on a Mac)
 
 **Design Improvements**
 - Clippy ✅
@@ -88,6 +93,7 @@ query queryHuman {
     - Specify IP to bind
 - Turn index into a class
 - Tests
+- Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
 
 **Current Performance**
 - ~1-2ms for a create call
