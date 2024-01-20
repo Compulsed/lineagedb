@@ -42,6 +42,7 @@ impl Database {
             now.elapsed().as_millis(),
             self.transaction_log
                 .get_current_transaction_id()
+                .to_number()
                 .to_formatted_string(&Locale::en)
         );
 

@@ -48,7 +48,7 @@ query queryHuman {
 **GraphQL Feature**
 - Create ✅ 
 - Get ✅
-- List
+- List ✅
 - Update
 - GetVersion
 - Delete
@@ -83,7 +83,7 @@ query queryHuman {
 - Clippy ✅
 - CI/CD Pipeline ✅
 - CLI
-    - List version
+    - List database version
     - Specify port to bind
     - Specify IP to bind
 - Turn index into a class

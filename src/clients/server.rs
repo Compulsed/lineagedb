@@ -5,6 +5,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
+use crate::consts::consts::EntityId;
 use crate::database::request_manager::{DatabaseRequest, RequestManager};
 use crate::database::table::row::{UpdateAction, UpdatePersonData};
 use crate::model::action::Action;
@@ -45,12 +46,12 @@ impl Server {
                                 let action = match request {
                                     "l" => Some(Action::List),
                                     "a" => Some(Action::Add(Person {
-                                        id: "test".to_string(),
+                                        id: EntityId("test".to_string()),
                                         full_name: format!("[Count 0] Dale Salter"),
                                         email: Some(format!("dalejsalter-{}@outlook.com", "test")),
                                     })),
                                     "u" => Some(Action::Update(
-                                        "test".to_string(),
+                                        EntityId("test".to_string()),
                                         UpdatePersonData {
                                             full_name: UpdateAction::Set(format!(
                                                 "[Count TEST] Dale Salter"
@@ -58,7 +59,7 @@ impl Server {
                                             email: UpdateAction::NoChanges,
                                         },
                                     )),
-                                    "d" => Some(Action::Remove("test".to_string())),
+                                    "d" => Some(Action::Remove(EntityId("test".to_string()))),
                                     _ => None,
                                 };
 

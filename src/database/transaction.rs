@@ -41,14 +41,14 @@ impl TransactionLog {
     }
 
     pub fn get_current_transaction_id(&self) -> TransactionId {
-        self.transactions.len()
+        TransactionId(self.transactions.len())
     }
 
     pub fn add_applying(&mut self, action: Action) -> TransactionId {
-        let new_transaction_id = self.get_current_transaction_id() + 1;
+        let new_transaction_id = self.get_current_transaction_id().increment();
 
         self.transactions.push(Transaction {
-            id: new_transaction_id,
+            id: new_transaction_id.clone(),
             action: action,
             status: TransactionStatus::Applying,
         });

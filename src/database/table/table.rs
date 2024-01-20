@@ -51,20 +51,22 @@ impl PersonTable {
 
                 // We need to handle the case where someone can add an item back after it has been deleted
                 //  if it has been deleted there will already be a row
-                match self.person_rows.get_mut(&id) {
+                match self.person_rows.get_mut(&id.to_string()) {
                     Some(existing_person_row) => {
                         existing_person_row.apply_add(person_to_persist, transaction_id)?;
                     }
                     None => {
-                        self.person_rows
-                            .insert(id, PersonRow::new(person_to_persist, transaction_id));
+                        self.person_rows.insert(
+                            id.to_string(),
+                            PersonRow::new(person_to_persist, transaction_id),
+                        );
                     }
                 }
 
                 // Persist the email so it cannot be added again
                 if let Some(email) = &person.email {
                     self.unique_email_index
-                        .insert(email.clone(), person.id.clone());
+                        .insert(email.clone(), person.id.to_string());
                 }
 
                 ActionResult::Single(person)
@@ -72,10 +74,10 @@ impl PersonTable {
             Action::Update(id, update_person) => {
                 let person_update_to_persist = update_person.clone();
 
-                let person_row = self
-                    .person_rows
-                    .get_mut(&id)
-                    .ok_or(format!("Cannot update record [id: {}], does not exist", id))?;
+                let person_row = self.person_rows.get_mut(&id.to_string()).ok_or(format!(
+                    "Cannot update record [id: {}], does not exist",
+                    id.to_string()
+                ))?;
 
                 if let UpdateAction::Set(email_to_update) = &update_person.email {
                     if self.unique_email_index.contains_key(email_to_update) {
@@ -92,7 +94,8 @@ impl PersonTable {
                 // Persist / remove email from index
                 match (&update_person.email, &previous.email) {
                     (UpdateAction::Set(email), _) => {
-                        self.unique_email_index.insert(email.clone(), id);
+                        self.unique_email_index
+                            .insert(email.clone(), id.to_string());
                     }
                     (UpdateAction::Unset, Some(email)) => {
                         self.unique_email_index.remove(email);
@@ -103,9 +106,9 @@ impl PersonTable {
                 ActionResult::Single(current)
             }
             Action::Remove(id) => {
-                let person_row = self.person_rows.get_mut(&id).ok_or(format!(
+                let person_row = self.person_rows.get_mut(&id.to_string()).ok_or(format!(
                     "Cannot delete a record [id: {}], does not exist",
-                    id
+                    id.to_string()
                 ))?;
 
                 let ApplyDeleteResult { previous } = person_row.apply_delete(transaction_id)?;
@@ -117,17 +120,23 @@ impl PersonTable {
                 ActionResult::Single(previous)
             }
             Action::Get(id) => {
-                let person = match &self.person_rows.get(&id) {
+                let person = match &self.person_rows.get(&id.to_string()) {
                     Some(person_data) => person_data.current_state(),
-                    None => return Err(format!("No record at [id: {}]", id)),
+                    None => return Err(format!("No record at [id: {}]", id.to_string())),
                 };
 
                 ActionResult::GetSingle(person)
             }
             Action::GetVersion(id, version) => {
-                let person = match &self.person_rows.get(&id) {
+                let person = match &self.person_rows.get(&id.to_string()) {
                     Some(person_data) => person_data.at_version(version),
-                    None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
+                    None => {
+                        return Err(format!(
+                            "No record at [id: {}, version: {}]",
+                            id.to_string(),
+                            version.to_number()
+                        ))
+                    }
                 };
 
                 ActionResult::GetSingle(person)
@@ -137,7 +146,7 @@ impl PersonTable {
                     .person_rows
                     .iter()
                     .filter_map(|(_, value)| {
-                        return value.at_transaction_id(transaction_id);
+                        return value.at_transaction_id(&transaction_id);
                     })
                     .collect();
 
@@ -148,7 +157,7 @@ impl PersonTable {
                     .person_rows
                     .iter()
                     .filter_map(|(_, value)| {
-                        return value.version_at_transaction_id(transaction_id);
+                        return value.version_at_transaction_id(&transaction_id);
                     })
                     .collect();
 

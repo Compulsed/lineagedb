@@ -2,6 +2,7 @@ use core::time;
 use std::{sync::mpsc::Sender, thread};
 
 use crate::{
+    consts::consts::EntityId,
     database::{
         request_manager::{DatabaseRequest, RequestManager},
         table::row::{UpdateAction, UpdatePersonData},
@@ -17,7 +18,7 @@ pub fn spawn_workers(threads: i32, database_sender: Sender<DatabaseRequest>) {
             let record_id = format!("[Thread {}]", thread_id.to_string());
 
             let add_transaction = Action::Add(Person {
-                id: record_id.clone(),
+                id: EntityId(record_id.clone()),
                 full_name: format!("[Count 0] Dale Salter"),
                 email: Some(format!("dalejsalter-{}@outlook.com", thread_id)),
             });
@@ -35,7 +36,7 @@ pub fn spawn_workers(threads: i32, database_sender: Sender<DatabaseRequest>) {
 
                 // UPDATE
                 let update_transaction = Action::Update(
-                    record_id.clone(),
+                    EntityId(record_id.clone()),
                     UpdatePersonData {
                         full_name: UpdateAction::Set(format!("[Count {}] Dale Salter", counter)),
                         email: UpdateAction::NoChanges,
@@ -49,7 +50,7 @@ pub fn spawn_workers(threads: i32, database_sender: Sender<DatabaseRequest>) {
                 println!("{:#?}", update_response);
 
                 // GET
-                let get_action = Action::Get(record_id.clone());
+                let get_action = Action::Get(EntityId(record_id.clone()));
 
                 let get_response = request_manager
                     .send_request(get_action)

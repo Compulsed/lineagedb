@@ -165,7 +165,7 @@ impl PersonRow {
     ) {
         self.versions.push(PersonVersion {
             state: new_state,
-            version: current_version.version + 1,
+            version: current_version.version.increment(),
             transaction_id,
         });
     }
@@ -182,17 +182,17 @@ impl PersonRow {
     }
 
     pub fn at_version(&self, version_id: VersionId) -> Option<Person> {
-        match self.versions.get(version_id) {
+        match self.versions.get(version_id.to_number()) {
             Some(version) => version.get_person(),
             None => None,
         }
     }
 
-    pub fn at_transaction_id(&self, transaction_id: VersionId) -> Option<Person> {
+    pub fn at_transaction_id(&self, transaction_id: &TransactionId) -> Option<Person> {
         // Can optimize this with a binary search
         for version in self.versions.iter().rev() {
             // May contain newer uncommited versions, we want to find the closest committed version
-            if version.transaction_id <= transaction_id {
+            if &version.transaction_id <= transaction_id {
                 return version.get_person();
             }
         }
@@ -202,12 +202,12 @@ impl PersonRow {
 
     pub fn version_at_transaction_id(
         &self,
-        transaction_id: TransactionId,
+        transaction_id: &TransactionId,
     ) -> Option<PersonVersion> {
         // Can optimize this with a binary search
         for version in self.versions.iter().rev() {
             // May contain newer uncommited versions, we want to find the closest committed version
-            if version.transaction_id <= transaction_id {
+            if &version.transaction_id <= transaction_id {
                 return Some(version.clone());
             }
         }
