@@ -72,8 +72,6 @@ impl PersonTable {
                 ActionResult::Single(person)
             }
             Action::Update(id, update_person) => {
-                let person_update_to_persist = update_person.clone();
-
                 let person_row = self.person_rows.get_mut(&id.to_string()).ok_or(format!(
                     "Cannot update record [id: {}], does not exist",
                     id.to_string()
@@ -87,6 +85,8 @@ impl PersonTable {
                         ));
                     }
                 }
+
+                let person_update_to_persist = update_person.clone();
 
                 let ApplyUpdateResult { current, previous } =
                     person_row.apply_update(person_update_to_persist.clone(), transaction_id)?;
