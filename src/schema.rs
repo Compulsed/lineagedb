@@ -157,6 +157,7 @@ impl MutationRoot {
             .send_request(update_transaction)
             .expect("Should not timeout");
 
+        // TODO: Centralize error handling responses
         match db_response {
             ActionResult::Single(p) => Ok(Human::from_person(p)),
             ActionResult::ErrorStatus(s) => Err(FieldError::new(
