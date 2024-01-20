@@ -42,6 +42,7 @@ pub enum ActionResult {
 }
 
 impl ActionResult {
+    #[allow(dead_code)]
     pub fn error_status(self) -> String {
         if let ActionResult::ErrorStatus(s) = self {
             s
@@ -74,6 +75,7 @@ impl ActionResult {
         }
     }
 
+    #[allow(dead_code)]
     pub fn list_version(self) -> Vec<PersonVersion> {
         if let ActionResult::ListVersion(p) = self {
             p

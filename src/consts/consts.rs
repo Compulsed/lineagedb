@@ -9,7 +9,7 @@ pub struct TransactionId(pub usize);
 
 impl TransactionId {
     pub fn to_number(self) -> usize {
-        return self.0;
+        self.0
     }
 
     pub fn increment(&self) -> TransactionId {

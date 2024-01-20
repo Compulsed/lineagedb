@@ -50,11 +50,11 @@ struct NewHuman {
 
 impl NewHuman {
     pub fn to_person(self) -> Person {
-        return Person {
+        Person {
             id: EntityId(Uuid::new_v4().to_string()),
             full_name: self.full_name,
             email: self.email,
-        };
+        }
     }
 }
 
@@ -80,7 +80,7 @@ impl QueryRoot {
             return Ok(Some(Human::from_person(person)));
         }
 
-        return Ok(None);
+        Ok(None)
     }
 
     fn list_human(context: &'db GraphQLContext) -> FieldResult<Vec<Human>> {
@@ -93,10 +93,10 @@ impl QueryRoot {
         let humans = db_response
             .list()
             .into_iter()
-            .map(|p| Human::from_person(p))
+            .map(Human::from_person)
             .collect();
 
-        return Ok(humans);
+        Ok(humans)
     }
 }
 
@@ -109,7 +109,7 @@ impl MutationRoot {
 
         let person = new_human.to_person();
 
-        let add_transaction = Action::Add(person.clone());
+        let add_transaction = Action::Add(person);
 
         let db_response = database
             .send_request(add_transaction)
@@ -159,12 +159,10 @@ impl MutationRoot {
 
         match db_response {
             ActionResult::Single(p) => Ok(Human::from_person(p)),
-            ActionResult::ErrorStatus(s) => {
-                return Err(FieldError::new(
-                    s.clone(),
-                    graphql_value!({ "BadRequest": s }),
-                ))
-            }
+            ActionResult::ErrorStatus(s) => Err(FieldError::new(
+                s.clone(),
+                graphql_value!({ "BadRequest": s }),
+            )),
             _ => Err(FieldError::new(
                 "Unexpected response from database".to_string(),
                 graphql_value!({ "InternalError": "Unexpected response from database" }),

@@ -89,7 +89,7 @@ impl PersonTable {
                 let person_update_to_persist = update_person.clone();
 
                 let ApplyUpdateResult { current, previous } =
-                    person_row.apply_update(person_update_to_persist.clone(), transaction_id)?;
+                    person_row.apply_update(person_update_to_persist, transaction_id)?;
 
                 // Persist / remove email from index
                 match (&update_person.email, &previous.email) {
@@ -145,9 +145,7 @@ impl PersonTable {
                 let people_at_transaction_id: Vec<Person> = self
                     .person_rows
                     .iter()
-                    .filter_map(|(_, value)| {
-                        return value.at_transaction_id(&transaction_id);
-                    })
+                    .filter_map(|(_, value)| value.at_transaction_id(&transaction_id))
                     .collect();
 
                 ActionResult::List(people_at_transaction_id)
@@ -156,15 +154,13 @@ impl PersonTable {
                 let people_at_transaction_id: Vec<PersonVersion> = self
                     .person_rows
                     .iter()
-                    .filter_map(|(_, value)| {
-                        return value.version_at_transaction_id(&transaction_id);
-                    })
+                    .filter_map(|(_, value)| value.version_at_transaction_id(&transaction_id))
                     .collect();
 
                 ActionResult::ListVersion(people_at_transaction_id)
             }
         };
 
-        return Ok(action_result);
+        Ok(action_result)
     }
 }

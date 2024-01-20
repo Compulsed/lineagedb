@@ -49,7 +49,7 @@ impl TransactionLog {
 
         self.transactions.push(Transaction {
             id: new_transaction_id.clone(),
-            action: action,
+            action,
             status: TransactionStatus::Applying,
         });
 
@@ -91,7 +91,7 @@ impl TransactionLog {
 
         let mut actions: Vec<Action> = vec![];
 
-        for transaction_string in contents.split("\n") {
+        for transaction_string in contents.split('\n') {
             if transaction_string.is_empty() {
                 continue;
             }

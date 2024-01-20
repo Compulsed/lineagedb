@@ -10,6 +10,7 @@ use crate::{
     model::{action::Action, person::Person},
 };
 
+#[allow(dead_code)]
 pub fn spawn_workers(threads: i32, database_sender: Sender<DatabaseRequest>) {
     for thread_id in 0..threads {
         let request_manager = RequestManager::new(database_sender.clone());
@@ -32,7 +33,7 @@ pub fn spawn_workers(threads: i32, database_sender: Sender<DatabaseRequest>) {
             let mut counter = 0;
 
             loop {
-                counter = counter + 1;
+                counter += 1;
 
                 // UPDATE
                 let update_transaction = Action::Update(

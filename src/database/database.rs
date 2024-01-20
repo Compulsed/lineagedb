@@ -86,6 +86,6 @@ impl Database {
             }
         }
 
-        return action_result;
+        action_result
     }
 }
