@@ -49,7 +49,7 @@ query queryHuman {
 - Create ✅ 
 - Get ✅
 - List ✅
-- Update
+- Update ✅
 - GetVersion
 - Delete
 

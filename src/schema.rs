@@ -143,7 +143,7 @@ impl MutationRoot {
         let email_update = match update_human.email {
             Nullable::ImplicitNull => UpdateAction::NoChanges,
             Nullable::ExplicitNull => UpdateAction::Unset,
-            Nullable::Some(T) => UpdateAction::Set(T),
+            Nullable::Some(t) => UpdateAction::Set(t),
         };
 
         let update_person_date = UpdatePersonData {
