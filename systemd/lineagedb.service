@@ -1,0 +1,13 @@
+[Unit]
+Description=Linage DB
+After=network.target
+
+[Service]
+ExecStart=/home/dale/Desktop/lineage/lineagedb
+WorkingDirectory=/home/dale/Desktop/lineage/
+Type=simple
+Restart=always
+
+[Install]
+WantedBy=default.target
+RequiredBy=network.target

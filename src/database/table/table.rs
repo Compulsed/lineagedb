@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    consts::consts::ErrorString,
+    consts::consts::{ErrorString, TransactionId},
     model::{
         action::{Action, ActionResult},
         person::Person,
@@ -32,7 +32,7 @@ impl PersonTable {
     pub fn apply(
         &mut self,
         action: Action,
-        transaction_id: usize,
+        transaction_id: TransactionId,
     ) -> Result<ActionResult, ErrorString> {
         let action_result = match action {
             Action::Add(person) => {
@@ -51,30 +51,31 @@ impl PersonTable {
 
                 // We need to handle the case where someone can add an item back after it has been deleted
                 //  if it has been deleted there will already be a row
-                match self.person_rows.get_mut(&id) {
+                match self.person_rows.get_mut(&id.to_string()) {
                     Some(existing_person_row) => {
                         existing_person_row.apply_add(person_to_persist, transaction_id)?;
                     }
                     None => {
-                        self.person_rows
-                            .insert(id, PersonRow::new(person_to_persist, transaction_id));
+                        self.person_rows.insert(
+                            id.to_string(),
+                            PersonRow::new(person_to_persist, transaction_id),
+                        );
                     }
                 }
 
                 // Persist the email so it cannot be added again
-                if let Some(email) = person.email {
-                    self.unique_email_index.insert(email, person.id);
+                if let Some(email) = &person.email {
+                    self.unique_email_index
+                        .insert(email.clone(), person.id.to_string());
                 }
 
-                ActionResult::Status("Successfully added person".to_string())
+                ActionResult::Single(person)
             }
             Action::Update(id, update_person) => {
-                let person_update_to_persist = update_person.clone();
-
-                let person_row = self
-                    .person_rows
-                    .get_mut(&id)
-                    .ok_or(format!("Cannot update record [id: {}], does not exist", id))?;
+                let person_row = self.person_rows.get_mut(&id.to_string()).ok_or(format!(
+                    "Cannot update record [id: {}], does not exist",
+                    id.to_string()
+                ))?;
 
                 if let UpdateAction::Set(email_to_update) = &update_person.email {
                     if self.unique_email_index.contains_key(email_to_update) {
@@ -85,13 +86,16 @@ impl PersonTable {
                     }
                 }
 
-                let ApplyUpdateResult { previous } =
+                let person_update_to_persist = update_person.clone();
+
+                let ApplyUpdateResult { current, previous } =
                     person_row.apply_update(person_update_to_persist, transaction_id)?;
 
                 // Persist / remove email from index
                 match (&update_person.email, &previous.email) {
                     (UpdateAction::Set(email), _) => {
-                        self.unique_email_index.insert(email.clone(), id);
+                        self.unique_email_index
+                            .insert(email.clone(), id.to_string());
                     }
                     (UpdateAction::Unset, Some(email)) => {
                         self.unique_email_index.remove(email);
@@ -99,62 +103,64 @@ impl PersonTable {
                     _ => {}
                 }
 
-                ActionResult::Status("Successfully updated person".to_string())
+                ActionResult::Single(current)
             }
             Action::Remove(id) => {
-                let person_row = self.person_rows.get_mut(&id).ok_or(format!(
+                let person_row = self.person_rows.get_mut(&id.to_string()).ok_or(format!(
                     "Cannot delete a record [id: {}], does not exist",
-                    id
+                    id.to_string()
                 ))?;
 
                 let ApplyDeleteResult { previous } = person_row.apply_delete(transaction_id)?;
 
-                if let Some(email) = previous.email {
-                    self.unique_email_index.remove(&email);
+                if let Some(email) = &previous.email {
+                    self.unique_email_index.remove(email);
                 }
 
-                ActionResult::Status("Successfully removed person".to_string())
+                ActionResult::Single(previous)
             }
             Action::Get(id) => {
-                let person = match &self.person_rows.get(&id) {
+                let person = match &self.person_rows.get(&id.to_string()) {
                     Some(person_data) => person_data.current_state(),
-                    None => return Err(format!("No record at [id: {}]", id)),
+                    None => return Err(format!("No record at [id: {}]", id.to_string())),
                 };
 
-                ActionResult::Single(person)
+                ActionResult::GetSingle(person)
             }
             Action::GetVersion(id, version) => {
-                let person = match &self.person_rows.get(&id) {
+                let person = match &self.person_rows.get(&id.to_string()) {
                     Some(person_data) => person_data.at_version(version),
-                    None => return Err(format!("No record at [id: {}, version: {}]", id, version)),
+                    None => {
+                        return Err(format!(
+                            "No record at [id: {}, version: {}]",
+                            id.to_string(),
+                            version.to_number()
+                        ))
+                    }
                 };
 
-                ActionResult::Single(person)
+                ActionResult::GetSingle(person)
             }
-            Action::List(transaction_id) => {
+            Action::List => {
                 let people_at_transaction_id: Vec<Person> = self
                     .person_rows
                     .iter()
-                    .filter_map(|(_, value)| {
-                        return value.at_transaction_id(transaction_id);
-                    })
+                    .filter_map(|(_, value)| value.at_transaction_id(&transaction_id))
                     .collect();
 
                 ActionResult::List(people_at_transaction_id)
             }
-            Action::ListLatestVersions(transaction_id) => {
+            Action::ListLatestVersions => {
                 let people_at_transaction_id: Vec<PersonVersion> = self
                     .person_rows
                     .iter()
-                    .filter_map(|(_, value)| {
-                        return value.version_at_transaction_id(transaction_id);
-                    })
+                    .filter_map(|(_, value)| value.version_at_transaction_id(&transaction_id))
                     .collect();
 
                 ActionResult::ListVersion(people_at_transaction_id)
             }
         };
 
-        return Ok(action_result);
+        Ok(action_result)
     }
 }

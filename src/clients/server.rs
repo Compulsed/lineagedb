@@ -1,19 +1,21 @@
+use crate::consts::consts::EntityId;
+use crate::database::request_manager::{DatabaseRequest, RequestManager};
+use crate::database::table::row::{UpdateAction, UpdatePersonData};
+use crate::model::action::Action;
+use crate::model::person::Person;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::str::from_utf8;
 use std::sync::mpsc::Sender;
-use std::thread;
-use std::time::Duration;
+use std::thread; // TCP Stream defines implementation
 
-use crate::database::request_manager::{DatabaseRequest, RequestManager};
-use crate::database::table::row::{UpdateAction, UpdatePersonData};
-use crate::model::action::Action;
-use crate::model::person::Person; // TCP Stream defines implementation
-
+#[allow(dead_code)]
 pub struct Server {
     addr: String,
 }
 
+#[allow(dead_code)]
 impl Server {
     pub fn new(addr: String) -> Self {
         Self { addr }
@@ -43,14 +45,14 @@ impl Server {
                                 println!("Request: {}", request);
 
                                 let action = match request {
-                                    "l" => Some(Action::List(10000000)),
+                                    "l" => Some(Action::List),
                                     "a" => Some(Action::Add(Person {
-                                        id: "test".to_string(),
+                                        id: EntityId("test".to_string()),
                                         full_name: format!("[Count 0] Dale Salter"),
                                         email: Some(format!("dalejsalter-{}@outlook.com", "test")),
                                     })),
                                     "u" => Some(Action::Update(
-                                        "test".to_string(),
+                                        EntityId("test".to_string()),
                                         UpdatePersonData {
                                             full_name: UpdateAction::Set(format!(
                                                 "[Count TEST] Dale Salter"
@@ -58,7 +60,7 @@ impl Server {
                                             email: UpdateAction::NoChanges,
                                         },
                                     )),
-                                    "d" => Some(Action::Remove("test".to_string())),
+                                    "d" => Some(Action::Remove(EntityId("test".to_string()))),
                                     _ => None,
                                 };
 

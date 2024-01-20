@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 
-use crate::consts::consts::TRANSACTION_LOG_LOCATION;
+use crate::consts::consts::{TransactionId, TRANSACTION_LOG_LOCATION};
 use crate::model::action::Action;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -13,7 +13,7 @@ pub enum TransactionStatus {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Transaction {
-    id: usize,
+    id: TransactionId,
     action: Action,
     status: TransactionStatus,
 }
@@ -40,16 +40,16 @@ impl TransactionLog {
         }
     }
 
-    pub fn get_current_transaction_id(&self) -> usize {
-        self.transactions.len()
+    pub fn get_current_transaction_id(&self) -> TransactionId {
+        TransactionId(self.transactions.len())
     }
 
-    pub fn add_applying(&mut self, action: Action) -> usize {
-        let new_transaction_id = self.get_current_transaction_id() + 1;
+    pub fn add_applying(&mut self, action: Action) -> TransactionId {
+        let new_transaction_id = self.get_current_transaction_id().increment();
 
         self.transactions.push(Transaction {
-            id: new_transaction_id,
-            action: action,
+            id: new_transaction_id.clone(),
+            action,
             status: TransactionStatus::Applying,
         });
 
@@ -91,7 +91,7 @@ impl TransactionLog {
 
         let mut actions: Vec<Action> = vec![];
 
-        for transaction_string in contents.split("\n") {
+        for transaction_string in contents.split('\n') {
             if transaction_string.is_empty() {
                 continue;
             }

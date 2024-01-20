@@ -1,5 +1,5 @@
 #!/bin/sh
-ab -p post.txt \
+ab -p payloads/create.json \
     -T application/json \
     -c 1 \
     -n 100000 \

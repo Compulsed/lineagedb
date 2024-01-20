@@ -42,6 +42,7 @@ impl Database {
             now.elapsed().as_millis(),
             self.transaction_log
                 .get_current_transaction_id()
+                .to_number()
                 .to_formatted_string(&Locale::en)
         );
 
@@ -56,7 +57,9 @@ impl Database {
 
             let _ = match action_response {
                 Ok(action_response) => response_sender.send(action_response),
-                Err(err) => response_sender.send(ActionResult::Status(format!("ERROR: {}", err))),
+                Err(err) => {
+                    response_sender.send(ActionResult::ErrorStatus(format!("ERROR: {}", err)))
+                }
             };
         }
     }
@@ -83,6 +86,6 @@ impl Database {
             }
         }
 
-        return action_result;
+        action_result
     }
 }

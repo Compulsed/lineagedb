@@ -10,7 +10,15 @@ Open `http://localhost:9000/graphiql`
 Can use the below mutations to persist / get data
 ```
 mutation writeHuman {
-  createHuman(newHuman: { fullName: "Frank Walker", email: "fwalker@gmail.com" }) {
+  createHuman(newHuman: { fullName: "Frank Walker" }) {
+    id
+    fullName
+    email
+  }
+}
+
+mutation updateHuman {
+  updateHuman(id: "53db1e6f-4b90-4d3d-8871-b24288bf9192", updateHuman: { email: "1233@gmail.com"}) {
     id
     fullName
     email
@@ -19,13 +27,20 @@ mutation writeHuman {
 
 # Use ID in mutation response to get the human
 query queryHuman {
-  human (id: "7e4f0ec4-eb4a-4fd2-a6e0-5c67ec89056e") {
+  human (id: "bf5567e4-1d4e-4451-aeb3-449cdd2970be") {
     id
     fullName
     email
   }
 }
 
+query listHuman {
+  listHuman {
+    id
+    fullName
+    email
+  }
+}
 ```
 
 ## Features
@@ -48,8 +63,8 @@ query queryHuman {
 **GraphQL Feature**
 - Create ✅ 
 - Get ✅
-- List
-- Update
+- List ✅
+- Update ✅
 - GetVersion
 - Delete
 
@@ -88,7 +103,7 @@ query queryHuman {
 - Clippy ✅
 - CI/CD Pipeline ✅
 - CLI
-    - List version
+    - List database version
     - Specify port to bind
     - Specify IP to bind
 - Turn index into a class

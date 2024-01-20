@@ -1,9 +1,13 @@
-use juniper::{EmptySubscription, FieldResult, RootNode};
+use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    database::request_manager::RequestManager,
+    consts::consts::EntityId,
+    database::{
+        request_manager::RequestManager,
+        table::row::{UpdateAction, UpdatePersonData},
+    },
     model::{
         action::{Action, ActionResult},
         person::Person,
@@ -28,16 +32,12 @@ struct Human {
 }
 
 impl Human {
-    pub fn from_person(person: Option<Person>) -> Option<Human> {
-        if let Some(person) = person {
-            return Some(Human {
-                id: person.id,
-                full_name: person.full_name,
-                email: person.email,
-            });
+    pub fn from_person(person: Person) -> Human {
+        Human {
+            id: person.id.to_string(),
+            full_name: person.full_name,
+            email: person.email,
         }
-
-        return None;
     }
 }
 
@@ -50,12 +50,19 @@ struct NewHuman {
 
 impl NewHuman {
     pub fn to_person(self) -> Person {
-        return Person {
-            id: Uuid::new_v4().to_string(),
+        Person {
+            id: EntityId(Uuid::new_v4().to_string()),
             full_name: self.full_name,
             email: self.email,
-        };
+        }
     }
+}
+
+#[derive(GraphQLInputObject)]
+#[graphql(description = "A humanoid creature in the Star Wars universe")]
+pub struct UpdateHumanData {
+    pub full_name: Nullable<String>,
+    pub email: Nullable<String>,
 }
 
 pub struct QueryRoot;
@@ -63,20 +70,33 @@ pub struct QueryRoot;
 #[juniper::graphql_object(context = GraphQLContext)]
 impl QueryRoot {
     fn human(id: String, context: &'db GraphQLContext) -> FieldResult<Option<Human>> {
-        let get_transaction = Action::Get(id);
+        let database = context.request_manager.lock().unwrap();
 
-        let data = context.request_manager.lock().unwrap();
-
-        let db_response = data
-            .send_request(get_transaction)
+        let db_response = database
+            .send_request(Action::Get(EntityId(id)))
             .expect("Should not timeout");
 
-        // TODO: Convert to a from trait
-        if let ActionResult::Single(h) = db_response {
-            return Ok(Human::from_person(h));
+        if let Some(person) = db_response.get_single() {
+            return Ok(Some(Human::from_person(person)));
         }
 
-        panic!("Error")
+        Ok(None)
+    }
+
+    fn list_human(context: &'db GraphQLContext) -> FieldResult<Vec<Human>> {
+        let database = context.request_manager.lock().unwrap();
+
+        let db_response = database
+            .send_request(Action::List)
+            .expect("Should not timeout");
+
+        let humans = db_response
+            .list()
+            .into_iter()
+            .map(Human::from_person)
+            .collect();
+
+        Ok(humans)
     }
 }
 
@@ -85,24 +105,70 @@ pub struct MutationRoot;
 #[juniper::graphql_object(context = GraphQLContext)]
 impl MutationRoot {
     fn create_human(new_human: NewHuman, context: &'db GraphQLContext) -> FieldResult<Human> {
+        let database = context.request_manager.lock().unwrap();
+
         let person = new_human.to_person();
 
-        let add_transaction = Action::Add(person.clone());
+        let add_transaction = Action::Add(person);
 
-        let data = context.request_manager.lock().unwrap();
-
-        let db_response = data
+        let db_response = database
             .send_request(add_transaction)
             .expect("Should not timeout");
 
         println!("{:?}", db_response);
 
-        // TODO: This mapping feels janky, should be done on the class itself
-        Ok(Human {
-            id: person.id,
-            full_name: person.full_name,
-            email: person.email,
-        })
+        if let ActionResult::ErrorStatus(s) = db_response {
+            return Err(FieldError::new(
+                s.clone(),
+                graphql_value!({ "bad_request": s }),
+            ));
+        }
+
+        Ok(Human::from_person(db_response.single()))
+    }
+
+    fn update_human(
+        id: String,
+        update_human: UpdateHumanData,
+        context: &'db GraphQLContext,
+    ) -> FieldResult<Human> {
+        let database = context.request_manager.lock().unwrap();
+
+        let full_name_update = match update_human.full_name {
+            Nullable::ImplicitNull => UpdateAction::NoChanges,
+            Nullable::ExplicitNull => UpdateAction::Unset,
+            Nullable::Some(t) => UpdateAction::Set(t),
+        };
+
+        let email_update = match update_human.email {
+            Nullable::ImplicitNull => UpdateAction::NoChanges,
+            Nullable::ExplicitNull => UpdateAction::Unset,
+            Nullable::Some(t) => UpdateAction::Set(t),
+        };
+
+        let update_person_date = UpdatePersonData {
+            full_name: full_name_update,
+            email: email_update,
+        };
+
+        let update_transaction = Action::Update(EntityId(id), update_person_date);
+
+        let db_response = database
+            .send_request(update_transaction)
+            .expect("Should not timeout");
+
+        // TODO: Centralize error handling responses
+        match db_response {
+            ActionResult::Single(p) => Ok(Human::from_person(p)),
+            ActionResult::ErrorStatus(s) => Err(FieldError::new(
+                s.clone(),
+                graphql_value!({ "BadRequest": s }),
+            )),
+            _ => Err(FieldError::new(
+                "Unexpected response from database".to_string(),
+                graphql_value!({ "InternalError": "Unexpected response from database" }),
+            )),
+        }
     }
 }
 

@@ -1,1 +1,0 @@
-{"query":"mutation Mutation($newHuman: NewHuman!) {\n\tcreateHuman(newHuman: $newHuman) {\n\t\tid\n\t\tname\n\t}\n}\n","operationName":"Mutation","variables":{"newHuman":{"name":"Dale Fighter","appearsIn":["EMPIRE"],"homePlanet":"Earth"}}}
