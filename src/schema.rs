@@ -1,7 +1,4 @@
-use juniper::{
-    graphql_value, EmptySubscription, FieldError, FieldResult, GraphQLScalarValue, Nullable,
-    RootNode,
-};
+use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -11,7 +8,6 @@ use crate::{
         request_manager::RequestManager,
         table::row::{UpdateAction, UpdatePersonData},
     },
-    graphql,
     model::{
         action::{Action, ActionResult},
         person::Person,
@@ -68,33 +64,6 @@ pub struct UpdateHumanData {
     pub full_name: Nullable<String>,
     pub email: Nullable<String>,
 }
-
-// impl UpdateHumanData {
-//     pub fn to_person_update(self) -> UpdatePersonData {
-//         UpdatePersonData {
-//             full_name: self.full_name.to_person_update(),
-//             email: self.email.to_person_update(),
-//         }
-//     }
-// }
-
-// #[derive(GraphQLInputObject)]
-// #[graphql(description = "A humanoid creature in the Star Wars universe")]
-// pub enum UpdateHumanAction {
-//     Set(String),
-//     Unset,
-//     NoChanges,
-// }
-
-// impl UpdateHumanAction {
-//     pub fn to_person_update(self) -> UpdateAction {
-//         match self {
-//             UpdateHumanAction::Set(s) => UpdateAction::Set(s),
-//             UpdateHumanAction::Unset => UpdateAction::Unset,
-//             UpdateHumanAction::NoChanges => UpdateAction::NoChanges,
-//         }
-//     }
-// }
 
 pub struct QueryRoot;
 
@@ -168,7 +137,7 @@ impl MutationRoot {
         let full_name_update = match update_human.full_name {
             Nullable::ImplicitNull => UpdateAction::NoChanges,
             Nullable::ExplicitNull => UpdateAction::Unset,
-            Nullable::Some(T) => UpdateAction::Set(T),
+            Nullable::Some(t) => UpdateAction::Set(t),
         };
 
         let email_update = match update_human.email {
