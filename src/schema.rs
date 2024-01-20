@@ -1,5 +1,6 @@
 use juniper::{
-    graphql_value, EmptySubscription, FieldError, FieldResult, GraphQLScalarValue, RootNode,
+    graphql_value, EmptySubscription, FieldError, FieldResult, GraphQLScalarValue, Nullable,
+    RootNode,
 };
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -61,12 +62,12 @@ impl NewHuman {
     }
 }
 
-// #[derive(GraphQLInputObject)]
-// #[graphql(description = "A humanoid creature in the Star Wars universe")]
-// pub struct UpdateHumanData {
-//     pub full_name: Option<String>,
-//     pub email: Option<String>,
-// }
+#[derive(GraphQLInputObject)]
+#[graphql(description = "A humanoid creature in the Star Wars universe")]
+pub struct UpdateHumanData {
+    pub full_name: Nullable<String>,
+    pub email: Nullable<String>,
+}
 
 // impl UpdateHumanData {
 //     pub fn to_person_update(self) -> UpdatePersonData {
@@ -157,12 +158,49 @@ impl MutationRoot {
         Ok(Human::from_person(db_response.single()))
     }
 
-    fn update_human(id: String, context: &'db GraphQLContext) -> FieldResult<Human> {
-        Ok(Human {
-            id: "Fake Id".to_string(),
-            full_name: "Fake Fullname".to_string(),
-            email: Some("fake@gmail.com".to_string()),
-        })
+    fn update_human(
+        id: String,
+        update_human: UpdateHumanData,
+        context: &'db GraphQLContext,
+    ) -> FieldResult<Human> {
+        let database = context.request_manager.lock().unwrap();
+
+        let full_name_update = match update_human.full_name {
+            Nullable::ImplicitNull => UpdateAction::NoChanges,
+            Nullable::ExplicitNull => UpdateAction::Unset,
+            Nullable::Some(T) => UpdateAction::Set(T),
+        };
+
+        let email_update = match update_human.email {
+            Nullable::ImplicitNull => UpdateAction::NoChanges,
+            Nullable::ExplicitNull => UpdateAction::Unset,
+            Nullable::Some(T) => UpdateAction::Set(T),
+        };
+
+        let update_person_date = UpdatePersonData {
+            full_name: full_name_update,
+            email: email_update,
+        };
+
+        let update_transaction = Action::Update(EntityId(id), update_person_date);
+
+        let db_response = database
+            .send_request(update_transaction)
+            .expect("Should not timeout");
+
+        match db_response {
+            ActionResult::Single(p) => Ok(Human::from_person(p)),
+            ActionResult::ErrorStatus(s) => {
+                return Err(FieldError::new(
+                    s.clone(),
+                    graphql_value!({ "BadRequest": s }),
+                ))
+            }
+            _ => Err(FieldError::new(
+                "Unexpected response from database".to_string(),
+                graphql_value!({ "InternalError": "Unexpected response from database" }),
+            )),
+        }
     }
 }
 
