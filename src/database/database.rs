@@ -11,18 +11,39 @@ use super::{
     request_manager::DatabaseRequest, table::table::PersonTable, transaction::TransactionLog,
 };
 
+pub struct DatabaseOptions {
+    data_directory: String,
+}
+
+impl DatabaseOptions {
+    pub fn set_data_directory(mut self, data_directory: String) -> Self {
+        self.data_directory = data_directory;
+        self
+    }
+}
+
+impl Default for DatabaseOptions {
+    fn default() -> Self {
+        Self {
+            data_directory: String::from("data"),
+        }
+    }
+}
+
 pub struct Database {
     person_table: PersonTable,
     transaction_log: TransactionLog,
     database_receiver: Receiver<DatabaseRequest>,
+    database_options: DatabaseOptions,
 }
 
 impl Database {
-    pub fn new(database_receiver: Receiver<DatabaseRequest>) -> Self {
+    pub fn new(database_receiver: Receiver<DatabaseRequest>, options: DatabaseOptions) -> Self {
         Self {
             person_table: PersonTable::new(),
-            transaction_log: TransactionLog::new(),
+            transaction_log: TransactionLog::new(options.data_directory.clone()),
             database_receiver,
+            database_options: options,
         }
     }
 
@@ -32,7 +53,7 @@ impl Database {
         let now = Instant::now();
 
         // On spin-up restore database from disk
-        for action in TransactionLog::restore() {
+        for action in TransactionLog::restore(self.database_options.data_directory.clone()) {
             self.process_action(action, true)
                 .expect("Should not error when replaying valid transactions");
         }

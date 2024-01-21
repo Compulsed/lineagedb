@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // Types
 pub type ErrorString = String;
@@ -38,8 +39,11 @@ impl EntityId {
     pub fn to_string(&self) -> String {
         self.0.clone()
     }
+
+    pub fn new() -> EntityId {
+        EntityId(Uuid::new_v4().to_string())
+    }
 }
 
 // Values
 pub const START_AT_INDEX: VersionId = VersionId(1);
-pub const TRANSACTION_LOG_LOCATION: &str = "data/transaction_log.json";

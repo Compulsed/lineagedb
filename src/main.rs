@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    database::{database::Database, request_manager::RequestManager},
+    database::{
+        database::{Database, DatabaseOptions},
+        request_manager::RequestManager,
+    },
     schema::GraphQLContext,
 };
 use database::request_manager::DatabaseRequest;
@@ -70,7 +73,7 @@ async fn main() -> io::Result<()> {
         mpsc::channel();
 
     thread::spawn(move || {
-        let mut database = Database::new(database_receiver);
+        let mut database = Database::new(database_receiver, DatabaseOptions::default());
 
         database.run();
     });
@@ -91,4 +94,56 @@ async fn main() -> io::Result<()> {
     .bind(("0.0.0.0", 9000))?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        sync::mpsc::{self, Receiver, Sender},
+        thread,
+    };
+
+    use uuid::Uuid;
+
+    use crate::{
+        consts::consts::EntityId,
+        database::{
+            database::{Database, DatabaseOptions},
+            request_manager::{DatabaseRequest, RequestManager},
+        },
+        model::{action::Action, person},
+    };
+
+    #[test]
+    fn performance_test() {
+        let (database_sender, database_receiver): (
+            Sender<DatabaseRequest>,
+            Receiver<DatabaseRequest>,
+        ) = mpsc::channel();
+
+        thread::spawn(move || {
+            let options = DatabaseOptions::default()
+                .set_data_directory(format!("/tmp/lineagedb/{}/", Uuid::new_v4().to_string()));
+
+            Database::new(database_receiver, options).run();
+        });
+
+        let rm = RequestManager::new(database_sender.clone());
+
+        for _ in 0..1000 {
+            let person = person::Person {
+                id: EntityId::new(),
+                full_name: "Test".to_string(),
+                email: None,
+            };
+
+            let add_transaction = Action::Add(person.clone());
+
+            let db_response = rm
+                .send_request(add_transaction)
+                .expect("Should not timeout");
+
+            assert_eq!(person, db_response.single())
+        }
+    }
 }

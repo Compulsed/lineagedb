@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 
-use crate::consts::consts::{TransactionId, TRANSACTION_LOG_LOCATION};
+use crate::consts::consts::TransactionId;
 use crate::model::action::Action;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -24,14 +24,19 @@ pub struct TransactionLog {
     log_file: File,
 }
 
+fn get_transaction_log_location(data_directory: String) -> String {
+    format!("{data_directory}/transaction_log.json")
+}
+
 impl TransactionLog {
-    pub fn new() -> Self {
-        fs::create_dir_all("./data").expect("Should always be able to create a path at data/");
+    pub fn new(data_directory: String) -> Self {
+        fs::create_dir_all(&data_directory)
+            .expect("Should always be able to create a path at data/");
 
         let log_file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open(TRANSACTION_LOG_LOCATION)
+            .open(get_transaction_log_location(data_directory))
             .expect("Cannot open file");
 
         Self {
@@ -79,8 +84,8 @@ impl TransactionLog {
         self.transactions.pop();
     }
 
-    pub fn restore() -> Vec<Action> {
-        let mut file = match File::open(TRANSACTION_LOG_LOCATION) {
+    pub fn restore(data_directory: String) -> Vec<Action> {
+        let mut file = match File::open(get_transaction_log_location(data_directory)) {
             Ok(file) => file,
             Err(_) => return vec![],
         };
