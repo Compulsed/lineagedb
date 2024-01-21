@@ -90,7 +90,7 @@ impl ActionResult {
         if let ActionResult::SuccessStatus(s) = self {
             s
         } else {
-            panic!("Action result is not of type ListVersion")
+            panic!("Success status code")
         }
     }
 }
