@@ -34,6 +34,7 @@ impl Action {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ActionResult {
+    SuccessStatus(String),
     ErrorStatus(String),
     Single(Person),
     GetSingle(Option<Person>),
@@ -79,6 +80,15 @@ impl ActionResult {
     pub fn list_version(self) -> Vec<PersonVersion> {
         if let ActionResult::ListVersion(p) = self {
             p
+        } else {
+            panic!("Action result is not of type ListVersion")
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn success_status(self) -> String {
+        if let ActionResult::SuccessStatus(s) = self {
+            s
         } else {
             panic!("Action result is not of type ListVersion")
         }
