@@ -1,3 +1,7 @@
+// https://doc.rust-lang.org/nightly/unstable-book/library-features/test.html
+#![feature(test)]
+extern crate test;
+
 use std::{
     sync::{
         mpsc::{self, Receiver, Sender},

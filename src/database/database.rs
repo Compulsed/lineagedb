@@ -123,12 +123,12 @@ impl Database {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use std::{
         sync::mpsc::{self, Receiver, Sender},
-        thread,
+        thread::{self, JoinHandle},
     };
-
+    use test::Bencher;
     use uuid::Uuid;
 
     use crate::{
@@ -139,12 +139,95 @@ mod test {
             table::row::{UpdateAction, UpdatePersonData},
         },
         model::{
-            action::Action,
+            action::{Action, ActionResult},
             person::{self, Person},
         },
     };
 
-    fn run_performance_test(actions: u32, action_generator: impl Fn(u32) -> Action) {
+    #[test]
+    fn performance_test_update_long() {
+        // 65k tps on M1 MBA
+        let action_generator = |thread: i32, index: u32| {
+            let id = EntityId(thread.to_string());
+            let full_name = format!("Full Name {}-{}", thread, index);
+            let email = format!("Email {}-{}", thread, index);
+
+            if index == 0 {
+                return Action::Add(Person {
+                    id,
+                    full_name,
+                    email: Some(email),
+                });
+            }
+
+            return Action::Update(
+                id,
+                UpdatePersonData {
+                    full_name: UpdateAction::Set(full_name),
+                    email: UpdateAction::Set(email),
+                },
+            );
+        };
+
+        run_performance_test(1, 1_000_000, action_generator);
+    }
+
+    #[test]
+    fn performance_test_add_long() {
+        // 65k tps on M1 MBA
+        let action_generator = |_, _| {
+            Action::Add(person::Person {
+                id: EntityId::new(),
+                full_name: "Test".to_string(),
+                email: Some(Uuid::new_v4().to_string()),
+            })
+        };
+
+        run_performance_test(1, 1_000_000, action_generator);
+    }
+
+    #[test]
+    fn performance_test_get_long() {
+        // 100k tps on M1 MBA
+        let action_generator = |thread_id: i32, index: u32| {
+            let id = EntityId(thread_id.to_string());
+            let full_name = format!("Full Name {}-{}", thread_id, index);
+            let email = format!("Email {}-{}", thread_id, index);
+
+            if index == 0 {
+                return Action::Add(Person {
+                    id,
+                    full_name,
+                    email: Some(email),
+                });
+            }
+
+            return Action::Get(id);
+        };
+
+        run_performance_test(2, 1_000_000, action_generator);
+    }
+
+    #[bench]
+    fn performance_test_add_short(b: &mut Bencher) {
+        b.iter(|| {
+            let action_generator = |_, _| {
+                Action::Add(person::Person {
+                    id: EntityId::new(),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                })
+            };
+
+            run_performance_test(1, 10_000, action_generator);
+        });
+    }
+
+    fn run_performance_test(
+        worker_threads: i32,
+        actions: u32,
+        action_generator: fn(i32, u32) -> Action,
+    ) {
         let (database_sender, database_receiver): (
             Sender<DatabaseRequest>,
             Receiver<DatabaseRequest>,
@@ -160,79 +243,38 @@ mod test {
             Database::new(database_receiver, options).run();
         });
 
-        let rm = RequestManager::new(database_sender.clone());
+        let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
-        for index in 0..actions {
-            let action = action_generator(index);
+        for thread_id in 0..worker_threads {
+            let rm = RequestManager::new(database_sender.clone());
 
-            let db_response = rm.send_request(action).expect("Should not timeout");
+            let sender_thread = thread::spawn(move || {
+                for index in 0..actions {
+                    let action = action_generator(thread_id, index);
 
-            // Single will panic if this fails
-            db_response.single();
+                    let db_response = rm.send_request(action).expect("Should not timeout");
+
+                    // Single will panic if this fails
+                    match db_response {
+                        ActionResult::Single(_) | ActionResult::GetSingle(_) => {}
+                        _ => panic!("Unexpected response"),
+                    }
+                }
+            });
+
+            sender_threads.push(sender_thread);
+        }
+
+        for thread in sender_threads {
+            thread.join().unwrap();
         }
 
         // Allows database thread to successfully exit
-        let shutdown_response = rm
+        let shutdown_response = RequestManager::new(database_sender.clone())
             .send_shutdown()
             .expect("Should not timeout")
             .success_status();
 
         assert!(shutdown_response == "Successfully shutdown database".to_string());
-    }
-
-    #[test]
-    fn performance_test_update_long() {
-        let id = EntityId::new();
-
-        // 65k tps on M1 MBA
-        let action_generator = |index| {
-            let full_name = format!("Full Name {}", index);
-            let email = format!("Email {}", index);
-
-            if index == 0 {
-                return Action::Add(Person {
-                    id: id.clone(),
-                    full_name,
-                    email: Some(email),
-                });
-            }
-
-            return Action::Update(
-                id.clone(),
-                UpdatePersonData {
-                    full_name: UpdateAction::Set(full_name),
-                    email: UpdateAction::Set(email),
-                },
-            );
-        };
-
-        run_performance_test(1_000_000, action_generator);
-    }
-
-    #[test]
-    fn performance_test_add_long() {
-        // 65k tps on M1 MBA
-        let action_generator = |_| {
-            Action::Add(person::Person {
-                id: EntityId::new(),
-                full_name: "Test".to_string(),
-                email: Some(Uuid::new_v4().to_string()),
-            })
-        };
-
-        run_performance_test(1_000_000, action_generator);
-    }
-
-    #[test]
-    fn performance_test_add_short() {
-        let action_generator = |_| {
-            Action::Add(person::Person {
-                id: EntityId::new(),
-                full_name: "Test".to_string(),
-                email: Some(Uuid::new_v4().to_string()),
-            })
-        };
-
-        run_performance_test(100, action_generator);
     }
 }
