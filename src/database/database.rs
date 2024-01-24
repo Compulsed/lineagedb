@@ -49,7 +49,7 @@ impl Database {
     }
 
     pub fn run(&mut self) {
-        println!("Restoring database from disk");
+        // println!("Restoring database from disk");
 
         let now = Instant::now();
 
@@ -59,14 +59,14 @@ impl Database {
                 .expect("Should not error when replaying valid transactions");
         }
 
-        println!(
-            "Restored database from transaction log. [Duration {}ms, Tx Count {}]",
-            now.elapsed().as_millis(),
-            self.transaction_log
-                .get_current_transaction_id()
-                .to_number()
-                .to_formatted_string(&Locale::en)
-        );
+        // println!(
+        //     "Restored database from transaction log. [Duration {}ms, Tx Count {}]",
+        //     now.elapsed().as_millis(),
+        //     self.transaction_log
+        //         .get_current_transaction_id()
+        //         .to_number()
+        //         .to_formatted_string(&Locale::en)
+        // );
 
         // Process incoming requests from the channel
         loop {
@@ -124,28 +124,21 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::mpsc::{self, Receiver, Sender},
-        thread::{self, JoinHandle},
-    };
-    use test::Bencher;
     use uuid::Uuid;
 
     use crate::{
         consts::consts::EntityId,
-        database::{
-            database::{Database, DatabaseOptions},
-            request_manager::{DatabaseRequest, RequestManager},
-            table::row::{UpdateAction, UpdatePersonData},
-        },
+        database::table::row::{UpdateAction, UpdatePersonData},
         model::{
-            action::{Action, ActionResult},
+            action::Action,
             person::{self, Person},
         },
     };
 
+    use super::test_utils::database_test;
+
     #[test]
-    fn performance_test_update_long() {
+    fn update() {
         // 65k tps on M1 MBA
         let action_generator = |thread: i32, index: u32| {
             let id = EntityId(thread.to_string());
@@ -169,12 +162,11 @@ mod tests {
             );
         };
 
-        run_performance_test(1, 1_000_000, action_generator);
+        database_test(1, 5, action_generator);
     }
 
     #[test]
-    fn performance_test_add_long() {
-        // 65k tps on M1 MBA
+    fn add() {
         let action_generator = |_, _| {
             Action::Add(person::Person {
                 id: EntityId::new(),
@@ -183,12 +175,11 @@ mod tests {
             })
         };
 
-        run_performance_test(1, 1_000_000, action_generator);
+        database_test(1, 5, action_generator);
     }
 
     #[test]
-    fn performance_test_get_long() {
-        // 100k tps on M1 MBA
+    fn get() {
         let action_generator = |thread_id: i32, index: u32| {
             let id = EntityId(thread_id.to_string());
             let full_name = format!("Full Name {}-{}", thread_id, index);
@@ -205,25 +196,26 @@ mod tests {
             return Action::Get(id);
         };
 
-        run_performance_test(2, 1_000_000, action_generator);
+        database_test(1, 5, action_generator);
     }
+}
 
-    #[bench]
-    fn performance_test_add_short(b: &mut Bencher) {
-        b.iter(|| {
-            let action_generator = |_, _| {
-                Action::Add(person::Person {
-                    id: EntityId::new(),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
-            };
+pub mod test_utils {
+    use uuid::Uuid;
 
-            run_performance_test(1, 10_000, action_generator);
-        });
-    }
+    use crate::{
+        database::{
+            database::{Database, DatabaseOptions},
+            request_manager::{DatabaseRequest, RequestManager},
+        },
+        model::action::{Action, ActionResult},
+    };
+    use std::{
+        sync::mpsc::{self, Receiver, Sender},
+        thread::{self, JoinHandle},
+    };
 
-    fn run_performance_test(
+    pub fn database_test(
         worker_threads: i32,
         actions: u32,
         action_generator: fn(i32, u32) -> Action,
@@ -236,7 +228,7 @@ mod tests {
         thread::spawn(move || {
             let database_dir = format!("/tmp/lineagedb/{}/", Uuid::new_v4().to_string());
 
-            println!("Database directory: {}", database_dir);
+            // println!("Database directory: {}", database_dir);
 
             let options = DatabaseOptions::default().set_data_directory(database_dir);
 
