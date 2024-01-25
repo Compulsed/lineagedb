@@ -5,6 +5,7 @@ use actix_web::{
     App, HttpResponse, HttpServer, Responder,
 };
 use actix_web_lab::respond::Html;
+use clap::Parser;
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::{io, sync::Arc};
 use std::{
@@ -54,39 +55,79 @@ async fn graphql(
     HttpResponse::Ok().json(user)
 }
 
+#[derive(Parser)]
+struct Cli {
+    /// Location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~
+    #[clap(short, long, default_value = "data")]
+    data: std::path::PathBuf,
+
+    /// Port the graphql server will run on
+    #[clap(short, long, default_value = "9000")]
+    port: u16,
+
+    /// Address the graphql server will run on
+    #[clap(short, long, default_value = "0.0.0.0")]
+    address: String,
+}
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
-    // Create Juniper schema
-    let schema = Arc::new(create_schema());
+    let args = Cli::parse();
 
-    log::info!("starting HTTP server on port 9000.");
-    log::info!("GraphiQL playground: http://localhost:9000/graphiql");
+    let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
     let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
         mpsc::channel();
 
+    // Setup database thread
     thread::spawn(move || {
-        let mut database = Database::new(database_receiver, DatabaseOptions::default());
+        let mut database = Database::new(database_receiver, database_options);
 
         database.run();
     });
 
+    // Set up Ctrl-C handler
+    let set_handler_database_sender_clone = database_sender.clone();
+
+    ctrlc::set_handler(move || {
+        let clean_up_hander_clone = set_handler_database_sender_clone.clone();
+
+        let shutdown_response = RequestManager::new(clean_up_hander_clone)
+            .send_shutdown()
+            .expect("Should not timeout")
+            .success_status();
+
+        log::info!("Shutting down server: {}", shutdown_response);
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    // Create Juniper schema
+    let schema = Arc::new(create_schema());
+
+    log::info!("starting HTTP server on port {}.", args.port);
+
+    panic!("test panic");
+
+    log::info!(
+        "GraphiQL playground: http://{}:{}/graphiql",
+        args.address,
+        args.port
+    );
+
     // Start HTTP server
     HttpServer::new(move || {
-        // Triggered based for N workers
         App::new()
             .app_data(Data::from(schema.clone()))
             .app_data(web::Data::new(database_sender.clone()))
             .service(graphql)
             .service(graphql_playground)
-            // the graphiql UI requires CORS to be enabled
             .wrap(Cors::permissive())
             .wrap(middleware::Logger::default())
     })
     .workers(8)
-    .bind(("0.0.0.0", 9000))?
+    .bind((args.address, args.port))?
     .run()
     .await
 }

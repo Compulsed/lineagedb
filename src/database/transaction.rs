@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
+use std::path::PathBuf;
 
 use crate::consts::consts::TransactionId;
 use crate::model::action::Action;
@@ -24,12 +25,13 @@ pub struct TransactionLog {
     log_file: File,
 }
 
-fn get_transaction_log_location(data_directory: String) -> String {
-    format!("{data_directory}/transaction_log.json")
+fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
+    // Defaults to $CWD/data/transaction_log.json, but $CWD/data can be overridden via the CLI
+    data_directory.join("transaction_log.json")
 }
 
 impl TransactionLog {
-    pub fn new(data_directory: String) -> Self {
+    pub fn new(data_directory: PathBuf) -> Self {
         fs::create_dir_all(&data_directory)
             .expect("Should always be able to create a path at data/");
 
@@ -84,7 +86,7 @@ impl TransactionLog {
         self.transactions.pop();
     }
 
-    pub fn restore(data_directory: String) -> Vec<Action> {
+    pub fn restore(data_directory: PathBuf) -> Vec<Action> {
         let mut file = match File::open(get_transaction_log_location(data_directory)) {
             Ok(file) => file,
             Err(_) => return vec![],

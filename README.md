@@ -43,6 +43,16 @@ query listHuman {
 }
 ```
 
+**Debugging**
+
+```
+# Prints out logs from the database (skips GraphQL)
+RUST_LOG=lineagedb cargo run
+
+# Prints out full exception strings
+RUST_BACKTRACE=1 cargo run
+```
+
 ## Features
 1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅
@@ -83,12 +93,13 @@ query listHuman {
 **Architecture**
 - Transaction log listener (can run another db in another location)
 - Run on cloud via docker / lambda
+- Split the database / clients components into their own libraries
 
 **Performance**
-- Create a tx/s metrics
+- Create a tx/s metrics (1ms for ~100 reads / writes) ✅
+- Is there a way to monitor rust performance? Like where are we spending the most time
 - Is there a way to improve the performance of transaction writes?
   - i.e. we set the transaction log file to be larger than what we need
-- Is there a way to monitor rust performance? Like where are we spending the most time
 - Read at a transaction id whilst there is a writer — may require thread safe data structures
 - Move away from a single thread per request (could implement a thread pool w/ channels?)
 - Reduce the amount of rust clones

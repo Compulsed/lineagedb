@@ -1,4 +1,4 @@
-use std::{sync::mpsc::Receiver, time::Instant};
+use std::{path::PathBuf, sync::mpsc::Receiver, time::Instant};
 
 use num_format::{Locale, ToFormattedString};
 
@@ -13,11 +13,11 @@ use super::{
 };
 
 pub struct DatabaseOptions {
-    data_directory: String,
+    data_directory: PathBuf,
 }
 
 impl DatabaseOptions {
-    pub fn set_data_directory(mut self, data_directory: String) -> Self {
+    pub fn set_data_directory(mut self, data_directory: PathBuf) -> Self {
         self.data_directory = data_directory;
         self
     }
@@ -25,8 +25,9 @@ impl DatabaseOptions {
 
 impl Default for DatabaseOptions {
     fn default() -> Self {
+        // Defaults to $CDW/data
         Self {
-            data_directory: String::from("data"),
+            data_directory: PathBuf::from("data"),
         }
     }
 }
@@ -49,24 +50,29 @@ impl Database {
     }
 
     pub fn run(&mut self) {
-        // println!("Restoring database from disk");
+        let transaction_log_location = self.database_options.data_directory.clone();
+
+        log::info!(
+            "Transaction Log Location: [{}]",
+            transaction_log_location.display()
+        );
 
         let now = Instant::now();
 
         // On spin-up restore database from disk
-        for action in TransactionLog::restore(self.database_options.data_directory.clone()) {
+        for action in TransactionLog::restore(transaction_log_location) {
             self.process_action(action, true)
                 .expect("Should not error when replaying valid transactions");
         }
 
-        // println!(
-        //     "Restored database from transaction log. [Duration {}ms, Tx Count {}]",
-        //     now.elapsed().as_millis(),
-        //     self.transaction_log
-        //         .get_current_transaction_id()
-        //         .to_number()
-        //         .to_formatted_string(&Locale::en)
-        // );
+        log::info!(
+            "Restored [Duration {}ms, Tx Count {}]",
+            now.elapsed().as_millis(),
+            self.transaction_log
+                .get_current_transaction_id()
+                .to_number()
+                .to_formatted_string(&Locale::en)
+        );
 
         // Process incoming requests from the channel
         loop {
@@ -211,6 +217,7 @@ pub mod test_utils {
         model::action::{Action, ActionResult},
     };
     use std::{
+        path::PathBuf,
         sync::mpsc::{self, Receiver, Sender},
         thread::{self, JoinHandle},
     };
@@ -226,9 +233,11 @@ pub mod test_utils {
         ) = mpsc::channel();
 
         thread::spawn(move || {
-            let database_dir = format!("/tmp/lineagedb/{}/", Uuid::new_v4().to_string());
+            let database_dir: PathBuf = ["tmp", "lineagedb", &Uuid::new_v4().to_string()]
+                .iter()
+                .collect();
 
-            // println!("Database directory: {}", database_dir);
+            println!("Database directory: {}", database_dir.display());
 
             let options = DatabaseOptions::default().set_data_directory(database_dir);
 
