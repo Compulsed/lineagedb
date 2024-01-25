@@ -5,9 +5,14 @@ use crate::{
     model::action::{Action, ActionResult},
 };
 
+pub enum DatabaseRequestAction {
+    Request(Action),
+    Shutdown,
+}
+
 pub struct DatabaseRequest {
     pub response_sender: oneshot::Sender<ActionResult>,
-    pub action: Action,
+    pub action: DatabaseRequestAction,
 }
 
 pub struct RequestManager {
@@ -24,7 +29,7 @@ impl RequestManager {
 
         let request = DatabaseRequest {
             response_sender,
-            action,
+            action: DatabaseRequestAction::Request(action),
         };
 
         // Sends the request to the database worker, database will response
@@ -34,6 +39,27 @@ impl RequestManager {
         match response_receiver.recv_timeout(Duration::from_secs(2)) {
             Ok(result) => Ok(result),
             Err(oneshot::RecvTimeoutError::Timeout) => Err("Processor was too slow".to_string()),
+            Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
+        }
+    }
+
+    pub fn send_shutdown(&self) -> Result<ActionResult, ErrorString> {
+        let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+
+        let request = DatabaseRequest {
+            response_sender,
+            action: DatabaseRequestAction::Shutdown,
+        };
+
+        // Sends the request to the database worker, database will response
+        //  on the response_receiver once it's finished processing it's request
+        self.database_sender.send(request).unwrap();
+
+        match response_receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => Ok(result),
+            Err(oneshot::RecvTimeoutError::Timeout) => {
+                Err("Too slow to process shutdown".to_string())
+            }
             Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
         }
     }

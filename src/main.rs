@@ -1,24 +1,3 @@
-use std::{
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        Mutex,
-    },
-    thread,
-};
-
-use crate::{
-    database::{database::Database, request_manager::RequestManager},
-    schema::GraphQLContext,
-};
-use database::request_manager::DatabaseRequest;
-
-mod clients;
-mod consts;
-mod database;
-mod model;
-
-use std::{io, sync::Arc};
-
 use actix_cors::Cors;
 use actix_web::{
     get, middleware, route,
@@ -27,10 +6,29 @@ use actix_web::{
 };
 use actix_web_lab::respond::Html;
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
-
-mod schema;
+use std::{io, sync::Arc};
+use std::{
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
+    },
+    thread,
+};
 
 use crate::schema::{create_schema, Schema};
+use crate::{
+    database::{
+        database::{Database, DatabaseOptions},
+        request_manager::{DatabaseRequest, RequestManager},
+    },
+    schema::GraphQLContext,
+};
+
+mod clients;
+mod consts;
+mod database;
+mod model;
+mod schema;
 
 /// GraphiQL playground UI
 #[get("/graphiql")]
@@ -70,7 +68,7 @@ async fn main() -> io::Result<()> {
         mpsc::channel();
 
     thread::spawn(move || {
-        let mut database = Database::new(database_receiver);
+        let mut database = Database::new(database_receiver, DatabaseOptions::default());
 
         database.run();
     });
