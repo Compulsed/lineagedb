@@ -55,7 +55,8 @@ async fn graphql(
     HttpResponse::Ok().json(user)
 }
 
-#[derive(Parser)]
+/// 📀 Lineagedb GraphQL Server, provides a simple GraphQL interface for interacting with the database
+#[derive(Parser, Debug)]
 struct Cli {
     /// Location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~
     #[clap(short, long, default_value = "data")]
@@ -107,8 +108,6 @@ async fn main() -> io::Result<()> {
     let schema = Arc::new(create_schema());
 
     log::info!("starting HTTP server on port {}.", args.port);
-
-    panic!("test panic");
 
     log::info!(
         "GraphiQL playground: http://{}:{}/graphiql",

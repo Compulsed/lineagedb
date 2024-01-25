@@ -5,7 +5,7 @@
 **Start the database**
 `cargo run`
 
-Open `http://localhost:9000/graphiql`
+Open `http://0.0.0.0:9000/graphiql`
 
 Can use the below mutations to persist / get data
 ```
@@ -41,6 +41,19 @@ query listHuman {
     email
   }
 }
+```
+
+**CLI**
+```
+📀 Lineagedb GraphQL Server, provides a simple GraphQL interface for interacting with the database
+
+Usage: lineagedb [OPTIONS]
+
+Options:
+  -d, --data <DATA>        Location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~ [default: data]
+  -p, --port <PORT>        Port the graphql server will run on [default: 9000]
+  -a, --address <ADDRESS>  Address the graphql server will run on [default: 0.0.0.0]
+  -h, --help               Print help
 ```
 
 **Debugging**
