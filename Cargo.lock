@@ -2000,6 +2000,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tcp-server"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "database",
+ "env_logger",
+ "log",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

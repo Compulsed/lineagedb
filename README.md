@@ -66,6 +66,12 @@ RUST_LOG=lineagedb cargo run
 RUST_BACKTRACE=1 cargo run
 ```
 
+**Other binaries**
+
+```
+cargo run --package tcp-server --bin lineagedb-tcp-server
+```
+
 ## Features
 1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅
