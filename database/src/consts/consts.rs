@@ -31,6 +31,32 @@ impl VersionId {
     }
 }
 
+pub enum VersionIdVersionError {
+    NegativeOrZero(i32),
+    TooLarge(i32),
+}
+
+impl TryFrom<i32> for VersionId {
+    type Error = VersionIdVersionError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        if value <= 0 {
+            return Err(VersionIdVersionError::NegativeOrZero(value));
+        }
+
+        // TODO: Define the max a u16
+        if value > u16::MAX as i32 {
+            return Err(VersionIdVersionError::TooLarge(value));
+        }
+
+        Ok(VersionId(
+            value
+                .try_into()
+                .expect("Validation should have caught this"),
+        ))
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct EntityId(pub String);
 
