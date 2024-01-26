@@ -1,8 +1,4 @@
-use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
-use std::sync::Mutex;
-use uuid::Uuid;
-
-use crate::{
+use database::{
     consts::consts::EntityId,
     database::{
         request_manager::RequestManager,
@@ -13,6 +9,9 @@ use crate::{
         person::Person,
     },
 };
+use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
+use std::sync::Mutex;
+use uuid::Uuid;
 
 pub struct GraphQLContext {
     pub request_manager: Mutex<RequestManager>,
