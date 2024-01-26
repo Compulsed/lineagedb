@@ -122,6 +122,7 @@ RUST_BACKTRACE=1 cargo run
       - This is usually async / buffered. I suspect the async part is the state backup and not TX log as the log has to be written
         to consider the transaction as 'committed'.
 - Investigate ~6k TX stall from load testing (was using AB, and running on a Mac)
+- Anywhere we would clone attempt to use an RC -- this happens with Actions (check performance after doing this)
 
 **Design Improvements**
 - Clippy ✅
