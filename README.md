@@ -141,9 +141,9 @@ cargo bench --all
 - Clippy ✅
 - CI/CD Pipeline ✅
 - CLI
-    - List database version
-    - Specify port to bind
-    - Specify IP to bind
+    - Specify port to bind ✅
+    - Specify IP to bind ✅
+    - List database version (https://github.com/rust-lang/cargo/issues/6583)
 - Turn index into a class
 - Tests
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
