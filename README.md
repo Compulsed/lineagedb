@@ -72,6 +72,13 @@ RUST_BACKTRACE=1 cargo run
 cargo run --package tcp-server --bin lineagedb-tcp-server
 ```
 
+**Testing / Benchmarking**
+
+```
+cargo test --all
+cargo bench --all
+```
+
 ## Features
 1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅

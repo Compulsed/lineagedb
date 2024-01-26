@@ -233,11 +233,11 @@ pub mod test_utils {
         ) = mpsc::channel();
 
         thread::spawn(move || {
-            let database_dir: PathBuf = ["tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
                 .iter()
                 .collect();
 
-            println!("Database directory: {}", database_dir.display());
+            log::info!("Database directory: {}", database_dir.display());
 
             let options = DatabaseOptions::default().set_data_directory(database_dir);
 
