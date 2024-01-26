@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use lineagedb::{
+use database::{
     consts::consts::EntityId,
     database::{
         database::test_utils::database_test,

@@ -6,6 +6,10 @@ use actix_web::{
 };
 use actix_web_lab::respond::Html;
 use clap::Parser;
+use database::database::{
+    database::{Database, DatabaseOptions},
+    request_manager::{DatabaseRequest, RequestManager},
+};
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::{io, sync::Arc};
 use std::{
@@ -16,19 +20,8 @@ use std::{
     thread,
 };
 
-use crate::schema::{create_schema, Schema};
-use crate::{
-    database::{
-        database::{Database, DatabaseOptions},
-        request_manager::{DatabaseRequest, RequestManager},
-    },
-    schema::GraphQLContext,
-};
+use crate::schema::{create_schema, GraphQLContext, Schema};
 
-mod clients;
-mod consts;
-mod database;
-mod model;
 mod schema;
 
 /// GraphiQL playground UI
