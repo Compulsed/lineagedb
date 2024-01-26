@@ -12,7 +12,7 @@ use database::database::table::row::{UpdateAction, UpdatePersonData};
 use database::model::action::Action;
 use database::model::person::Person; // TCP Stream defines implementation
 
-/// 📀 Lineagedb GraphQL TCP Server, provides a simple tcp interface for interacting with the database
+/// 📀 Lineagedb TCP Server, provides a simple tcp interface for interacting with the database
 ///
 /// Can connect via netcat `echo "l" | netcat 127.0.0.1 9000`
 #[derive(Parser, Debug)]
