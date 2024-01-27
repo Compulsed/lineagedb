@@ -6,12 +6,12 @@ use crate::{
 };
 
 pub enum DatabaseRequestAction {
-    Request(Action),
+    Request(Vec<Action>),
     Shutdown,
 }
 
 pub struct DatabaseRequest {
-    pub response_sender: oneshot::Sender<ActionResult>,
+    pub response_sender: oneshot::Sender<Vec<ActionResult>>,
     pub action: DatabaseRequestAction,
 }
 
@@ -24,8 +24,8 @@ impl RequestManager {
         Self { database_sender }
     }
 
-    pub fn send_request(&self, action: Action) -> Result<ActionResult, ErrorString> {
-        let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+    pub fn send_request(&self, action: Vec<Action>) -> Result<Vec<ActionResult>, ErrorString> {
+        let (response_sender, response_receiver) = oneshot::channel::<Vec<ActionResult>>();
 
         let request = DatabaseRequest {
             response_sender,
@@ -43,8 +43,8 @@ impl RequestManager {
         }
     }
 
-    pub fn send_shutdown(&self) -> Result<ActionResult, ErrorString> {
-        let (response_sender, response_receiver) = oneshot::channel::<ActionResult>();
+    pub fn send_shutdown(&self) -> Result<Vec<ActionResult>, ErrorString> {
+        let (response_sender, response_receiver) = oneshot::channel::<Vec<ActionResult>>();
 
         let request = DatabaseRequest {
             response_sender,

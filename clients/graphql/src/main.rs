@@ -91,6 +91,9 @@ async fn main() -> io::Result<()> {
         let shutdown_response = RequestManager::new(clean_up_hander_clone)
             .send_shutdown()
             .expect("Should not timeout")
+            .into_iter()
+            .nth(0)
+            .expect("Should have a response")
             .success_status();
 
         log::info!("Shutting down server: {}", shutdown_response);

@@ -113,27 +113,20 @@ impl Database {
             let process_action = match action {
                 DatabaseRequestAction::Request(action) => action,
                 DatabaseRequestAction::Shutdown => {
-                    let _ = response_sender.send(ActionResult::SuccessStatus(
+                    let _ = response_sender.send(vec![ActionResult::SuccessStatus(
                         "Successfully shutdown database".to_string(),
-                    ));
+                    )]);
                     return;
                 }
             };
 
-            // TODO:
-            //  - Consider how we handle single actions -- perhaps we create a special method for them
-            //  - It's likely we have an additional clone in the action response
-            let action_response = self.process_actions(vec![process_action], false);
+            // TODO: Change this to process actions
+            let action_response = self.process_actions(process_action, false);
 
             let _ = match action_response {
-                Ok(action_response) => response_sender.send(
-                    action_response
-                        .first()
-                        .expect("Should exist as we only send one action result")
-                        .clone(),
-                ),
+                Ok(action_response) => response_sender.send(action_response),
                 Err(err) => {
-                    response_sender.send(ActionResult::ErrorStatus(format!("ERROR: {}", err)))
+                    response_sender.send(vec![ActionResult::ErrorStatus(format!("ERROR: {}", err))])
                 }
             };
         }
@@ -160,7 +153,7 @@ impl Database {
         user_actions: Vec<Action>,
         restore: bool,
     ) -> Result<Vec<ActionResult>, ErrorString> {
-        // TODO: Consider filtering out transactions that just have query actions
+        // TODO: Consider filtering out transactions that have queries
         let transaction_id = self.transaction_log.add_applying(user_actions.clone());
 
         let mut status = CommitStatus::Commit;
@@ -542,7 +535,12 @@ pub mod test_utils {
                 for index in 0..actions {
                     let action = action_generator(thread_id, index);
 
-                    let db_response = rm.send_request(action).expect("Should not timeout");
+                    let db_response = rm
+                        .send_request(vec![action])
+                        .expect("Should not timeout")
+                        .into_iter()
+                        .nth(0)
+                        .expect("should exist due to process_actions returning the same length");
 
                     // Single will panic if this fails
                     match db_response {
@@ -562,9 +560,13 @@ pub mod test_utils {
         // Allows database thread to successfully exit
         let shutdown_response = RequestManager::new(database_sender.clone())
             .send_shutdown()
-            .expect("Should not timeout")
-            .success_status();
+            .expect("Should not timeout");
 
-        assert!(shutdown_response == "Successfully shutdown database".to_string());
+        assert_eq!(
+            shutdown_response,
+            vec![ActionResult::SuccessStatus(
+                "Successfully shutdown database".to_string(),
+            )]
+        );
     }
 }

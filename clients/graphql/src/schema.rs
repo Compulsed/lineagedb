@@ -100,7 +100,12 @@ impl QueryRoot {
             None => Action::Get(EntityId(id)),
         };
 
-        let db_response = database.send_request(action).expect("Should not timeout");
+        let db_response = database
+            .send_request(vec![action])
+            .expect("Should not timeout")
+            .into_iter()
+            .nth(0)
+            .expect("Should always be a single response");
 
         if let Some(person) = db_response.get_single() {
             return Ok(Some(Human::from_person(person)));
@@ -113,8 +118,11 @@ impl QueryRoot {
         let database = context.request_manager.lock().unwrap();
 
         let db_response = database
-            .send_request(Action::List)
-            .expect("Should not timeout");
+            .send_request(vec![Action::List])
+            .expect("Should not timeout")
+            .into_iter()
+            .nth(0)
+            .expect("Should always be a single response");
 
         let humans = db_response
             .list()
@@ -138,8 +146,11 @@ impl MutationRoot {
         let add_transaction = Action::Add(person);
 
         let db_response = database
-            .send_request(add_transaction)
-            .expect("Should not timeout");
+            .send_request(vec![add_transaction])
+            .expect("Should not timeout")
+            .into_iter()
+            .nth(0)
+            .expect("Should always be a single response");
 
         println!("{:?}", db_response);
 
@@ -180,8 +191,11 @@ impl MutationRoot {
         let update_transaction = Action::Update(EntityId(id), update_person_date);
 
         let db_response = database
-            .send_request(update_transaction)
-            .expect("Should not timeout");
+            .send_request(vec![update_transaction])
+            .expect("Should not timeout")
+            .into_iter()
+            .nth(0)
+            .expect("Should always be a single response");
 
         // TODO: Centralize error handling responses
         match db_response {

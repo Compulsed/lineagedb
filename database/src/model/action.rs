@@ -32,6 +32,7 @@ impl Action {
     }
 }
 
+// TODO: Consider making a data structure that has a collection of actions / action result
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ActionResult {
     SuccessStatus(String),
