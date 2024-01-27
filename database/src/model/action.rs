@@ -45,6 +45,7 @@ pub enum ActionResult {
 }
 
 impl ActionResult {
+    // TODO: Consider removing these methods and localizing them in the request_manager
     pub fn single(self) -> Person {
         if let ActionResult::Single(p) = self {
             p

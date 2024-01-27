@@ -91,7 +91,7 @@ fn main() {
 
                             if let Some(action) = action {
                                 let response = request_manager
-                                    .send_request(vec![action])
+                                    .send_single_action(action)
                                     .expect("Should not timeout");
 
                                 writeln!(stream, "{:#?}", response).unwrap();
