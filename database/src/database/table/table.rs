@@ -1,14 +1,18 @@
+use core::panic;
 use std::collections::HashMap;
 
 use crate::{
-    consts::consts::{ErrorString, TransactionId},
+    consts::consts::{EntityId, ErrorString, TransactionId},
     model::{
         action::{Action, ActionResult},
         person::Person,
     },
 };
 
-use super::row::{ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, UpdateAction};
+use super::row::{
+    ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, PersonVersionState,
+    UpdateAction,
+};
 
 type RowPrimaryKey = String;
 
@@ -162,5 +166,63 @@ impl PersonTable {
         };
 
         Ok(action_result)
+    }
+
+    pub fn apply_rollback(&mut self, action: Action) {
+        match action {
+            Action::Add(person) => {
+                self.remove_mutation(person.id);
+            }
+            Action::Update(id, _) => {
+                self.remove_mutation(id);
+            }
+            Action::Remove(id) => {
+                self.remove_mutation(id);
+            }
+            Action::Get(_)
+            | Action::GetVersion(_, _)
+            | Action::List
+            | Action::ListLatestVersions => {}
+        }
+    }
+
+    fn remove_mutation(&mut self, id: EntityId) {
+        let person_row = self
+            .person_rows
+            .get_mut(&id.to_string())
+            .expect("should exist because there is a rollback");
+
+        // Remove the version that was applied
+        let person_version_to_remove = person_row
+            .versions
+            .pop()
+            .expect("should exist because there is a rollback");
+
+        match person_version_to_remove.state {
+            PersonVersionState::State(person) => {
+                if let Some(email) = person.email {
+                    self.unique_email_index.remove(&email);
+                }
+
+                if person_row.versions.is_empty() {
+                    self.person_rows.remove(&id.to_string());
+                }
+            }
+            PersonVersionState::Delete => {
+                let current_person = person_row
+                    .versions
+                    .last()
+                    .expect("should exist because there is a rollback");
+
+                if let PersonVersionState::State(person) = &current_person.state {
+                    if let Some(email) = &person.email {
+                        self.unique_email_index
+                            .insert(email.clone(), id.to_string());
+                    }
+                } else {
+                    panic!("delete should always be followed by a state");
+                }
+            }
+        }
     }
 }

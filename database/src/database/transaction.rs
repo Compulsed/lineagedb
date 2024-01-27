@@ -14,14 +14,14 @@ pub enum TransactionStatus {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Transaction {
-    id: TransactionId,
-    action: Action,
-    status: TransactionStatus,
+    pub id: TransactionId,
+    pub actions: Vec<Action>,
+    pub status: TransactionStatus,
 }
 
 #[derive(Debug)]
 pub struct TransactionLog {
-    transactions: Vec<Transaction>,
+    pub transactions: Vec<Transaction>,
     log_file: File,
 }
 
@@ -51,12 +51,12 @@ impl TransactionLog {
         TransactionId(self.transactions.len())
     }
 
-    pub fn add_applying(&mut self, action: Action) -> TransactionId {
+    pub fn add_applying(&mut self, actions: Vec<Action>) -> TransactionId {
         let new_transaction_id = self.get_current_transaction_id().increment();
 
         self.transactions.push(Transaction {
             id: new_transaction_id.clone(),
-            action,
+            actions,
             status: TransactionStatus::Applying,
         });
 
@@ -86,7 +86,7 @@ impl TransactionLog {
         self.transactions.pop();
     }
 
-    pub fn restore(data_directory: PathBuf) -> Vec<Action> {
+    pub fn restore(data_directory: PathBuf) -> Vec<Transaction> {
         let mut file = match File::open(get_transaction_log_location(data_directory)) {
             Ok(file) => file,
             Err(_) => return vec![],
@@ -96,7 +96,7 @@ impl TransactionLog {
 
         file.read_to_string(&mut contents).unwrap();
 
-        let mut actions: Vec<Action> = vec![];
+        let mut transactions: Vec<Transaction> = vec![];
 
         for transaction_string in contents.split('\n') {
             if transaction_string.is_empty() {
@@ -104,9 +104,10 @@ impl TransactionLog {
             }
 
             let transaction: Transaction = serde_json::from_str(transaction_string).unwrap();
-            actions.push(transaction.action);
+
+            transactions.push(transaction);
         }
 
-        actions
+        transactions
     }
 }
