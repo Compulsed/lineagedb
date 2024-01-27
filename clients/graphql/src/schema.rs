@@ -63,27 +63,6 @@ pub struct UpdateHumanData {
 
 pub struct QueryRoot;
 
-// TODO: Refactor this, it looks very wonky
-fn get_version_id(version_id: i32) -> Result<VersionId, FieldError> {
-    let err: VersionIdVersionError = match VersionId::try_from(version_id) {
-        Ok(v) => return Ok(v),
-        Err(e) => e,
-    };
-
-    let err_field_result = match err {
-        VersionIdVersionError::NegativeOrZero(v) => FieldError::new(
-            format!("VersionId must be greater than 0, got {}", v),
-            graphql_value!({ "bad_request": "VersionId must be greater than 0" }),
-        ),
-        VersionIdVersionError::TooLarge(v) => FieldError::new(
-            format!("VersionId must be less than {}, got {}", u16::MAX, v),
-            graphql_value!({ "bad_request": "VersionId must be less than u16::MAX" }),
-        ),
-    };
-
-    Err(err_field_result)
-}
-
 #[juniper::graphql_object(context = GraphQLContext)]
 impl QueryRoot {
     fn human(
@@ -96,7 +75,7 @@ impl QueryRoot {
         let entity_id = EntityId(id);
 
         let optional_person = match version_id {
-            Some(v) => database.send_get_version(entity_id, get_version_id(v)?)?,
+            Some(v) => database.send_get_version(entity_id, v.try_into()?)?,
             None => database.send_get(entity_id)?,
         };
 

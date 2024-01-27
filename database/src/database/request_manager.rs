@@ -50,6 +50,20 @@ pub enum RequestManagerError {
     TransactionRollback(String),
 }
 
+/// Goal of the request manager is to provide a simple interface for interacting with the database
+///
+/// The request manager providers the following APIs. These are sorted by the easiest to use to the most complex
+/// 1. CRUD operations on a single person -- these are completely type safe
+/// 2. Generic Action based API -- not type safe because you need to know what Action maps ActionResult (e.g. Action::Add maps -> ActionResult::Single)
+/// 3. Transaction based API -- similar to the generic action based API, but allows you to send multiple actions to the database at once
+///
+/// For 2/ Can we improve the type safety of the generic action based API?
+/// - Action knows what ActionResult it maps to
+/// - ActionResult knows what Action it maps to
+/// - Generics...?
+///
+/// For 3/ Can we improve the type safety of the transaction based API?
+/// Might be hard because the results are a vector of ActionResult, which is a enum of all possible results (meaning we have to match on all of them)
 impl RequestManager {
     pub fn new(database_sender: Sender<DatabaseRequest>) -> Self {
         Self { database_sender }
