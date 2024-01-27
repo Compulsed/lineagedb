@@ -182,4 +182,4 @@ cargo bench --all
   1. Enums for problems common problems with user input
   1. Results for issues with the network, supports propagation via ? and error type mapping
   1. Panics for logical errors / bugs in the code
-5. Prefer infallable logic, e.g. try not to create methods that mask unwraps 
+5. Prefer infallable logic, e.g. try not to create methods that hide unwraps 

@@ -270,7 +270,7 @@ mod tests {
             assert_eq!(
                 action_result_two,
                 DatabaseResponseAction::new_single_response(ActionResult::Single(
-                    person_one.clone()
+                    person_two.clone()
                 )),
                 "Person should be returned as a single action result"
             );
