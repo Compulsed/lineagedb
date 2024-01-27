@@ -164,6 +164,39 @@ impl MutationRoot {
         Ok(Human::from_person(db_response.single()))
     }
 
+    fn create_humans(
+        new_humans: Vec<NewHuman>,
+        context: &'db GraphQLContext,
+    ) -> FieldResult<Vec<Human>> {
+        let database = context.request_manager.lock().unwrap();
+
+        let add_people = new_humans
+            .into_iter()
+            .map(NewHuman::to_person)
+            .map(Action::Add)
+            .collect();
+
+        let db_response = database
+            .send_request(add_people)
+            .expect("Should not timeout");
+
+        println!("{:?}", db_response);
+
+        if let ActionResult::ErrorStatus(s) = db_response.first().unwrap() {
+            return Err(FieldError::new(
+                s.clone(),
+                graphql_value!({ "BadRequest": "meme" }),
+            ));
+        }
+
+        let humans: Vec<Human> = db_response
+            .into_iter()
+            .map(|r| Human::from_person(r.single()))
+            .collect();
+
+        Ok(humans)
+    }
+
     fn update_human(
         id: String,
         update_human: UpdateHumanData,

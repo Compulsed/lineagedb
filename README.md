@@ -9,6 +9,7 @@ Open `http://0.0.0.0:9000/graphiql`
 
 Can use the below mutations to persist / get data
 ```
+# Create
 mutation writeHuman {
   createHuman(newHuman: { fullName: "Frank Walker" }) {
     id
@@ -17,6 +18,23 @@ mutation writeHuman {
   }
 }
 
+# Create builk
+mutation createHumans ($newHumans: [NewHuman!]!) {
+  createHumans(newHumans: $newHumans) {
+    id
+    fullName
+    email
+  }
+}
+
+{
+  "newHumans": [
+    { "fullName": "test1", "email": "dale@vendia.net" },
+    { "fullName": "test2", "email": null }
+  ]
+}
+
+# Update
 mutation updateHuman {
   updateHuman(id: "53db1e6f-4b90-4d3d-8871-b24288bf9192", updateHuman: { email: "1233@gmail.com"}) {
     id
@@ -34,6 +52,7 @@ query queryHuman {
   }
 }
 
+# List
 query listHuman {
   listHuman {
     id
