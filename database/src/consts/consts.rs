@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use uuid::Uuid;
 
 // Types
@@ -31,8 +32,11 @@ impl VersionId {
     }
 }
 
+#[derive(Error, Debug)]
 pub enum VersionIdVersionError {
+    #[error("VersionId must be greater than 0, got {0}")]
     NegativeOrZero(i32),
+    #[error("VersionId must be less than 65536, got {0}")]
     TooLarge(i32),
 }
 

@@ -1,5 +1,14 @@
 # Lineage DB
 
+Lineage DB is an experimental time traveling database. The database will have the following functionality:
+1. Query the database at any transaction id
+1. For any given item can look at all revisions
+1. Supports ACID transactions (it is single threaded / time traveling so this is almost 'free')
+
+The database is sufficiently isolated, this means it exists in its own crate / is independent from any clients.
+
+To play around / interact with the database I have provided a GraphQL / TCP client.
+
 ## How to use 
 
 **Start the database**
@@ -29,7 +38,7 @@ mutation createHumans ($newHumans: [NewHuman!]!) {
 
 {
   "newHumans": [
-    { "fullName": "test1", "email": "dale@vendia.net" },
+    { "fullName": "test1", "email": "dalejohnsalter@gmail.com" },
     { "fullName": "test2", "email": null }
   ]
 }
@@ -116,23 +125,32 @@ cargo bench --all
 1. Network based requests ✅
 
 **GraphQL Feature**
-- Create ✅ 
 - Get ✅
+- GetVersion ✅
 - List ✅
-- Update ✅
-- GetVersion
+- List at transaction id
+- Create 
+  - Single ✅ 
+  - Bulk ✅
+- Update
+  - Single ✅
+  - Bulk
 - Delete
+  - Single
+  - Bulk
+- Implement create / update / delete via GraphQL alias' (might be hard with existing library)
 
 **DB Features**
+- Transaction rollbacks ✅
+- Transactions with multiple actions ✅
+- Dynamic schema
+- Lower level transaction levels (currently have max)
 - Multiple tables support
 - Counter (id counter)
 - Multiple updates based on a condition (select)
 - Where clause in list
 - Update conditions
-- Transaction rollbacks
 - Transaction queue (max length, 5s timeout)
-- Transaction levels
-- Transactions with multiple actions
 - Referential integrity
 
 **Architecture**
@@ -156,21 +174,26 @@ cargo bench --all
 - Investigate ~6k TX stall from load testing (was using AB, and running on a Mac)
 - Anywhere we would clone attempt to use an RC -- this happens with Actions (check performance after doing this)
 
-**Design Improvements**
+**Design Improvements -- Internals**
 - Clippy ✅
 - CI/CD Pipeline ✅
+- Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response ✅
+- Improve change the send_request to be 'action aware', as in, a single action should return a single response ✅
+- Tests 
+  - GraphQL
+  - Database (Transaction Management) ✅
+  - Table (Applying / Rolling back changes)
+  - Row
 - CLI
     - Specify port to bind ✅
     - Specify IP to bind ✅
     - List database version (https://github.com/rust-lang/cargo/issues/6583)
 - Turn index into a class
-- Tests
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
-- Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response
-- Improve change the send_request to be 'action aware', as in, a single action should return a single response
+- Transaction that just contain queries should not be persisted to the transaction log
+- Do not need to maintain the transaction log in memory -- Transation log can just use a reference
 
-**Current Performance**
-- ~1-2ms for a create call
+## My learnings
 
 **To read**
 - https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
@@ -184,3 +207,4 @@ cargo bench --all
   1. Results for issues with the network, supports propagation via ? and error type mapping
   1. Panics for logical errors / bugs in the code
 5. Prefer infallable logic, e.g. try not to create methods that hide unwraps 
+6. Can use Rc instead of clone (unlike ARC RC is likely 0 cost)

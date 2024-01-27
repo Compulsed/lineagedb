@@ -505,7 +505,7 @@ pub mod test_utils {
     use crate::{
         database::{
             database::{Database, DatabaseOptions},
-            request_manager::{DatabaseRequest, DatabaseResponseAction, RequestManager},
+            request_manager::{DatabaseRequest, RequestManager},
         },
         model::action::{Action, ActionResult},
     };
@@ -546,20 +546,10 @@ pub mod test_utils {
                 for index in 0..actions {
                     let action = action_generator(thread_id, index);
 
-                    let db_response = rm.send_request(vec![action]).expect("Should not timeout");
-
-                    let action_results = match db_response {
-                        DatabaseResponseAction::Response(action_results) => action_results,
-                        _ => panic!("Unexpected response"),
-                    };
-
-                    let single_action_result = action_results
-                        .into_iter()
-                        .nth(0)
-                        .expect("should exist due to process_actions returning the same length");
+                    let action_result = rm.send_single_action(action).expect("Should not timeout");
 
                     // Single will panic if this fails
-                    match single_action_result {
+                    match action_result {
                         ActionResult::Single(_) | ActionResult::GetSingle(_) => {}
                         _ => panic!("Unexpected response type"),
                     }
@@ -575,7 +565,7 @@ pub mod test_utils {
 
         // Allows database thread to successfully exit
         let shutdown_response = RequestManager::new(database_sender.clone())
-            .send_shutdown()
+            .send_shutdown_request()
             .expect("Should not timeout");
 
         assert_eq!(

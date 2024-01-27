@@ -89,7 +89,7 @@ async fn main() -> io::Result<()> {
         let clean_up_hander_clone = set_handler_database_sender_clone.clone();
 
         let shutdown_response = RequestManager::new(clean_up_hander_clone)
-            .send_shutdown()
+            .send_shutdown_request()
             .expect("Should not timeout");
 
         log::info!("Shutting down server: {}", shutdown_response);
