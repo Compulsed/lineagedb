@@ -1,11 +1,11 @@
 use std::{
-    collections::VecDeque,
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     time::Instant,
 };
 
 use num_format::{Locale, ToFormattedString};
+use uuid::Uuid;
 
 use crate::{
     consts::consts::ErrorString,
@@ -21,6 +21,7 @@ pub struct DatabaseOptions {
     data_directory: PathBuf,
 }
 
+// Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
     pub fn set_data_directory(mut self, data_directory: PathBuf) -> Self {
         self.data_directory = data_directory;
@@ -35,6 +36,11 @@ impl Default for DatabaseOptions {
             data_directory: PathBuf::from("data"),
         }
     }
+}
+
+enum CommitStatus {
+    Commit,
+    Rollback(String),
 }
 
 pub struct Database {
@@ -58,7 +64,11 @@ impl Database {
         let (_, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
             mpsc::channel();
 
-        let options = DatabaseOptions::default();
+        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            .iter()
+            .collect();
+
+        let options = DatabaseOptions::default().set_data_directory(database_dir);
 
         Self {
             person_table: PersonTable::new(),
@@ -129,6 +139,22 @@ impl Database {
         }
     }
 
+    pub fn process_action(
+        &mut self,
+        user_action: Action,
+        restore: bool,
+    ) -> Result<ActionResult, ErrorString> {
+        let results = self.process_actions(vec![user_action], restore);
+
+        match results {
+            Ok(results) => Ok(results
+                .into_iter()
+                .nth(0)
+                .expect("should exist due to process_actions returning the same length")),
+            Err(err) => Err(err),
+        }
+    }
+
     pub fn process_actions(
         &mut self,
         user_actions: Vec<Action>,
@@ -137,54 +163,55 @@ impl Database {
         // TODO: Consider filtering out transactions that just have query actions
         let transaction_id = self.transaction_log.add_applying(user_actions.clone());
 
-        let mut actions_queue = VecDeque::from(user_actions);
+        let mut status = CommitStatus::Commit;
 
-        // Applied Results
-        let mut action_stack = VecDeque::new();
-        let mut action_result_stack = VecDeque::new();
-        let mut rollback = false;
-        let mut rollback_error: Option<String> = None;
+        struct ActionAndResult {
+            action: Action,
+            result: ActionResult,
+        }
 
-        while actions_queue.len() > 0 {
-            let action = actions_queue
-                .pop_front()
-                .expect("should exist due to queue length being greater than 0");
+        let mut action_stack: Vec<ActionAndResult> = Vec::new();
 
+        for action in user_actions {
             let apply_result = self
                 .person_table
                 .apply(action.clone(), transaction_id.clone());
 
             match apply_result {
                 Ok(action_result) => {
-                    action_stack.push_back(action);
-                    action_result_stack.push_back(action_result);
+                    action_stack.push(ActionAndResult {
+                        action,
+                        result: action_result,
+                    });
                 }
                 Err(err_string) => {
-                    rollback = true;
-                    rollback_error = Some(err_string)
+                    status = CommitStatus::Rollback(err_string);
                 }
             }
         }
 
-        if rollback {
-            while action_stack.len() > 0 {
-                let action = action_stack
-                    .pop_back()
-                    .expect("should exist due to queue length being greater than 0");
+        match status {
+            CommitStatus::Commit => {
+                self.transaction_log.update_committed(restore);
 
-                self.person_table.apply_rollback(action);
+                let action_result_stack: Vec<ActionResult> = action_stack
+                    .into_iter()
+                    .map(|action_and_result| action_and_result.result)
+                    .collect();
+
+                Ok(action_result_stack)
             }
+            CommitStatus::Rollback(error_status) => {
+                // TODO: Write a test to ensure that we rollback in the correct order
+                for ActionAndResult { action, result: _ } in action_stack.into_iter().rev() {
+                    self.person_table.apply_rollback(action)
+                }
 
-            self.transaction_log.update_failed();
+                self.transaction_log.update_failed();
 
-            // TODO: Compress the rollback / rollback_error message into the same time
-            return Err(rollback_error
-                .expect("should exist as rollbacks are errors are set at the same time"));
+                Err(error_status)
+            }
         }
-
-        self.transaction_log.update_committed(restore);
-
-        Ok(Vec::from(action_result_stack))
     }
 }
 
@@ -214,12 +241,11 @@ mod tests {
 
             let person = Person::new_test();
 
-            let process_action_result =
-                database.process_actions(vec![Action::Add(person.clone())], false);
+            let process_action_result = database.process_action(Action::Add(person.clone()), false);
 
             let action_result = process_action_result.expect("Should not error");
 
-            assert_eq!(action_result, vec![ActionResult::Single(person.clone())]);
+            assert_eq!(action_result, ActionResult::Single(person.clone()));
         }
 
         #[test]
@@ -229,13 +255,13 @@ mod tests {
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
             let process_action_result_one =
-                database.process_actions(vec![Action::Add(person_one.clone())], false);
+                database.process_action(Action::Add(person_one.clone()), false);
 
             let action_result_one = process_action_result_one.expect("Should not error");
 
             assert_eq!(
                 action_result_one,
-                vec![ActionResult::Single(person_one.clone())],
+                ActionResult::Single(person_one.clone()),
                 "Person should be returned as a single action result"
             );
 
@@ -243,13 +269,13 @@ mod tests {
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
             let process_action_result_two =
-                database.process_actions(vec![Action::Add(person_two.clone())], false);
+                database.process_action(Action::Add(person_two.clone()), false);
 
             let action_result_two = process_action_result_two.expect("Should not error");
 
             assert_eq!(
                 action_result_two,
-                vec![ActionResult::Single(person_two)],
+                ActionResult::Single(person_two),
                 "Person should be returned as a single action result"
             );
         }

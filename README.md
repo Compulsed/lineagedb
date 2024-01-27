@@ -150,3 +150,6 @@ cargo bench --all
 
 **Current Performance**
 - ~1-2ms for a create call
+
+**To read**
+- https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
