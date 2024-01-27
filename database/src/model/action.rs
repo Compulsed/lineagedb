@@ -33,6 +33,7 @@ impl Action {
 }
 
 // TODO: Is there a better way to type this? Like if we know we are going to get a SuccessStatus, we should be able to unwrap it
+//  Note: the solution could be similiar to how we make the send_request method accept specific action types, and thus, return their corresponding response.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ActionResult {
     /// Used for database status messages
