@@ -4,10 +4,7 @@ use database::{
         request_manager::RequestManager,
         table::row::{UpdateAction, UpdatePersonData},
     },
-    model::{
-        action::{Action, ActionResult},
-        person::Person,
-    },
+    model::{action::Action, person::Person},
 };
 use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;

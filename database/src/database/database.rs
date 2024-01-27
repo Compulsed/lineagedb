@@ -505,7 +505,7 @@ pub mod test_utils {
     use crate::{
         database::{
             database::{Database, DatabaseOptions},
-            request_manager::{DatabaseRequest, DatabaseResponseAction, RequestManager},
+            request_manager::{DatabaseRequest, RequestManager},
         },
         model::action::{Action, ActionResult},
     };
