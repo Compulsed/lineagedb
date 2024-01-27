@@ -1,5 +1,14 @@
 # Lineage DB
 
+Lineage DB is an experimental time traveling database. The database will have the following functionality:
+1. Query the database at any transaction id
+1. For any given item can look at all revisions
+1. Supports ACID transactions (it is single threaded / time traveling so this is almost 'free')
+
+The database is sufficiently isolated, this means it exists in its own crate / is independent from any clients.
+
+To play around / interact with the database I have provided a GraphQL / TCP client.
+
 ## How to use 
 
 **Start the database**
