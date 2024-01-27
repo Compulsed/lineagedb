@@ -4,10 +4,7 @@ use database::{
         request_manager::RequestManager,
         table::row::{UpdateAction, UpdatePersonData},
     },
-    model::{
-        action::{Action, ActionResult},
-        person::Person,
-    },
+    model::{action::Action, person::Person},
 };
 use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;
@@ -100,7 +97,10 @@ impl QueryRoot {
             None => Action::Get(EntityId(id)),
         };
 
-        let db_response = database.send_request(action).expect("Should not timeout");
+        let db_response = database
+            .send_request(vec![action])
+            .expect("Should not timeout")
+            .single_action_result()?;
 
         if let Some(person) = db_response.get_single() {
             return Ok(Some(Human::from_person(person)));
@@ -113,8 +113,9 @@ impl QueryRoot {
         let database = context.request_manager.lock().unwrap();
 
         let db_response = database
-            .send_request(Action::List)
-            .expect("Should not timeout");
+            .send_request(vec![Action::List])
+            .expect("Should not timeout")
+            .single_action_result()?;
 
         let humans = db_response
             .list()
@@ -138,19 +139,35 @@ impl MutationRoot {
         let add_transaction = Action::Add(person);
 
         let db_response = database
-            .send_request(add_transaction)
-            .expect("Should not timeout");
+            .send_request(vec![add_transaction])
+            .expect("Should not timeout")
+            .single_action_result()?
+            .single();
 
-        println!("{:?}", db_response);
+        Ok(Human::from_person(db_response))
+    }
 
-        if let ActionResult::ErrorStatus(s) = db_response {
-            return Err(FieldError::new(
-                s.clone(),
-                graphql_value!({ "bad_request": s }),
-            ));
-        }
+    fn create_humans(
+        new_humans: Vec<NewHuman>,
+        context: &'db GraphQLContext,
+    ) -> FieldResult<Vec<Human>> {
+        let database = context.request_manager.lock().unwrap();
 
-        Ok(Human::from_person(db_response.single()))
+        let add_people = new_humans
+            .into_iter()
+            .map(NewHuman::to_person)
+            .map(Action::Add)
+            .collect();
+
+        let humans = database
+            .send_request(add_people)
+            .expect("Should not timeout")
+            .multiple_action_result()?
+            .into_iter()
+            .map(|r| Human::from_person(r.single()))
+            .collect();
+
+        Ok(humans)
     }
 
     fn update_human(
@@ -180,21 +197,21 @@ impl MutationRoot {
         let update_transaction = Action::Update(EntityId(id), update_person_date);
 
         let db_response = database
-            .send_request(update_transaction)
-            .expect("Should not timeout");
+            .send_request(vec![update_transaction])
+            .expect("Should not timeout")
+            .single_action_result();
 
-        // TODO: Centralize error handling responses
-        match db_response {
-            ActionResult::Single(p) => Ok(Human::from_person(p)),
-            ActionResult::ErrorStatus(s) => Err(FieldError::new(
-                s.clone(),
-                graphql_value!({ "BadRequest": s }),
-            )),
-            _ => Err(FieldError::new(
-                "Unexpected response from database".to_string(),
-                graphql_value!({ "InternalError": "Unexpected response from database" }),
-            )),
-        }
+        let person = match db_response {
+            Ok(db_response) => db_response.single(),
+            Err(e) => {
+                return Err(FieldError::new(
+                    e,
+                    graphql_value!({ "bad_request": "Failed to update person" }),
+                ))
+            }
+        };
+
+        Ok(Human::from_person(person))
     }
 }
 

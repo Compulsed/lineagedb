@@ -20,6 +20,7 @@ num-format = "0.4.4"
 
 [dev-dependencies]
 criterion = "0.5.1"
+rstest = "0.18.2"
 
 
 [[bench]]

@@ -9,6 +9,7 @@ Open `http://0.0.0.0:9000/graphiql`
 
 Can use the below mutations to persist / get data
 ```
+# Create
 mutation writeHuman {
   createHuman(newHuman: { fullName: "Frank Walker" }) {
     id
@@ -17,6 +18,23 @@ mutation writeHuman {
   }
 }
 
+# Create builk
+mutation createHumans ($newHumans: [NewHuman!]!) {
+  createHumans(newHumans: $newHumans) {
+    id
+    fullName
+    email
+  }
+}
+
+{
+  "newHumans": [
+    { "fullName": "test1", "email": "dale@vendia.net" },
+    { "fullName": "test2", "email": null }
+  ]
+}
+
+# Update
 mutation updateHuman {
   updateHuman(id: "53db1e6f-4b90-4d3d-8871-b24288bf9192", updateHuman: { email: "1233@gmail.com"}) {
     id
@@ -34,6 +52,7 @@ query queryHuman {
   }
 }
 
+# List
 query listHuman {
   listHuman {
     id
@@ -147,6 +166,21 @@ cargo bench --all
 - Turn index into a class
 - Tests
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
+- Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response
+- Improve change the send_request to be 'action aware', as in, a single action should return a single response
 
 **Current Performance**
 - ~1-2ms for a create call
+
+**To read**
+- https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
+
+**Rust learnings**
+1. NewType is great
+2. match .into_iter().next() is a great way to get ownership / get the first item
+3. When evaluating nested types in e.g. DatabaseResponseAction, it is better to assert that the enum is of X value (matches!) is useful too
+4. Error handling
+  1. Enums for problems common problems with user input
+  1. Results for issues with the network, supports propagation via ? and error type mapping
+  1. Panics for logical errors / bugs in the code
+5. Prefer infallable logic, e.g. try not to create methods that hide unwraps 
