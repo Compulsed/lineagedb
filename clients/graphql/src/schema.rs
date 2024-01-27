@@ -1,12 +1,12 @@
 use database::{
-    consts::consts::{EntityId, VersionId, VersionIdVersionError},
+    consts::consts::EntityId,
     database::{
         request_manager::RequestManager,
         table::row::{UpdateAction, UpdatePersonData},
     },
     model::{action::Action, person::Person},
 };
-use juniper::{graphql_value, EmptySubscription, FieldError, FieldResult, Nullable, RootNode};
+use juniper::{EmptySubscription, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;
 use uuid::Uuid;
 
