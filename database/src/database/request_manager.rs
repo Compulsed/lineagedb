@@ -11,6 +11,12 @@ pub enum DatabaseRequestAction {
     Shutdown,
 }
 
+// TODO: How do we make it more ergonomic to:
+//  1. Send a single action to the database and get a single action result back (without having to assert on the response)
+//      - Add an additional enum that returns a single ActionResult?
+//      - This could work IF we make the send_request method accept specific action types, and thus, return their corresponding response.
+//      - Then we could make the internals perform the assertion
+//  2. How do we make it more ergonomic to send an action say get, and know that we will get a single item
 #[derive(Debug, PartialEq)]
 pub enum DatabaseResponseAction {
     Response(Vec<ActionResult>),

@@ -167,6 +167,7 @@ cargo bench --all
 - Tests
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
 - Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response
+- Improve change the send_request to be 'action aware', as in, a single action should return a single response
 
 **Current Performance**
 - ~1-2ms for a create call
