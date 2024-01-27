@@ -1,5 +1,5 @@
 use database::{
-    consts::consts::EntityId,
+    consts::consts::{EntityId, VersionId, VersionIdVersionError},
     database::{
         request_manager::RequestManager,
         table::row::{UpdateAction, UpdatePersonData},
@@ -66,14 +66,41 @@ pub struct UpdateHumanData {
 
 pub struct QueryRoot;
 
+fn get_version_id(id: String, version_id: i32) -> FieldResult<Action> {
+    let err: VersionIdVersionError = match VersionId::try_from(version_id) {
+        Ok(v) => return Ok(Action::GetVersion(EntityId(id), v)),
+        Err(e) => e,
+    };
+
+    let err_field_result = match err {
+        VersionIdVersionError::NegativeOrZero(v) => FieldError::new(
+            format!("VersionId must be greater than 0, got {}", v),
+            graphql_value!({ "bad_request": "VersionId must be greater than 0" }),
+        ),
+        VersionIdVersionError::TooLarge(v) => FieldError::new(
+            format!("VersionId must be less than {}, got {}", u16::MAX, v),
+            graphql_value!({ "bad_request": "VersionId must be less than u16::MAX" }),
+        ),
+    };
+
+    Err(err_field_result)
+}
+
 #[juniper::graphql_object(context = GraphQLContext)]
 impl QueryRoot {
-    fn human(id: String, context: &'db GraphQLContext) -> FieldResult<Option<Human>> {
+    fn human(
+        id: String,
+        version_id: Option<i32>,
+        context: &'db GraphQLContext,
+    ) -> FieldResult<Option<Human>> {
         let database = context.request_manager.lock().unwrap();
 
-        let db_response = database
-            .send_request(Action::Get(EntityId(id)))
-            .expect("Should not timeout");
+        let action = match version_id {
+            Some(v) => get_version_id(id, v)?,
+            None => Action::Get(EntityId(id)),
+        };
+
+        let db_response = database.send_request(action).expect("Should not timeout");
 
         if let Some(person) = db_response.get_single() {
             return Ok(Some(Human::from_person(person)));

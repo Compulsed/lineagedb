@@ -72,6 +72,13 @@ RUST_BACKTRACE=1 cargo run
 cargo run --package tcp-server --bin lineagedb-tcp-server
 ```
 
+**Testing / Benchmarking**
+
+```
+cargo test --all
+cargo bench --all
+```
+
 ## Features
 1. Input parser ✅
 1. Transaction Processor (Query, Add) ✅
@@ -134,9 +141,9 @@ cargo run --package tcp-server --bin lineagedb-tcp-server
 - Clippy ✅
 - CI/CD Pipeline ✅
 - CLI
-    - List database version
-    - Specify port to bind
-    - Specify IP to bind
+    - Specify port to bind ✅
+    - Specify IP to bind ✅
+    - List database version (https://github.com/rust-lang/cargo/issues/6583)
 - Turn index into a class
 - Tests
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
