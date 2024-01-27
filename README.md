@@ -166,9 +166,20 @@ cargo bench --all
 - Turn index into a class
 - Tests
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
+- Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response
 
 **Current Performance**
 - ~1-2ms for a create call
 
 **To read**
 - https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
+
+**Rust learnings**
+1. NewType is great
+2. match .into_iter().next() is a great way to get ownership / get the first item
+3. When evaluating nested types in e.g. DatabaseResponseAction, it is better to assert that the enum is of X value (matches!) is useful too
+4. Error handling
+  1. Enums for problems common problems with user input
+  1. Results for issues with the network, supports propagation via ? and error type mapping
+  1. Panics for logical errors / bugs in the code
+5. Prefer infallable logic, e.g. try not to create methods that mask unwraps 

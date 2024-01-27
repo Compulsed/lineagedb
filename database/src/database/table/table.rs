@@ -81,6 +81,7 @@ impl PersonTable {
                     id.to_string()
                 ))?;
 
+                // Bug: Cannot set email to own email
                 if let UpdateAction::Set(email_to_update) = &update_person.email {
                     if self.unique_email_index.contains_key(email_to_update) {
                         return Err(format!(
