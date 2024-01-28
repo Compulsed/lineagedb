@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    consts::consts::{EntityId, TransactionId, VersionId, START_AT_INDEX},
+    consts::consts::{EntityId, TransactionId, VersionId},
     model::person::Person,
 };
 
@@ -64,7 +64,7 @@ impl PersonRow {
         PersonRow {
             versions: vec![PersonVersion {
                 state: PersonVersionState::State(person),
-                version: START_AT_INDEX,
+                version: VersionId::new_first_version(),
                 transaction_id,
             }],
         }
@@ -190,7 +190,8 @@ impl PersonRow {
     }
 
     pub fn at_version(&self, version_id: VersionId) -> Option<Person> {
-        match self.versions.get(version_id.to_number()) {
+        // Versions are 1 indexed, subtract 1 to get the correct vector index
+        match self.versions.get(version_id.to_number() - 1) {
             Some(version) => version.get_person(),
             None => None,
         }
