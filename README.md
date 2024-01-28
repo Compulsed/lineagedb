@@ -213,6 +213,7 @@ cargo bench --all
 - Do not need to maintain the transaction log in memory -- Transation log can just use a reference
 - Updating action format (e.g. adding additional params to list) causes parsing to break
 - Try a faster / binary serialization format. JSON might be slow
+- Versions are full clones of the data, if we use RC we would be be able to save on clones
 
 ## My learnings
 
