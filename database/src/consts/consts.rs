@@ -4,9 +4,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-// Types
-pub type ErrorString = String;
-
 // New Type Pattern -- https://doc.rust-lang.org/rust-by-example/generics/new_types.html
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, PartialOrd)]
 pub struct TransactionId(pub usize);
