@@ -185,6 +185,7 @@ cargo bench --all
     - Database 
       - Transaction Management ✅
     - Table (Applying / Rolling back changes)
+      - Should test all exceptions
     - Row
   - Tooling
     - Rstest (can we use the fixture functionality to run the tests against different database states? empty, few transactions, etc)
@@ -202,6 +203,7 @@ cargo bench --all
 
 **To read**
 - https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
+- https://rust-unofficial.github.io/patterns/additional_resources/design-principles.html
 
 **Rust learnings**
 1. NewType is great
