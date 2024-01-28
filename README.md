@@ -135,7 +135,12 @@ cargo bench --all
 **GraphQL Feature**
 - Get ✅
 - GetVersion ✅
-- List ✅
+- List 
+  - Basic ✅
+  - Filtering 
+    - AND ✅
+    - OR
+  - Using indexes  
 - List at transaction id
 - Create 
   - Single ✅ 
