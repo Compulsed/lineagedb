@@ -180,7 +180,7 @@ impl Database {
                     });
                 }
                 Err(err_string) => {
-                    status = CommitStatus::Rollback(err_string);
+                    status = CommitStatus::Rollback(format!("{}", err_string));
                 }
             }
         }

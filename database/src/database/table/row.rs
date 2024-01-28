@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    consts::consts::{ErrorString, TransactionId, VersionId, START_AT_INDEX},
+    consts::consts::{EntityId, TransactionId, VersionId, START_AT_INDEX},
     model::person::Person,
 };
+
+use super::table::ApplyErrors;
 
 #[derive(Debug)]
 pub struct ApplyUpdateResult {
@@ -73,12 +75,14 @@ impl PersonRow {
         &mut self,
         person: Person,
         transaction_id: TransactionId,
-    ) -> Result<(), ErrorString> {
+    ) -> Result<(), ApplyErrors> {
         let current_version = self.current_version();
 
         // Verify
         if &current_version.state != &PersonVersionState::Delete {
-            return Err("Cannot add an item when it already exists".to_string());
+            return Err(ApplyErrors::CannotCreateWhenAlreadyExists(
+                person.id.clone(),
+            ));
         }
 
         // Apply
@@ -93,18 +97,17 @@ impl PersonRow {
 
     pub fn apply_update(
         &mut self,
+        id: &EntityId,
         update: UpdatePersonData,
         transaction_id: TransactionId,
-    ) -> Result<ApplyUpdateResult, ErrorString> {
+    ) -> Result<ApplyUpdateResult, ApplyErrors> {
         let previous_version = self.current_version();
 
         // Verify
-        if &previous_version.state == &PersonVersionState::Delete {
-            return Err("Cannot update a deleted record".to_string());
-        }
-
         let previous_person = match previous_version.state.clone() {
-            PersonVersionState::Delete => return Err("Cannot update a deleted record".to_string()),
+            PersonVersionState::Delete => {
+                return Err(ApplyErrors::CannotUpdateDoesNotExist(id.clone()))
+            }
             PersonVersionState::State(s) => s,
         };
 
@@ -112,7 +115,11 @@ impl PersonRow {
 
         match &update.full_name {
             UpdateAction::Set(full_name) => current_person.full_name = full_name.clone(),
-            UpdateAction::Unset => return Err("Full name cannot be set to null".to_string()),
+            UpdateAction::Unset => {
+                return Err(ApplyErrors::NotNullConstraintViolation(
+                    "Full Name".to_string(),
+                ))
+            }
             UpdateAction::NoChanges => {}
         }
 
@@ -137,15 +144,16 @@ impl PersonRow {
 
     pub fn apply_delete(
         &mut self,
+        id: &EntityId,
         transaction_id: TransactionId,
-    ) -> Result<ApplyDeleteResult, ErrorString> {
+    ) -> Result<ApplyDeleteResult, ApplyErrors> {
         let current_version = self.current_version();
 
         // Verify
         let previous_person = match current_version.clone().state {
             PersonVersionState::State(s) => s,
             PersonVersionState::Delete => {
-                return Err("Cannot delete an already deleted record".to_string());
+                return Err(ApplyErrors::CannotDeleteDoesNotExist(id.clone()));
             }
         };
 
