@@ -46,6 +46,7 @@ pub enum UpdateAction {
 }
 
 /// Used to clean up the table if there are no versions left
+// I think it is better to have a non-optional version, and then all other versions captured in a vector
 pub enum DropRow {
     VersionExist,
     NoVersionsExist,
