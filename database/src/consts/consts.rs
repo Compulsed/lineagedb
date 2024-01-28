@@ -1,9 +1,8 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
-
-// Types
-pub type ErrorString = String;
 
 // New Type Pattern -- https://doc.rust-lang.org/rust-by-example/generics/new_types.html
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, PartialOrd)]
@@ -19,6 +18,12 @@ impl TransactionId {
     }
 }
 
+impl fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, PartialOrd)]
 pub struct VersionId(pub usize);
 
@@ -29,6 +34,12 @@ impl VersionId {
 
     pub fn to_number(self) -> usize {
         self.0
+    }
+}
+
+impl fmt::Display for VersionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -65,13 +76,20 @@ impl TryFrom<i32> for VersionId {
 pub struct EntityId(pub String);
 
 impl EntityId {
-    // TODO: This is likely inefficient, we should implement a ref type
+    // TODO:
+    //  - This is likely inefficient, we should implement a ref type
     pub fn to_string(&self) -> String {
         self.0.clone()
     }
 
     pub fn new() -> EntityId {
         EntityId(Uuid::new_v4().to_string())
+    }
+}
+
+impl fmt::Display for EntityId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

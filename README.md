@@ -180,10 +180,16 @@ cargo bench --all
 - Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response ✅
 - Improve change the send_request to be 'action aware', as in, a single action should return a single response ✅
 - Tests 
-  - GraphQL
-  - Database (Transaction Management) ✅
-  - Table (Applying / Rolling back changes)
-  - Row
+  - Areas:
+    - GraphQL
+    - Database 
+      - Transaction Management ✅
+    - Table (Applying / Rolling back changes)
+      - Should test all exceptions
+    - Row
+  - Tooling
+    - Rstest (can we use the fixture functionality to run the tests against different database states? empty, few transactions, etc)
+    - Code coverage?
 - CLI
     - Specify port to bind ✅
     - Specify IP to bind ✅
@@ -197,6 +203,7 @@ cargo bench --all
 
 **To read**
 - https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
+- https://rust-unofficial.github.io/patterns/additional_resources/design-principles.html
 
 **Rust learnings**
 1. NewType is great
