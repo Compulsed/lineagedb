@@ -69,6 +69,14 @@ query listHuman {
     email
   }
 }
+
+query listHumanWithQuery {
+  listHuman(query: { fullName: "test1" }) {
+    id
+    fullName
+    email
+  }
+}
 ```
 
 **CLI**
@@ -127,7 +135,12 @@ cargo bench --all
 **GraphQL Feature**
 - Get ✅
 - GetVersion ✅
-- List ✅
+- List 
+  - Basic ✅
+  - Filtering 
+    - AND ✅
+    - OR
+  - Using indexes  
 - List at transaction id
 - Create 
   - Single ✅ 
@@ -198,6 +211,9 @@ cargo bench --all
 - Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
 - Transaction that just contain queries should not be persisted to the transaction log
 - Do not need to maintain the transaction log in memory -- Transation log can just use a reference
+- Updating action format (e.g. adding additional params to list) causes parsing to break
+- Try a faster / binary serialization format. JSON might be slow
+- Versions are full clones of the data, if we use RC we would be be able to save on clones
 
 ## My learnings
 

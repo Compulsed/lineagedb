@@ -1,8 +1,9 @@
+use actix_web::web::Query;
 use database::{
     consts::consts::EntityId,
     database::{
         request_manager::RequestManager,
-        table::row::{UpdateAction, UpdatePersonData},
+        table::row::{QueryMatch, QueryPersonData, UpdateAction, UpdatePersonData},
     },
     model::{action::Action, person::Person},
 };
@@ -61,6 +62,13 @@ pub struct UpdateHumanData {
     pub email: Nullable<String>,
 }
 
+#[derive(GraphQLInputObject)]
+#[graphql(description = "A humanoid creature in the Star Wars universe")]
+pub struct QueryHumanData {
+    pub full_name: Nullable<String>,
+    pub email: Nullable<String>,
+}
+
 pub struct QueryRoot;
 
 #[juniper::graphql_object(context = GraphQLContext)]
@@ -82,11 +90,34 @@ impl QueryRoot {
         Ok(optional_person.and_then(|p| Some(Human::from_person(p))))
     }
 
-    fn list_human(context: &'db GraphQLContext) -> FieldResult<Vec<Human>> {
+    fn list_human(
+        query: Nullable<QueryHumanData>,
+        context: &'db GraphQLContext,
+    ) -> FieldResult<Vec<Human>> {
         let database = context.request_manager.lock().unwrap();
 
+        let list_query = match query {
+            Nullable::ImplicitNull => None,
+            Nullable::ExplicitNull => None,
+            Nullable::Some(t) => {
+                let full_name = match t.full_name {
+                    Nullable::ImplicitNull => QueryMatch::Any,
+                    Nullable::ExplicitNull => QueryMatch::Null,
+                    Nullable::Some(t) => QueryMatch::Value(t),
+                };
+
+                let email = match t.email {
+                    Nullable::ImplicitNull => QueryMatch::Any,
+                    Nullable::ExplicitNull => QueryMatch::Null,
+                    Nullable::Some(t) => QueryMatch::Value(t),
+                };
+
+                Some(QueryPersonData { full_name, email })
+            }
+        };
+
         let result = database
-            .send_list()?
+            .send_list(list_query)?
             .into_iter()
             .map(Human::from_person)
             .collect();

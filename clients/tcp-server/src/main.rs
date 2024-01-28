@@ -70,7 +70,7 @@ fn main() {
                             log::info!("Request: {}", request);
 
                             let action = match request {
-                                "l" => Some(Action::List),
+                                "l" => Some(Action::List(None)),
                                 "a" => Some(Action::Add(Person {
                                     id: EntityId("test".to_string()),
                                     full_name: format!("[Count 0] Dale Salter"),

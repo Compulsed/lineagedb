@@ -77,6 +77,9 @@ async fn main() -> io::Result<()> {
 
     // Setup database thread
     thread::spawn(move || {
+        // TOOD: We should improve how we handle panics, problems are as follows:
+        //  1. The database shuts down and all the requests are lost (perhaps we should reset or process should exit?)
+        //  2. The result of a panic is hitting in STD out (colorful info logs mask the plain panic message)
         let mut database = Database::new(database_receiver, database_options);
 
         database.run();

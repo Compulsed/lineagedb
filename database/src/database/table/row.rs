@@ -25,10 +25,31 @@ pub struct UpdatePersonData {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum QueryMatch {
+    Value(String),
+    Null,
+    NotNull,
+    Any,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct QueryPersonData {
+    pub full_name: QueryMatch,
+    pub email: QueryMatch,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum UpdateAction {
     Set(String),
     Unset,
     NoChanges,
+}
+
+/// Used to clean up the table if there are no versions left
+// I think it is better to have a non-optional version, and then all other versions captured in a vector
+pub enum DropRow {
+    VersionExist,
+    NoVersionsExist,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -56,7 +77,7 @@ impl PersonVersion {
 #[derive(Debug)]
 pub struct PersonRow {
     /// Earliest versions are at beginning, latest version is last
-    pub versions: Vec<PersonVersion>,
+    versions: Vec<PersonVersion>,
 }
 
 impl PersonRow {
@@ -76,7 +97,7 @@ impl PersonRow {
         person: Person,
         transaction_id: TransactionId,
     ) -> Result<(), ApplyErrors> {
-        let current_version = self.current_version();
+        let current_version = self.current_version().clone();
 
         // Verify
         if &current_version.state != &PersonVersionState::Delete {
@@ -101,7 +122,7 @@ impl PersonRow {
         update: UpdatePersonData,
         transaction_id: TransactionId,
     ) -> Result<ApplyUpdateResult, ApplyErrors> {
-        let previous_version = self.current_version();
+        let previous_version = self.current_version().clone();
 
         // Verify
         let previous_person = match previous_version.state.clone() {
@@ -147,7 +168,7 @@ impl PersonRow {
         id: &EntityId,
         transaction_id: TransactionId,
     ) -> Result<ApplyDeleteResult, ApplyErrors> {
-        let current_version = self.current_version();
+        let current_version = self.current_version().clone();
 
         // Verify
         let previous_person = match current_version.clone().state {
@@ -178,27 +199,52 @@ impl PersonRow {
         });
     }
 
-    pub fn current_version(&self) -> PersonVersion {
+    pub fn current_version(&self) -> &PersonVersion {
+        // A row is always created with a version AND the row should be dropped if there are no versions (see: rollback_version)
         self.versions
             .last()
-            .expect("should not be possible to create a person data without any versions")
-            .clone()
+            .expect("Will always exist a current version, if not there is a bug")
     }
 
     pub fn current_state(&self) -> Option<Person> {
-        self.current_version().get_person()
+        self.current_version().get_person().clone()
     }
 
-    pub fn at_version(&self, version_id: VersionId) -> Option<Person> {
+    /// Drop row means that we have rolled back to the point where there are no versions. We must clean up the row OR we
+    ///    we will create bugs where we think a row exists when it does not
+    pub fn rollback_version(&mut self) -> (PersonVersion, DropRow) {
+        let version = self
+            .versions
+            .pop()
+            .expect("should not be possible to rollback a person data without any versions");
+
+        let drop_row = match self.versions.len() {
+            0 => DropRow::NoVersionsExist,
+            _ => DropRow::VersionExist,
+        };
+
+        return (version, drop_row);
+    }
+
+    pub fn person_at_version(&self, version_id: VersionId) -> Option<Person> {
+        self.at_version(version_id)
+            .and_then(|version| version.get_person())
+    }
+
+    pub fn at_version(&self, version_id: VersionId) -> Option<PersonVersion> {
         // Versions are 1 indexed, subtract 1 to get the correct vector index
         match self.versions.get(version_id.to_number() - 1) {
-            Some(version) => version.get_person(),
+            Some(version) => Some(version.clone()),
             None => None,
         }
     }
 
+    pub fn version_count(&self) -> usize {
+        self.versions.len()
+    }
+
     pub fn at_transaction_id(&self, transaction_id: &TransactionId) -> Option<Person> {
-        // Can optimize this with a binary search
+        // TODO: Can optimize this with a binary search
         for version in self.versions.iter().rev() {
             // May contain newer uncommited versions, we want to find the closest committed version
             if &version.transaction_id <= transaction_id {
