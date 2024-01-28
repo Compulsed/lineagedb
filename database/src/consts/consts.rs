@@ -16,6 +16,10 @@ impl TransactionId {
     pub fn increment(&self) -> TransactionId {
         TransactionId(self.0 + 1)
     }
+
+    pub fn new_first_transaction() -> TransactionId {
+        TransactionId(1)
+    }
 }
 
 impl fmt::Display for TransactionId {
@@ -34,6 +38,10 @@ impl VersionId {
 
     pub fn to_number(self) -> usize {
         self.0
+    }
+
+    pub fn new_first_version() -> VersionId {
+        VersionId(1)
     }
 }
 
@@ -92,6 +100,3 @@ impl fmt::Display for EntityId {
         write!(f, "{}", self.0)
     }
 }
-
-// Values
-pub const START_AT_INDEX: VersionId = VersionId(1);

@@ -221,6 +221,9 @@ impl PersonTable {
         }
     }
 
+    // TODO: Is there a way to centralize the logic for removing constraints? We could run into a situation
+    //  where we update the logic here OR the row logic and it could get out of sync. This will likely be important
+    //  for indexing as well.
     fn remove_mutation(&mut self, id: EntityId) {
         let person_row = self
             .person_rows
@@ -265,10 +268,308 @@ impl PersonTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::table::row::UpdatePersonData;
 
+    mod versioning {
+        use super::*;
+
+        /// Tests are broken up into three categories:
+        /// - Get action
+        /// - Row data, normally would not depend on private fields, though MVCC has complex logic so this makes it easier to test
+        /// - TODO: Rollback action in the context of versioning
+        mod row_data {
+            use super::*;
+
+            #[test]
+            fn adding_item_creates_version_at_v1() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, _) = add_test_person(&mut table);
+
+                // Then we should have: one version, at version 1, with transaction id 1
+                let person_row = table
+                    .person_rows
+                    .get(&person.id.to_string())
+                    .expect("should have row");
+
+                assert_eq!(person_row.versions.len(), 1);
+
+                assert_eq!(
+                    person_row.versions[0],
+                    PersonVersion {
+                        state: PersonVersionState::State(person),
+                        version: VersionId(1),
+                        transaction_id: TransactionId(1),
+                    }
+                );
+            }
+
+            #[test]
+            fn adding_then_updating_creates_version_v2() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person(&mut table);
+
+                // And we update the item
+                let (updated_person, _) =
+                    update_test_person(&mut table, &person, next_transaction_id);
+
+                // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
+                let person_row = table
+                    .person_rows
+                    .get(&person.id.to_string())
+                    .expect("should have a row");
+
+                assert_eq!(person_row.versions.len(), 2);
+
+                assert_eq!(
+                    person_row.versions[0],
+                    PersonVersion {
+                        state: PersonVersionState::State(person),
+                        version: VersionId(1),
+                        transaction_id: TransactionId(1),
+                    }
+                );
+
+                assert_eq!(
+                    person_row.versions[1],
+                    PersonVersion {
+                        state: PersonVersionState::State(updated_person),
+                        version: VersionId(2),
+                        transaction_id: TransactionId(2),
+                    }
+                );
+            }
+
+            #[test]
+            fn adding_then_updating_then_deleting_creates_version_v3() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (add_person, next_transaction_id) = add_test_person(&mut table);
+
+                // And we update the item
+                let (updated_person, next_transaction_id) =
+                    update_test_person(&mut table, &add_person, next_transaction_id);
+
+                // And we delete the item
+                let _ = delete_test_person(&mut table, &updated_person.id, next_transaction_id);
+
+                // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
+                let person_row = table
+                    .person_rows
+                    .get(&updated_person.id.to_string())
+                    .expect("should have a row");
+
+                assert_eq!(person_row.versions.len(), 3);
+
+                assert_eq!(
+                    person_row.versions[0],
+                    PersonVersion {
+                        state: PersonVersionState::State(add_person),
+                        version: VersionId(1),
+                        transaction_id: TransactionId(1),
+                    }
+                );
+
+                assert_eq!(
+                    person_row.versions[1],
+                    PersonVersion {
+                        state: PersonVersionState::State(updated_person),
+                        version: VersionId(2),
+                        transaction_id: TransactionId(2),
+                    }
+                );
+
+                assert_eq!(
+                    person_row.versions[2],
+                    PersonVersion {
+                        state: PersonVersionState::Delete,
+                        version: VersionId(3),
+                        transaction_id: TransactionId(3),
+                    }
+                );
+            }
+        }
+
+        mod get_action {
+            use super::*;
+
+            #[test]
+            fn add_then_get_person_at_version() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person(&mut table);
+
+                // Then we should be able to get the item at version 1
+                let person_v1 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(1),
+                    next_transaction_id,
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v1, &person);
+            }
+
+            #[test]
+            fn add_update_then_get_person_at_version() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person(&mut table);
+
+                // And we update the item
+                let (updated_person, next_transaction_id) =
+                    update_test_person(&mut table, &person, next_transaction_id);
+
+                // Then we should be able to get the item at version 1
+                let person_v1 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(1),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v1, &person);
+
+                // Then we should be able to get the item at version 2
+                let person_v2 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(2),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v2, &updated_person);
+            }
+
+            #[test]
+            fn add_update_delete_then_get_person_at_version() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person(&mut table);
+
+                // And we update the item
+                let (updated_person, next_transaction_id) =
+                    update_test_person(&mut table, &person, next_transaction_id);
+
+                // And we delete the item
+                let next_transaction_id =
+                    delete_test_person(&mut table, &person.id, next_transaction_id);
+
+                // Then we should be able to get the item at version 1
+                let person_v1 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(1),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v1, &person);
+
+                // Then we should be able to get the item at version 2
+                let person_v2 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(2),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v2, &updated_person);
+
+                // Then we should NOT be able to get the item at version 3
+                let person_v3 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(3),
+                    next_transaction_id.clone(),
+                );
+
+                assert!(person_v3.is_none());
+            }
+        }
+
+        fn add_test_person(table: &mut PersonTable) -> (Person, TransactionId) {
+            let person = Person::new("1".to_string(), None);
+            let action = Action::Add(person.clone());
+            let transaction_id = TransactionId::new_first_transaction();
+
+            table.apply(action, transaction_id.clone()).unwrap();
+
+            (person, transaction_id.increment())
+        }
+
+        fn update_test_person(
+            table: &mut PersonTable,
+            person: &Person,
+            next_transaction_id: TransactionId,
+        ) -> (Person, TransactionId) {
+            let mut updated_person = person.clone();
+            updated_person.email = Some("email".to_string());
+
+            let action = Action::Update(
+                person.id.clone(),
+                UpdatePersonData {
+                    full_name: UpdateAction::NoChanges,
+                    email: UpdateAction::Set("email".to_string()),
+                },
+            );
+
+            table.apply(action, next_transaction_id.clone()).unwrap();
+
+            (updated_person, next_transaction_id.increment())
+        }
+
+        fn delete_test_person(
+            table: &mut PersonTable,
+            id: &EntityId,
+            next_transaction_id: TransactionId,
+        ) -> TransactionId {
+            let action = Action::Remove(id.clone());
+
+            table.apply(action, next_transaction_id.clone()).unwrap();
+
+            next_transaction_id.increment()
+        }
+
+        fn get_test_person_at_version(
+            table: &mut PersonTable,
+            id: &EntityId,
+            version: &VersionId,
+            next_transaction_id: TransactionId,
+        ) -> Option<Person> {
+            let action = Action::GetVersion(id.clone(), version.clone());
+            let result = table.apply(action, next_transaction_id).unwrap();
+
+            match result {
+                ActionResult::GetSingle(person) => person,
+                _ => {
+                    // Note: Unsure why but cannot panic here, just assert false
+                    assert!(false, "should be a single person");
+                    None
+                }
+            }
+        }
+    }
+
+    /// - TODO: Rollback action in the context constraints
     mod uniqueness_constraint {
-        use crate::database::table::row::UpdatePersonData;
-
         use super::*;
 
         #[test]
@@ -292,6 +593,7 @@ mod tests {
                 .err()
                 .expect("should error");
 
+            // Then we should hit a uniqueness constraint
             assert!(matches!(result, ApplyErrors::UniqueConstraintViolation(_)));
         }
 
@@ -315,6 +617,7 @@ mod tests {
             table.apply(action, TransactionId(3)).unwrap();
         }
 
+        /// This caused a bug where we could not update ourself to the same email
         #[test]
         fn updating_item_value_to_itself_does_not_break_uniqueness_constraint() {
             // Given a table with an that has a unique email
@@ -327,7 +630,7 @@ mod tests {
                 .apply(add_action, TransactionId(1))
                 .expect("should not throw an error because there is no table data");
 
-            // When we update the item with the same email
+            // When we update ourself to the same email
             let update_action = Action::Update(
                 person.id.clone(),
                 UpdatePersonData {
@@ -340,6 +643,7 @@ mod tests {
                 .apply(update_action, TransactionId(2))
                 .expect("should not throw an error because the email is the same");
 
+            // Then the update should succeed
             assert_eq!(result, ActionResult::Single(person));
         }
     }
