@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::row::{
-    ApplyDeleteResult, ApplyUpdateResult, PersonRow, PersonVersion, PersonVersionState,
-    UpdateAction,
+    ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion, PersonVersionState,
+    QueryMatch, UpdateAction,
 };
 
 #[derive(Error, Debug)]
@@ -112,12 +112,12 @@ impl PersonTable {
                     let mut skip_check = false;
 
                     // Edge case: If we are updating the email to the same value, we don't need to check the uniqueness constraint
-                    if let Some(previous_state) = person_row.versions.last() {
-                        if let PersonVersionState::State(previous_person) = &previous_state.state {
-                            if let Some(previous_email) = &previous_person.email {
-                                if previous_email == email_to_update {
-                                    skip_check = true;
-                                }
+                    if let PersonVersionState::State(previous_person) =
+                        &person_row.current_version().state
+                    {
+                        if let Some(previous_email) = &previous_person.email {
+                            if previous_email == email_to_update {
+                                skip_check = true;
                             }
                         }
                     }
@@ -174,18 +174,63 @@ impl PersonTable {
             }
             Action::GetVersion(id, version) => {
                 let person = match &self.person_rows.get(&id.to_string()) {
-                    Some(person_data) => person_data.at_version(version),
+                    Some(person_data) => person_data.person_at_version(version),
                     None => return Err(ApplyErrors::CannotGetAtVersionDoesNotExist(id, version)),
                 };
 
                 ActionResult::GetSingle(person)
             }
-            Action::List => {
-                let people_at_transaction_id: Vec<Person> = self
+            Action::List(query_person_data) => {
+                let mut people_at_transaction_id: Vec<Person> = self
                     .person_rows
                     .iter()
                     .filter_map(|(_, value)| value.at_transaction_id(&transaction_id))
                     .collect();
+
+                sort_list(&mut people_at_transaction_id);
+
+                if let Some(query) = &query_person_data {
+                    people_at_transaction_id = people_at_transaction_id
+                        .into_iter()
+                        .filter(|person| {
+                            match &query.full_name {
+                                QueryMatch::Value(full_name) => {
+                                    if &person.full_name != full_name {
+                                        return false;
+                                    }
+                                }
+                                QueryMatch::Any => {}
+                                // Fullname is not nullable, this check is static
+                                QueryMatch::NotNull => {}
+                                QueryMatch::Null => return false,
+                            }
+
+                            match &query.email {
+                                QueryMatch::Value(email) => match &person.email {
+                                    Some(person_email) => {
+                                        if person_email != email {
+                                            return false;
+                                        }
+                                    }
+                                    None => return false,
+                                },
+                                QueryMatch::Null => {
+                                    if person.email.is_some() {
+                                        return false;
+                                    }
+                                }
+                                QueryMatch::NotNull => {
+                                    if person.email.is_none() {
+                                        return false;
+                                    }
+                                }
+                                QueryMatch::Any => {}
+                            }
+
+                            return true;
+                        })
+                        .collect();
+                }
 
                 ActionResult::List(people_at_transaction_id)
             }
@@ -216,7 +261,7 @@ impl PersonTable {
             }
             Action::Get(_)
             | Action::GetVersion(_, _)
-            | Action::List
+            | Action::List(_)
             | Action::ListLatestVersions => {}
         }
     }
@@ -231,10 +276,7 @@ impl PersonTable {
             .expect("should exist because there is a rollback");
 
         // Remove the version that was applied
-        let person_version_to_remove = person_row
-            .versions
-            .pop()
-            .expect("should exist because there is a rollback");
+        let (person_version_to_remove, drop_row) = person_row.rollback_version();
 
         match person_version_to_remove.state {
             PersonVersionState::State(person) => {
@@ -242,15 +284,13 @@ impl PersonTable {
                     self.unique_email_index.remove(&email);
                 }
 
-                if person_row.versions.is_empty() {
+                // Note: This should only happen when we rollback an add
+                if let DropRow::NoVersionsExist = drop_row {
                     self.person_rows.remove(&id.to_string());
                 }
             }
             PersonVersionState::Delete => {
-                let current_person = person_row
-                    .versions
-                    .last()
-                    .expect("should exist because there is a rollback");
+                let current_person = person_row.current_version();
 
                 if let PersonVersionState::State(person) = &current_person.state {
                     if let Some(email) = &person.email {
@@ -265,10 +305,315 @@ impl PersonTable {
     }
 }
 
+fn sort_list(people: &mut Vec<Person>) {
+    people.sort_by(|a, b| a.id.cmp(&b.id));
+}
+
+// TODO: Tests are missing
+//  - Constraint / index validation, perhaps we should move index operations into their own class?
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::table::row::UpdatePersonData;
+
+    // TODO:
+    //  - There should be a better way of comparing lists of a default sort (sort_list)
+    //  - Should test listing given a transaction id
+    mod list_filtering {
+        use crate::database::table::row::{QueryMatch, QueryPersonData};
+
+        use super::*;
+
+        /// Simplest possible cases -- does not need to handle any problems with versioning
+        mod add {
+            use super::*;
+
+            #[test]
+            fn list_all_items() {
+                // Given there is a table with two different people
+                let seed_data = vec![
+                    Person::new("1".to_string(), Some("1".to_string())),
+                    Person::new("2".to_string(), Some("2".to_string())),
+                ];
+
+                let seed_actions = seed_data
+                    .iter()
+                    .map(|person| Action::Add(person.clone()))
+                    .collect();
+
+                // When query the table
+                let list_action = Action::List(None);
+
+                // Then we should get all items back
+                list_test(seed_actions, list_action, seed_data);
+            }
+
+            #[test]
+            fn filter_value() {
+                // Given there is a table with two different people
+                let seed_data = vec![
+                    Person::new("1".to_string(), Some("1".to_string())),
+                    Person::new("2".to_string(), Some("2".to_string())),
+                ];
+
+                let seed_actions = seed_data
+                    .iter()
+                    .map(|person| Action::Add(person.clone()))
+                    .collect();
+
+                // When query the table
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Value("1".to_string()),
+                    email: QueryMatch::Any,
+                }));
+
+                // Then we should only get the rows with "1"
+                list_test(seed_actions, list_action, vec![seed_data[0].clone()]);
+            }
+
+            #[test]
+            fn filter_multiple_values() {
+                // Given there is a table with two different people
+                let seed_data = vec![
+                    Person::new("1".to_string(), Some("1".to_string())),
+                    Person::new("2".to_string(), Some("2".to_string())),
+                ];
+
+                let seed_actions = seed_data
+                    .iter()
+                    .map(|person| Action::Add(person.clone()))
+                    .collect();
+
+                // When query the table
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Value("2".to_string()),
+                    email: QueryMatch::Value("2".to_string()),
+                }));
+
+                // Then we should only get back the rows with "2" for email and full name
+                list_test(seed_actions, list_action, vec![seed_data[1].clone()]);
+            }
+
+            #[test]
+            fn filter_for_null() {
+                // Given there is a table with two different people
+                let seed_data = vec![
+                    Person::new("1".to_string(), Some("1".to_string())),
+                    Person::new("2".to_string(), None),
+                ];
+
+                let seed_actions = seed_data
+                    .iter()
+                    .map(|person| Action::Add(person.clone()))
+                    .collect();
+
+                // When query the table
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Any,
+                    email: QueryMatch::Null,
+                }));
+
+                // Then we should only get back the rows with null
+                list_test(seed_actions, list_action, vec![seed_data[1].clone()]);
+            }
+
+            #[test]
+            fn filter_no_matches() {
+                // Given there is a table with two different people
+                let seed_data = vec![
+                    Person::new("1".to_string(), None),
+                    Person::new("2".to_string(), None),
+                ];
+
+                let seed_actions = seed_data
+                    .iter()
+                    .map(|person| Action::Add(person.clone()))
+                    .collect();
+
+                // When query the table
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Any,
+                    email: QueryMatch::Value("1".to_string()),
+                }));
+
+                // Then we should only get items that have an email of "1", which there are none
+                list_test(seed_actions, list_action, vec![]);
+            }
+
+            #[test]
+            fn filter_not_null() {
+                // Given there is a table with two different people
+                let seed_data = vec![
+                    Person::new("1".to_string(), Some("1".to_string())),
+                    Person::new("2".to_string(), None),
+                ];
+
+                let seed_actions = seed_data
+                    .iter()
+                    .map(|person| Action::Add(person.clone()))
+                    .collect();
+
+                // When query the table
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Any,
+                    email: QueryMatch::NotNull,
+                }));
+
+                // Then we should only get items that have an email, which there is 1
+                list_test(seed_actions, list_action, vec![seed_data[0].clone()]);
+            }
+        }
+
+        mod update {
+            use super::*;
+
+            #[test]
+            fn list_all_items() {
+                // Given there is a table of one person (added, then updated)
+                let person = Person::new("1".to_string(), Some("1".to_string()));
+
+                let seed_actions = vec![
+                    Action::Add(person.clone()),
+                    Action::Update(
+                        person.id.clone(),
+                        UpdatePersonData {
+                            full_name: UpdateAction::Set("2".to_string()),
+                            email: UpdateAction::NoChanges,
+                        },
+                    ),
+                ];
+
+                // Mimic the update
+                let mut updated_person = person.clone();
+                updated_person.full_name = "2".to_string();
+
+                // When query the table
+                let list_action = Action::List(None);
+
+                // Then we should get the updated item back
+                list_test(seed_actions, list_action, vec![updated_person]);
+            }
+
+            #[test]
+            fn list_should_match_on_new_values() {
+                // Given there is a table of one person (added, then updated)
+                let person = Person::new("1".to_string(), Some("1".to_string()));
+
+                let seed_actions = vec![
+                    Action::Add(person.clone()),
+                    Action::Update(
+                        person.id.clone(),
+                        UpdatePersonData {
+                            full_name: UpdateAction::Set("2".to_string()),
+                            email: UpdateAction::NoChanges,
+                        },
+                    ),
+                ];
+
+                // Mimic the update
+                let mut updated_person = person.clone();
+                updated_person.full_name = "2".to_string();
+
+                // When querying the table with the current state
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Value("2".to_string()),
+                    email: QueryMatch::Any,
+                }));
+
+                // Then we should get the updated item back
+                list_test(seed_actions, list_action, vec![updated_person]);
+            }
+
+            #[test]
+            fn list_should_not_match_on_old_values() {
+                // Given there is a table of one person (added, then updated)
+                let person = Person::new("1".to_string(), Some("1".to_string()));
+
+                let seed_actions = vec![
+                    Action::Add(person.clone()),
+                    Action::Update(
+                        person.id.clone(),
+                        UpdatePersonData {
+                            full_name: UpdateAction::Set("2".to_string()),
+                            email: UpdateAction::NoChanges,
+                        },
+                    ),
+                ];
+
+                // When we query the table with the old state
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Value("1".to_string()),
+                    email: QueryMatch::Any,
+                }));
+
+                // Then we should get no items back
+                list_test(seed_actions, list_action, vec![]);
+            }
+        }
+
+        mod delete {
+            use super::*;
+
+            #[test]
+            fn list_without_query_should_not_return_deleted_values() {
+                // Given there is a table of one person (added, then updated)
+                let person = Person::new("1".to_string(), Some("1".to_string()));
+
+                let seed_actions = vec![
+                    Action::Add(person.clone()),
+                    Action::Remove(person.id.clone()),
+                ];
+
+                // When we select all items
+                let list_action = Action::List(None);
+
+                // Then we should get no items back
+                list_test(seed_actions, list_action, vec![]);
+            }
+
+            #[test]
+            fn list_should_not_return_deleted_values() {
+                // Given there is a table of one person (added, then updated)
+                let person = Person::new("1".to_string(), Some("1".to_string()));
+
+                let seed_actions = vec![
+                    Action::Add(person.clone()),
+                    Action::Remove(person.id.clone()),
+                ];
+
+                // When we select all items
+                let list_action = Action::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Any,
+                    email: QueryMatch::Any,
+                }));
+
+                // Then we should get no items back
+                list_test(seed_actions, list_action, vec![]);
+            }
+        }
+
+        pub fn list_test(actions: Vec<Action>, list_action: Action, compare_to: Vec<Person>) -> () {
+            let mut table = PersonTable::new();
+            let mut next_transaction_id = TransactionId::new_first_transaction();
+
+            for action in actions {
+                table.apply(action, next_transaction_id.clone()).unwrap();
+                next_transaction_id = next_transaction_id.increment();
+            }
+
+            let mut list_results = table
+                .apply(list_action, next_transaction_id)
+                .unwrap()
+                .list();
+
+            let mut sort_compare_to = compare_to;
+
+            sort_list(&mut list_results);
+            sort_list(&mut sort_compare_to);
+
+            assert_eq!(&list_results, &sort_compare_to);
+        }
+    }
 
     mod versioning {
         use super::*;
@@ -276,7 +621,6 @@ mod tests {
         /// Tests are broken up into three categories:
         /// - Get action
         /// - Row data, normally would not depend on private fields, though MVCC has complex logic so this makes it easier to test
-        /// - TODO: Rollback action in the context of versioning
         mod row_data {
             use super::*;
 
@@ -286,7 +630,7 @@ mod tests {
                 let mut table = PersonTable::new();
 
                 // When we add an item
-                let (person, _) = add_test_person(&mut table);
+                let (person, _) = add_test_person_to_empty_database(&mut table);
 
                 // Then we should have: one version, at version 1, with transaction id 1
                 let person_row = table
@@ -294,15 +638,15 @@ mod tests {
                     .get(&person.id.to_string())
                     .expect("should have row");
 
-                assert_eq!(person_row.versions.len(), 1);
+                assert_eq!(person_row.version_count(), 1);
 
                 assert_eq!(
-                    person_row.versions[0],
-                    PersonVersion {
+                    person_row.at_version(VersionId(1)),
+                    Some(PersonVersion {
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
                         transaction_id: TransactionId(1),
-                    }
+                    })
                 );
             }
 
@@ -312,7 +656,7 @@ mod tests {
                 let mut table = PersonTable::new();
 
                 // When we add an item
-                let (person, next_transaction_id) = add_test_person(&mut table);
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
 
                 // And we update the item
                 let (updated_person, _) =
@@ -324,24 +668,24 @@ mod tests {
                     .get(&person.id.to_string())
                     .expect("should have a row");
 
-                assert_eq!(person_row.versions.len(), 2);
+                assert_eq!(person_row.version_count(), 2);
 
                 assert_eq!(
-                    person_row.versions[0],
-                    PersonVersion {
+                    person_row.at_version(VersionId(1)),
+                    Some(PersonVersion {
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
                         transaction_id: TransactionId(1),
-                    }
+                    })
                 );
 
                 assert_eq!(
-                    person_row.versions[1],
-                    PersonVersion {
+                    person_row.at_version(VersionId(2)),
+                    Some(PersonVersion {
                         state: PersonVersionState::State(updated_person),
                         version: VersionId(2),
                         transaction_id: TransactionId(2),
-                    }
+                    })
                 );
             }
 
@@ -351,7 +695,8 @@ mod tests {
                 let mut table = PersonTable::new();
 
                 // When we add an item
-                let (add_person, next_transaction_id) = add_test_person(&mut table);
+                let (add_person, next_transaction_id) =
+                    add_test_person_to_empty_database(&mut table);
 
                 // And we update the item
                 let (updated_person, next_transaction_id) =
@@ -366,33 +711,33 @@ mod tests {
                     .get(&updated_person.id.to_string())
                     .expect("should have a row");
 
-                assert_eq!(person_row.versions.len(), 3);
+                assert_eq!(person_row.version_count(), 3);
 
                 assert_eq!(
-                    person_row.versions[0],
-                    PersonVersion {
+                    person_row.at_version(VersionId(1)),
+                    Some(PersonVersion {
                         state: PersonVersionState::State(add_person),
                         version: VersionId(1),
                         transaction_id: TransactionId(1),
-                    }
+                    })
                 );
 
                 assert_eq!(
-                    person_row.versions[1],
-                    PersonVersion {
+                    person_row.at_version(VersionId(2)),
+                    Some(PersonVersion {
                         state: PersonVersionState::State(updated_person),
                         version: VersionId(2),
                         transaction_id: TransactionId(2),
-                    }
+                    })
                 );
 
                 assert_eq!(
-                    person_row.versions[2],
-                    PersonVersion {
+                    person_row.at_version(VersionId(3)),
+                    Some(PersonVersion {
                         state: PersonVersionState::Delete,
                         version: VersionId(3),
                         transaction_id: TransactionId(3),
-                    }
+                    })
                 );
             }
         }
@@ -406,7 +751,7 @@ mod tests {
                 let mut table = PersonTable::new();
 
                 // When we add an item
-                let (person, next_transaction_id) = add_test_person(&mut table);
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
 
                 // Then we should be able to get the item at version 1
                 let person_v1 = get_test_person_at_version(
@@ -426,7 +771,7 @@ mod tests {
                 let mut table = PersonTable::new();
 
                 // When we add an item
-                let (person, next_transaction_id) = add_test_person(&mut table);
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
 
                 // And we update the item
                 let (updated_person, next_transaction_id) =
@@ -461,7 +806,7 @@ mod tests {
                 let mut table = PersonTable::new();
 
                 // When we add an item
-                let (person, next_transaction_id) = add_test_person(&mut table);
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
 
                 // And we update the item
                 let (updated_person, next_transaction_id) =
@@ -504,71 +849,8 @@ mod tests {
                 assert!(person_v3.is_none());
             }
         }
-
-        fn add_test_person(table: &mut PersonTable) -> (Person, TransactionId) {
-            let person = Person::new("1".to_string(), None);
-            let action = Action::Add(person.clone());
-            let transaction_id = TransactionId::new_first_transaction();
-
-            table.apply(action, transaction_id.clone()).unwrap();
-
-            (person, transaction_id.increment())
-        }
-
-        fn update_test_person(
-            table: &mut PersonTable,
-            person: &Person,
-            next_transaction_id: TransactionId,
-        ) -> (Person, TransactionId) {
-            let mut updated_person = person.clone();
-            updated_person.email = Some("email".to_string());
-
-            let action = Action::Update(
-                person.id.clone(),
-                UpdatePersonData {
-                    full_name: UpdateAction::NoChanges,
-                    email: UpdateAction::Set("email".to_string()),
-                },
-            );
-
-            table.apply(action, next_transaction_id.clone()).unwrap();
-
-            (updated_person, next_transaction_id.increment())
-        }
-
-        fn delete_test_person(
-            table: &mut PersonTable,
-            id: &EntityId,
-            next_transaction_id: TransactionId,
-        ) -> TransactionId {
-            let action = Action::Remove(id.clone());
-
-            table.apply(action, next_transaction_id.clone()).unwrap();
-
-            next_transaction_id.increment()
-        }
-
-        fn get_test_person_at_version(
-            table: &mut PersonTable,
-            id: &EntityId,
-            version: &VersionId,
-            next_transaction_id: TransactionId,
-        ) -> Option<Person> {
-            let action = Action::GetVersion(id.clone(), version.clone());
-            let result = table.apply(action, next_transaction_id).unwrap();
-
-            match result {
-                ActionResult::GetSingle(person) => person,
-                _ => {
-                    // Note: Unsure why but cannot panic here, just assert false
-                    assert!(false, "should be a single person");
-                    None
-                }
-            }
-        }
     }
 
-    /// - TODO: Rollback action in the context constraints
     mod uniqueness_constraint {
         use super::*;
 
@@ -645,6 +927,78 @@ mod tests {
 
             // Then the update should succeed
             assert_eq!(result, ActionResult::Single(person));
+        }
+    }
+
+    fn add_test_person_to_empty_database(table: &mut PersonTable) -> (Person, TransactionId) {
+        let transaction_id = TransactionId::new_first_transaction();
+        add_test_person(table, transaction_id)
+    }
+
+    fn add_test_person(
+        table: &mut PersonTable,
+        next_transaction_id: TransactionId,
+    ) -> (Person, TransactionId) {
+        let person = Person::new(
+            next_transaction_id.to_string(),
+            Some(next_transaction_id.to_string()),
+        );
+        let action = Action::Add(person.clone());
+
+        table.apply(action, next_transaction_id.clone()).unwrap();
+
+        (person, next_transaction_id.increment())
+    }
+
+    fn update_test_person(
+        table: &mut PersonTable,
+        person: &Person,
+        next_transaction_id: TransactionId,
+    ) -> (Person, TransactionId) {
+        let mut updated_person = person.clone();
+        updated_person.email = Some("email".to_string());
+
+        let action = Action::Update(
+            person.id.clone(),
+            UpdatePersonData {
+                full_name: UpdateAction::NoChanges,
+                email: UpdateAction::Set("email".to_string()),
+            },
+        );
+
+        table.apply(action, next_transaction_id.clone()).unwrap();
+
+        (updated_person, next_transaction_id.increment())
+    }
+
+    fn delete_test_person(
+        table: &mut PersonTable,
+        id: &EntityId,
+        next_transaction_id: TransactionId,
+    ) -> TransactionId {
+        let action = Action::Remove(id.clone());
+
+        table.apply(action, next_transaction_id.clone()).unwrap();
+
+        next_transaction_id.increment()
+    }
+
+    fn get_test_person_at_version(
+        table: &mut PersonTable,
+        id: &EntityId,
+        version: &VersionId,
+        next_transaction_id: TransactionId,
+    ) -> Option<Person> {
+        let action = Action::GetVersion(id.clone(), version.clone());
+        let result = table.apply(action, next_transaction_id).unwrap();
+
+        match result {
+            ActionResult::GetSingle(person) => person,
+            _ => {
+                // Note: Unsure why but cannot panic here, just assert false
+                assert!(false, "should be a single person");
+                None
+            }
         }
     }
 }

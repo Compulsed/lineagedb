@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-use super::table::row::UpdatePersonData;
+use super::table::row::{QueryPersonData, UpdatePersonData};
 
 pub enum DatabaseRequestAction {
     Request(Vec<Action>),
@@ -97,8 +97,11 @@ impl RequestManager {
         return Ok(action_result.get_single());
     }
 
-    pub fn send_list(&self) -> Result<Vec<Person>, RequestManagerError> {
-        let action_result = self.send_single_action(Action::List)?;
+    pub fn send_list(
+        &self,
+        query: Option<QueryPersonData>,
+    ) -> Result<Vec<Person>, RequestManagerError> {
+        let action_result = self.send_single_action(Action::List(query))?;
         return Ok(action_result.list());
     }
 
@@ -145,9 +148,10 @@ impl RequestManager {
 
         // Sends the request to the database worker, database will response
         //  on the response_receiver once it's finished processing it's request
+        // TOOD: If we panic the
         self.database_sender.send(request).unwrap();
 
-        match response_receiver.recv_timeout(Duration::from_secs(2)) {
+        match response_receiver.recv_timeout(Duration::from_secs(5)) {
             Ok(DatabaseResponseAction::Response(action_response)) => Ok(action_response),
             Ok(DatabaseResponseAction::TransactionRollback(s)) => {
                 Err(RequestManagerError::TransactionRollback(s))

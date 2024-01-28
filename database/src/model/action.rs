@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     consts::consts::{EntityId, VersionId},
-    database::table::row::{PersonVersion, UpdatePersonData},
+    database::table::row::{PersonVersion, QueryPersonData, UpdatePersonData},
 };
 
 use super::person::Person;
@@ -15,7 +15,7 @@ pub enum Action {
     Get(EntityId),
     GetVersion(EntityId, VersionId),
     /// Returns a list of Person
-    List,
+    List(Option<QueryPersonData>),
     /// Returns list of PersonVersion (version id, worldstate, tx_id, etc)
     ListLatestVersions,
 }
@@ -24,7 +24,7 @@ impl Action {
     pub fn is_mutation(&self) -> bool {
         match self {
             Action::Add(_) | Action::Remove(_) | Action::Update(_, _) => true,
-            Action::List
+            Action::List(_)
             | Action::ListLatestVersions
             | Action::Get(_)
             | Action::GetVersion(_, _) => false,
