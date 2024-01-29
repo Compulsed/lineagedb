@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     consts::consts::{EntityId, VersionId},
-    database::table::row::{PersonVersion, QueryPersonData, UpdatePersonData},
+    database::table::{
+        query::QueryPersonData,
+        row::{PersonVersion, UpdatePersonData},
+    },
 };
 
 use super::person::Person;

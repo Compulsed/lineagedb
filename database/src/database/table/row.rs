@@ -25,20 +25,6 @@ pub struct UpdatePersonData {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum QueryMatch {
-    Value(String),
-    Null,
-    NotNull,
-    Any,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct QueryPersonData {
-    pub full_name: QueryMatch,
-    pub email: QueryMatch,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum UpdateAction {
     Set(String),
     Unset,
@@ -99,7 +85,7 @@ impl PersonRow {
     ) -> Result<(), ApplyErrors> {
         let current_version = self.current_version().clone();
 
-        // Verify
+        // Prevents adding an item that already exists
         if &current_version.state != &PersonVersionState::Delete {
             return Err(ApplyErrors::CannotCreateWhenAlreadyExists(
                 person.id.clone(),

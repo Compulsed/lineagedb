@@ -3,16 +3,18 @@ use database::{
     consts::consts::EntityId,
     database::{
         database::test_utils::database_test,
-        table::row::{UpdateAction, UpdatePersonData},
+        table::{
+            query::{QueryMatch, QueryPersonData},
+            row::{UpdateAction, UpdatePersonData},
+        },
     },
     model::{action::Action, person::Person},
 };
 use uuid::Uuid;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("add 1000", |b| {
+    c.bench_function("add 100", |b| {
         b.iter(|| {
-            // 65k tps on M1 MBA
             let action_generator = |_, _| {
                 Action::Add(Person {
                     id: EntityId::new(),
@@ -25,7 +27,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("update 1000", |b| {
+    c.bench_function("update 100", |b| {
         b.iter(|| {
             let action_generator = |thread: i32, index: u32| {
                 let id = EntityId(thread.to_string());
@@ -53,9 +55,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("list 1000", |b| {
+    c.bench_function("get 100", |b| {
         b.iter(|| {
-            // 100k tps on M1 MBA
             let action_generator = |thread_id: i32, index: u32| {
                 let id = EntityId(thread_id.to_string());
                 let full_name = format!("Full Name {}-{}", thread_id, index);
@@ -73,6 +74,49 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             };
 
             database_test(1, 100, action_generator);
+        })
+    });
+
+    c.bench_function("non-indexed list 100", |b| {
+        b.iter(|| {
+            let action_generator = |thread_id: i32, index: u32| {
+                let full_name = format!("Full Name {}-{}", thread_id, index);
+                let email = format!("Email {}-{}", thread_id, index);
+
+                if index < 100 {
+                    return Action::Add(Person::new(full_name, Some(email)));
+                } else {
+                    // Email is not indexed
+                    return Action::List(Some(QueryPersonData {
+                        full_name: QueryMatch::Any,
+                        email: QueryMatch::Value("Will never match".to_string()),
+                    }));
+                }
+            };
+
+            database_test(1, 200, action_generator);
+        })
+    });
+
+    c.bench_function("indexed list 100", |b| {
+        b.iter(|| {
+            let action_generator = |thread_id: i32, index: u32| {
+                let full_name = format!("Full Name {}-{}", thread_id, index);
+                let email = format!("Email {}-{}", thread_id, index);
+
+                if index < 100 {
+                    return Action::Add(Person::new(full_name, Some(email)));
+                } else {
+                    // Full name is index, which means it will return 'NoResults' and this is a
+                    //  must faster path
+                    return Action::List(Some(QueryPersonData {
+                        full_name: QueryMatch::Value("Will never match".to_string()),
+                        email: QueryMatch::Any,
+                    }));
+                }
+            };
+
+            database_test(1, 200, action_generator);
         })
     });
 }

@@ -231,3 +231,13 @@ cargo bench --all
   1. Panics for logical errors / bugs in the code
 5. Prefer infallable logic, e.g. try not to create methods that hide unwraps 
 6. Can use Rc instead of clone (unlike ARC RC is likely 0 cost)
+7. Rust the ternary if / else can be very clean
+
+
+```
+    let search_method = if use_index {
+        determine_search_method(table, transaction_id, query_person_data)
+    } else {
+        SearchMethod::RequiresFullScan
+    };
+```

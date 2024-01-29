@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-use super::table::row::{QueryPersonData, UpdatePersonData};
+use super::table::{query::QueryPersonData, row::UpdatePersonData};
 
 pub enum DatabaseRequestAction {
     Request(Vec<Action>),
