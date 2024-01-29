@@ -1,9 +1,11 @@
-use actix_web::web::Query;
 use database::{
     consts::consts::EntityId,
     database::{
         request_manager::RequestManager,
-        table::row::{QueryMatch, QueryPersonData, UpdateAction, UpdatePersonData},
+        table::{
+            filter::{QueryMatch, QueryPersonData},
+            row::{UpdateAction, UpdatePersonData},
+        },
     },
     model::{action::Action, person::Person},
 };

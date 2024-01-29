@@ -25,20 +25,6 @@ pub struct UpdatePersonData {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum QueryMatch {
-    Value(String),
-    Null,
-    NotNull,
-    Any,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct QueryPersonData {
-    pub full_name: QueryMatch,
-    pub email: QueryMatch,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum UpdateAction {
     Set(String),
     Unset,

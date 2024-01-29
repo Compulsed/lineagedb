@@ -10,9 +10,12 @@ use crate::{
     },
 };
 
-use super::row::{
-    ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion, PersonVersionState,
-    QueryMatch, UpdateAction,
+use super::{
+    filter::filter,
+    row::{
+        ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion,
+        PersonVersionState, UpdateAction,
+    },
 };
 
 #[derive(Error, Debug)]
@@ -44,18 +47,16 @@ pub enum ApplyErrors {
     NotNullConstraintViolation(String),
 }
 
-type RowPrimaryKey = String;
-
 pub struct PersonTable {
-    pub person_rows: HashMap<String, PersonRow>,
-    pub unique_email_index: HashMap<String, String>,
+    pub person_rows: HashMap<EntityId, PersonRow>,
+    pub unique_email_index: HashMap<String, EntityId>,
 }
 
 impl PersonTable {
     pub fn new() -> Self {
         Self {
-            person_rows: HashMap::<RowPrimaryKey, PersonRow>::new(),
-            unique_email_index: HashMap::<String, RowPrimaryKey>::new(),
+            person_rows: HashMap::<EntityId, PersonRow>::new(),
+            unique_email_index: HashMap::<String, EntityId>::new(),
         }
     }
 
@@ -82,22 +83,20 @@ impl PersonTable {
 
                 // We need to handle the case where someone can add an item back after it has been deleted
                 //  if it has been deleted there will already be a row.
-                match self.person_rows.get_mut(&id.to_string()) {
+                match self.person_rows.get_mut(&id) {
                     Some(existing_person_row) => {
                         existing_person_row.apply_add(person_to_persist, transaction_id)?;
                     }
                     None => {
-                        self.person_rows.insert(
-                            id.to_string(),
-                            PersonRow::new(person_to_persist, transaction_id),
-                        );
+                        self.person_rows
+                            .insert(id, PersonRow::new(person_to_persist, transaction_id));
                     }
                 }
 
                 // Persist the email so it cannot be added again
                 if let Some(email) = &person.email {
                     self.unique_email_index
-                        .insert(email.clone(), person.id.to_string());
+                        .insert(email.clone(), person.id.clone());
                 }
 
                 ActionResult::Single(person)
@@ -105,7 +104,7 @@ impl PersonTable {
             Action::Update(id, update_person) => {
                 let person_row = self
                     .person_rows
-                    .get_mut(&id.to_string())
+                    .get_mut(&id)
                     .ok_or(ApplyErrors::CannotUpdateDoesNotExist(id.clone()))?;
 
                 if let UpdateAction::Set(email_to_update) = &update_person.email {
@@ -138,8 +137,7 @@ impl PersonTable {
                 // Persist / remove email from index
                 match (&update_person.email, &previous.email) {
                     (UpdateAction::Set(email), _) => {
-                        self.unique_email_index
-                            .insert(email.clone(), id.to_string());
+                        self.unique_email_index.insert(email.clone(), id);
                     }
                     (UpdateAction::Unset, Some(email)) => {
                         self.unique_email_index.remove(email);
@@ -152,7 +150,7 @@ impl PersonTable {
             Action::Remove(id) => {
                 let person_row = self
                     .person_rows
-                    .get_mut(&id.to_string())
+                    .get_mut(&id)
                     .ok_or(ApplyErrors::CannotDeleteDoesNotExist(id.clone()))?;
 
                 let ApplyDeleteResult { previous } =
@@ -165,7 +163,7 @@ impl PersonTable {
                 ActionResult::Single(previous)
             }
             Action::Get(id) => {
-                let person = match &self.person_rows.get(&id.to_string()) {
+                let person = match &self.person_rows.get(&id) {
                     Some(person_data) => person_data.current_state(),
                     None => return Err(ApplyErrors::CannotGetDoesNotExist(id)),
                 };
@@ -173,7 +171,7 @@ impl PersonTable {
                 ActionResult::GetSingle(person)
             }
             Action::GetVersion(id, version) => {
-                let person = match &self.person_rows.get(&id.to_string()) {
+                let person = match &self.person_rows.get(&id) {
                     Some(person_data) => person_data.person_at_version(version),
                     None => return Err(ApplyErrors::CannotGetAtVersionDoesNotExist(id, version)),
                 };
@@ -189,47 +187,8 @@ impl PersonTable {
 
                 sort_list(&mut people_at_transaction_id);
 
-                if let Some(query) = &query_person_data {
-                    people_at_transaction_id = people_at_transaction_id
-                        .into_iter()
-                        .filter(|person| {
-                            match &query.full_name {
-                                QueryMatch::Value(full_name) => {
-                                    if &person.full_name != full_name {
-                                        return false;
-                                    }
-                                }
-                                QueryMatch::Any => {}
-                                // Fullname is not nullable, this check is static
-                                QueryMatch::NotNull => {}
-                                QueryMatch::Null => return false,
-                            }
-
-                            match &query.email {
-                                QueryMatch::Value(email) => match &person.email {
-                                    Some(person_email) => {
-                                        if person_email != email {
-                                            return false;
-                                        }
-                                    }
-                                    None => return false,
-                                },
-                                QueryMatch::Null => {
-                                    if person.email.is_some() {
-                                        return false;
-                                    }
-                                }
-                                QueryMatch::NotNull => {
-                                    if person.email.is_none() {
-                                        return false;
-                                    }
-                                }
-                                QueryMatch::Any => {}
-                            }
-
-                            return true;
-                        })
-                        .collect();
+                if let Some(query) = query_person_data {
+                    people_at_transaction_id = filter(people_at_transaction_id, query)
                 }
 
                 ActionResult::List(people_at_transaction_id)
@@ -272,7 +231,7 @@ impl PersonTable {
     fn remove_mutation(&mut self, id: EntityId) {
         let person_row = self
             .person_rows
-            .get_mut(&id.to_string())
+            .get_mut(&id)
             .expect("should exist because there is a rollback");
 
         // Remove the version that was applied
@@ -286,7 +245,7 @@ impl PersonTable {
 
                 // Note: This should only happen when we rollback an add
                 if let DropRow::NoVersionsExist = drop_row {
-                    self.person_rows.remove(&id.to_string());
+                    self.person_rows.remove(&id);
                 }
             }
             PersonVersionState::Delete => {
@@ -294,8 +253,7 @@ impl PersonTable {
 
                 if let PersonVersionState::State(person) = &current_person.state {
                     if let Some(email) = &person.email {
-                        self.unique_email_index
-                            .insert(email.clone(), id.to_string());
+                        self.unique_email_index.insert(email.clone(), id.clone());
                     }
                 } else {
                     panic!("delete should always be followed by a state");
@@ -319,13 +277,14 @@ mod tests {
     // TODO:
     //  - There should be a better way of comparing lists of a default sort (sort_list)
     //  - Should test listing given a transaction id
+    //  - Consider moving this into the filter module
     mod list_filtering {
-        use crate::database::table::row::{QueryMatch, QueryPersonData};
-
         use super::*;
 
         /// Simplest possible cases -- does not need to handle any problems with versioning
         mod add {
+            use crate::database::table::filter::{QueryMatch, QueryPersonData};
+
             use super::*;
 
             #[test]
@@ -465,6 +424,8 @@ mod tests {
         }
 
         mod update {
+            use crate::database::table::filter::{QueryMatch, QueryPersonData};
+
             use super::*;
 
             #[test]
@@ -552,6 +513,8 @@ mod tests {
         }
 
         mod delete {
+            use crate::database::table::filter::{QueryMatch, QueryPersonData};
+
             use super::*;
 
             #[test]
@@ -633,10 +596,7 @@ mod tests {
                 let (person, _) = add_test_person_to_empty_database(&mut table);
 
                 // Then we should have: one version, at version 1, with transaction id 1
-                let person_row = table
-                    .person_rows
-                    .get(&person.id.to_string())
-                    .expect("should have row");
+                let person_row = table.person_rows.get(&person.id).expect("should have row");
 
                 assert_eq!(person_row.version_count(), 1);
 
@@ -665,7 +625,7 @@ mod tests {
                 // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
                 let person_row = table
                     .person_rows
-                    .get(&person.id.to_string())
+                    .get(&person.id)
                     .expect("should have a row");
 
                 assert_eq!(person_row.version_count(), 2);
@@ -708,7 +668,7 @@ mod tests {
                 // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
                 let person_row = table
                     .person_rows
-                    .get(&updated_person.id.to_string())
+                    .get(&updated_person.id)
                     .expect("should have a row");
 
                 assert_eq!(person_row.version_count(), 3);

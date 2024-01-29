@@ -80,7 +80,7 @@ impl TryFrom<i32> for VersionId {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
 pub struct EntityId(pub String);
 
 impl EntityId {
