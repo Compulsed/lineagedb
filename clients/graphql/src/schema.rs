@@ -3,7 +3,7 @@ use database::{
     database::{
         request_manager::RequestManager,
         table::{
-            filter::{QueryMatch, QueryPersonData},
+            query::{QueryMatch, QueryPersonData},
             row::{UpdateAction, UpdatePersonData},
         },
     },

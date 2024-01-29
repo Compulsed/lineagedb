@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     consts::consts::{EntityId, VersionId},
     database::table::{
-        filter::QueryPersonData,
+        query::QueryPersonData,
         row::{PersonVersion, UpdatePersonData},
     },
 };

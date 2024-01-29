@@ -85,7 +85,7 @@ impl PersonRow {
     ) -> Result<(), ApplyErrors> {
         let current_version = self.current_version().clone();
 
-        // Verify
+        // Prevents adding an item that already exists
         if &current_version.state != &PersonVersionState::Delete {
             return Err(ApplyErrors::CannotCreateWhenAlreadyExists(
                 person.id.clone(),

@@ -11,7 +11,8 @@ use crate::{
 };
 
 use super::{
-    filter::filter,
+    index::FullNameIndex,
+    query::{filter, query},
     row::{
         ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion,
         PersonVersionState, UpdateAction,
@@ -50,6 +51,7 @@ pub enum ApplyErrors {
 pub struct PersonTable {
     pub person_rows: HashMap<EntityId, PersonRow>,
     pub unique_email_index: HashMap<String, EntityId>,
+    pub full_name_index: FullNameIndex,
 }
 
 impl PersonTable {
@@ -57,6 +59,7 @@ impl PersonTable {
         Self {
             person_rows: HashMap::<EntityId, PersonRow>::new(),
             unique_email_index: HashMap::<String, EntityId>::new(),
+            full_name_index: FullNameIndex::new(),
         }
     }
 
@@ -88,8 +91,10 @@ impl PersonTable {
                         existing_person_row.apply_add(person_to_persist, transaction_id)?;
                     }
                     None => {
-                        self.person_rows
-                            .insert(id, PersonRow::new(person_to_persist, transaction_id));
+                        self.person_rows.insert(
+                            id.clone(),
+                            PersonRow::new(person_to_persist, transaction_id),
+                        );
                     }
                 }
 
@@ -98,6 +103,10 @@ impl PersonTable {
                     self.unique_email_index
                         .insert(email.clone(), person.id.clone());
                 }
+
+                // Update index
+                self.full_name_index
+                    .save_to_index(id, Some(person.full_name.clone()));
 
                 ActionResult::Single(person)
             }
@@ -134,15 +143,24 @@ impl PersonTable {
                 let ApplyUpdateResult { current, previous } =
                     person_row.apply_update(&id, person_update_to_persist, transaction_id)?;
 
-                // Persist / remove email from index
+                // Persist / remove email from unique constraint index
                 match (&update_person.email, &previous.email) {
                     (UpdateAction::Set(email), _) => {
-                        self.unique_email_index.insert(email.clone(), id);
+                        self.unique_email_index.insert(email.clone(), id.clone());
                     }
                     (UpdateAction::Unset, Some(email)) => {
                         self.unique_email_index.remove(email);
                     }
                     _ => {}
+                }
+
+                // Update index
+                if previous.full_name != current.full_name {
+                    self.full_name_index.update_index(
+                        id,
+                        &Some(previous.full_name),
+                        Some(current.full_name.clone()),
+                    );
                 }
 
                 ActionResult::Single(current)
@@ -159,6 +177,10 @@ impl PersonTable {
                 if let Some(email) = &previous.email {
                     self.unique_email_index.remove(email);
                 }
+
+                // Remove from index
+                self.full_name_index
+                    .remove_from_index(&id, &Some(previous.full_name.clone()));
 
                 ActionResult::Single(previous)
             }
@@ -179,19 +201,15 @@ impl PersonTable {
                 ActionResult::GetSingle(person)
             }
             Action::List(query_person_data) => {
-                let mut people_at_transaction_id: Vec<Person> = self
-                    .person_rows
-                    .iter()
-                    .filter_map(|(_, value)| value.at_transaction_id(&transaction_id))
-                    .collect();
+                let mut people = query(&self, &transaction_id, &query_person_data, true);
 
-                sort_list(&mut people_at_transaction_id);
+                sort_list(&mut people);
 
-                if let Some(query) = query_person_data {
-                    people_at_transaction_id = filter(people_at_transaction_id, query)
+                if let Some(q) = query_person_data {
+                    people = filter(people, q)
                 }
 
-                ActionResult::List(people_at_transaction_id)
+                ActionResult::List(people)
             }
             Action::ListLatestVersions => {
                 let people_at_transaction_id: Vec<PersonVersion> = self
@@ -283,7 +301,7 @@ mod tests {
 
         /// Simplest possible cases -- does not need to handle any problems with versioning
         mod add {
-            use crate::database::table::filter::{QueryMatch, QueryPersonData};
+            use crate::database::table::query::{QueryMatch, QueryPersonData};
 
             use super::*;
 
@@ -424,7 +442,7 @@ mod tests {
         }
 
         mod update {
-            use crate::database::table::filter::{QueryMatch, QueryPersonData};
+            use crate::database::table::query::{QueryMatch, QueryPersonData};
 
             use super::*;
 
@@ -513,7 +531,7 @@ mod tests {
         }
 
         mod delete {
-            use crate::database::table::filter::{QueryMatch, QueryPersonData};
+            use crate::database::table::query::{QueryMatch, QueryPersonData};
 
             use super::*;
 

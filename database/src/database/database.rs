@@ -550,7 +550,9 @@ pub mod test_utils {
 
                     // Single will panic if this fails
                     match action_result {
-                        ActionResult::Single(_) | ActionResult::GetSingle(_) => {}
+                        ActionResult::Single(_)
+                        | ActionResult::GetSingle(_)
+                        | ActionResult::List(_) => {}
                         _ => panic!("Unexpected response type"),
                     }
                 }
