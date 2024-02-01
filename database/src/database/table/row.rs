@@ -46,6 +46,7 @@ pub enum PersonVersionState {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PersonVersion {
+    pub id: EntityId,
     pub state: PersonVersionState,
     pub version: VersionId,
     pub transaction_id: TransactionId,
@@ -70,10 +71,18 @@ impl PersonRow {
     pub fn new(person: Person, transaction_id: TransactionId) -> Self {
         PersonRow {
             versions: vec![PersonVersion {
+                id: person.id.clone(),
                 state: PersonVersionState::State(person),
                 version: VersionId::new_first_version(),
                 transaction_id,
             }],
+        }
+    }
+
+    /// Used when restoring from a snapshot
+    pub fn from_restore(version: PersonVersion) -> Self {
+        PersonRow {
+            versions: vec![version],
         }
     }
 
@@ -179,6 +188,7 @@ impl PersonRow {
         transaction_id: TransactionId,
     ) {
         self.versions.push(PersonVersion {
+            id: current_version.id.clone(),
             state: new_state,
             version: current_version.version.increment(),
             transaction_id,

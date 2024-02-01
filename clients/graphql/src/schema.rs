@@ -1,7 +1,7 @@
 use database::{
     consts::consts::EntityId,
     database::{
-        request_manager::RequestManager,
+        request_manager::{DatabaseRequestAction, RequestManager},
         table::{
             query::{QueryMatch, QueryPersonData},
             row::{UpdateAction, UpdatePersonData},
@@ -191,6 +191,17 @@ impl MutationRoot {
         let person = database.send_update(EntityId(id), update_person_date)?;
 
         Ok(Human::from_person(person))
+    }
+
+    fn snapshot(context: &'db GraphQLContext) -> FieldResult<String> {
+        let database = context.request_manager.lock().unwrap();
+
+        let single_action_result = database
+            .send_database_request(DatabaseRequestAction::SaveSnapshot)?
+            .pop()
+            .expect("single a action should generate single response");
+
+        return Ok(single_action_result.success_status());
     }
 }
 

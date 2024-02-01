@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub struct TransactionId(pub usize);
 
 impl TransactionId {
-    pub fn to_number(self) -> usize {
+    pub fn to_number(&self) -> usize {
         self.0
     }
 
