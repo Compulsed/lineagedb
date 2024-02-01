@@ -54,11 +54,15 @@ impl TransactionLog {
     pub fn flush_transactions(&mut self) {
         self.transactions = vec![];
 
+        let path = get_transaction_log_location(self.data_directory.clone());
+
+        fs::remove_file(&path).expect("Unable to remove file");
+
         self.log_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(get_transaction_log_location(self.data_directory.clone()))
-            .unwrap();
+            .create_new(true)
+            .append(true)
+            .open(&path)
+            .expect("Cannot open file");
     }
 
     pub fn get_current_transaction_id(&self) -> &TransactionId {

@@ -1,12 +1,12 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{Error, Read, Write},
+    io::{Read, Write},
     path::PathBuf,
     vec,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     consts::consts::{EntityId, TransactionId},
@@ -46,7 +46,10 @@ pub struct Metadata {
     pub current_transaction_id: TransactionId,
 }
 
-struct FileNotFound;
+enum ReadFileResult<T: DeserializeOwned> {
+    Success(T),
+    Default,
+}
 
 // TODO: Can we a PK, file offset index?
 //  - Any time we do a update against an existing ID, we need to know the version of the last update of the current item
@@ -62,39 +65,39 @@ impl SnapshotManager {
         Self { data_directory }
     }
 
-    pub fn restore_snapshot(&self, table: &mut PersonTable) -> Metadata {
+    pub fn restore_snapshot(&self, table: &mut PersonTable) -> (usize, Metadata) {
         // -- Table
         let version_snapshots: Vec<PersonVersion> = match self.read_file(FileNames::Snapshot) {
-            Ok(full_name_data) => serde_json::from_str(full_name_data.as_str()).unwrap(),
-            Err(_file_not_found) => vec![],
+            ReadFileResult::Success(version_snapshots) => version_snapshots,
+            ReadFileResult::Default => vec![],
         };
+
+        let snapeshot_count = version_snapshots.len();
 
         // -- Indexes
         let full_name_index: FullNameIndex = match self.read_file(FileNames::SecondaryIndexFullName)
         {
-            Ok(full_name_data) => serde_json::from_str(full_name_data.as_str()).unwrap(),
-            Err(_file_not_found) => FullNameIndex::new(),
+            ReadFileResult::Success(version_snapshots) => version_snapshots,
+            ReadFileResult::Default => FullNameIndex::new(),
         };
 
         let unique_email_index: HashMap<String, EntityId> =
             match self.read_file(FileNames::SecondaryIndexUniqueEmail) {
-                Ok(unique_email_index_data) => {
-                    serde_json::from_str(unique_email_index_data.as_str()).unwrap()
-                }
-                Err(_file_not_found) => HashMap::new(),
+                ReadFileResult::Success(version_snapshots) => version_snapshots,
+                ReadFileResult::Default => HashMap::new(),
             };
 
         // -- Perform the restore
         table.from_restore(version_snapshots, unique_email_index, full_name_index);
 
-        let metadata_data = match self.read_file(FileNames::Metadata) {
-            Ok(metadata_data) => serde_json::from_str(metadata_data.as_str()).unwrap(),
-            Err(_file_not_found) => Metadata {
+        let metadata_data: Metadata = match self.read_file(FileNames::Metadata) {
+            ReadFileResult::Success(version_snapshots) => version_snapshots,
+            ReadFileResult::Default => Metadata {
                 current_transaction_id: TransactionId::new_first_transaction(),
             },
         };
 
-        return metadata_data;
+        return (snapeshot_count, metadata_data);
     }
 
     // TODO:
@@ -110,40 +113,49 @@ impl SnapshotManager {
             .apply(Action::ListLatestVersions, transaction_id.clone())?
             .list_version();
 
-        self.write_file(
-            FileNames::Snapshot,
-            serde_json::to_string(&result).unwrap().as_str(),
-        );
+        self.write_file(FileNames::Snapshot, &result);
 
         // -- Metadata
         self.write_file(
             FileNames::Metadata,
-            serde_json::to_string(&Metadata {
+            &Metadata {
                 current_transaction_id: transaction_id,
-            })
-            .unwrap()
-            .as_str(),
+            },
         );
 
         // -- Indexes
-        self.write_file(
-            FileNames::SecondaryIndexFullName,
-            serde_json::to_string(&table.full_name_index)
-                .unwrap()
-                .as_str(),
-        );
+        self.write_file(FileNames::SecondaryIndexFullName, &table.full_name_index);
 
         self.write_file(
             FileNames::SecondaryIndexUniqueEmail,
-            serde_json::to_string(&table.unique_email_index)
-                .unwrap()
-                .as_str(),
+            &table.unique_email_index,
         );
 
         Ok(())
     }
 
-    fn write_file(&self, file_name: FileNames, data: &str) {
+    fn read_file<T: DeserializeOwned>(&self, file: FileNames) -> ReadFileResult<T> {
+        let file_path = self.data_directory.join(file.as_str());
+
+        let mut file = match File::open(file_path) {
+            Ok(file) => file,
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => return ReadFileResult::Default,
+                _ => panic!("Error reading file: {:?}", err),
+            },
+        };
+
+        let mut file_string = String::new();
+
+        file.read_to_string(&mut file_string)
+            .expect("should be able to read file into string");
+
+        let data: T = serde_json::from_str(&file_string).unwrap();
+
+        ReadFileResult::Success(data)
+    }
+
+    fn write_file<T: Serialize>(&self, file_name: FileNames, data: T) {
         let file_path = self.data_directory.join(file_name.as_str());
 
         let mut file = OpenOptions::new()
@@ -152,27 +164,11 @@ impl SnapshotManager {
             .open(file_path)
             .expect("Cannot open file");
 
-        file.write_all(data.as_bytes())
+        let serialized_data = serde_json::to_string::<T>(&data).unwrap();
+
+        let serialized_bytes = serialized_data.as_str().as_bytes();
+
+        file.write_all(serialized_bytes)
             .expect("Cannot write to file");
-    }
-
-    fn read_file(&self, file_name: FileNames) -> Result<String, FileNotFound> {
-        let file_path = self.data_directory.join(file_name.as_str());
-
-        // If file does not exist, this is what happens
-        let mut file = match File::open(file_path) {
-            Ok(file) => file,
-            Err(err) => match err.kind() {
-                std::io::ErrorKind::NotFound => return Err(FileNotFound {}),
-                _ => panic!("Error reading file: {:?}", err),
-            },
-        };
-
-        let mut file_string = String::new();
-
-        file.read_to_string(&mut file_string)
-            .expect("Cannot read file");
-
-        Ok(file_string)
     }
 }

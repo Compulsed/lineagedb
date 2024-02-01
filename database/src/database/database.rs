@@ -93,16 +93,19 @@ impl Database {
 
         // Restore from snapshots
         // Call chain -> snapshot_manager -> person_table
-        let metadata = self
+        let (snapshot_count, metadata) = self
             .snapshot_manager
             .restore_snapshot(&mut self.person_table);
 
         // If there was a snapshot to restore from we update the transaction log
         self.transaction_log
-            .set_current_transaction_id(metadata.current_transaction_id);
+            .set_current_transaction_id(metadata.current_transaction_id.clone());
+
+        let restored_transactions = TransactionLog::restore(transaction_log_location);
+        let restored_transaction_count = restored_transactions.len();
 
         // Then add states from the transaction log
-        for transaction in TransactionLog::restore(transaction_log_location) {
+        for transaction in restored_transactions {
             if let DatabaseResponseAction::TransactionRollback(rollback_message) =
                 self.process_actions(transaction.actions, true)
             {
@@ -114,8 +117,14 @@ impl Database {
         }
 
         log::info!(
-            "Restored [Duration {}ms, Tx Count {}]",
+            "✅ Successful Restore [Duration: {}ms]",
             now.elapsed().as_millis(),
+        );
+
+        log::info!(
+            "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
+            snapshot_count,
+            restored_transaction_count,
             self.transaction_log
                 .get_current_transaction_id()
                 .to_number()
