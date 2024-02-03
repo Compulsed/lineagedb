@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::{
     consts::consts::{EntityId, TransactionId, VersionId},
+    database::snapshot::Metadata,
     model::{
         action::{Action, ActionResult},
         person::Person,
@@ -60,6 +61,28 @@ impl PersonTable {
             person_rows: HashMap::<EntityId, PersonRow>::new(),
             unique_email_index: HashMap::<String, EntityId>::new(),
             full_name_index: FullNameIndex::new(),
+        }
+    }
+
+    // TODO: Not sure if this aligns to the rust convention of 'from'
+    pub fn from_restore(
+        &mut self,
+        version_snapshots: Vec<PersonVersion>,
+        unique_email_index: HashMap<String, EntityId>,
+        full_name_index: FullNameIndex,
+    ) {
+        self.unique_email_index = unique_email_index;
+        self.full_name_index = full_name_index;
+
+        for version_snapshot in version_snapshots {
+            let id = version_snapshot.id.clone();
+
+            let person_row = PersonRow::from_restore(version_snapshot);
+
+            match self.person_rows.insert(id, person_row) {
+                Some(_) => panic!("should not have a row"),
+                None => {}
+            }
         }
     }
 
@@ -621,6 +644,7 @@ mod tests {
                 assert_eq!(
                     person_row.at_version(VersionId(1)),
                     Some(PersonVersion {
+                        id: person.id.clone(),
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
                         transaction_id: TransactionId(1),
@@ -651,6 +675,7 @@ mod tests {
                 assert_eq!(
                     person_row.at_version(VersionId(1)),
                     Some(PersonVersion {
+                        id: person.id.clone(),
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
                         transaction_id: TransactionId(1),
@@ -660,6 +685,7 @@ mod tests {
                 assert_eq!(
                     person_row.at_version(VersionId(2)),
                     Some(PersonVersion {
+                        id: updated_person.id.clone(),
                         state: PersonVersionState::State(updated_person),
                         version: VersionId(2),
                         transaction_id: TransactionId(2),
@@ -694,6 +720,7 @@ mod tests {
                 assert_eq!(
                     person_row.at_version(VersionId(1)),
                     Some(PersonVersion {
+                        id: add_person.id.clone(),
                         state: PersonVersionState::State(add_person),
                         version: VersionId(1),
                         transaction_id: TransactionId(1),
@@ -703,7 +730,8 @@ mod tests {
                 assert_eq!(
                     person_row.at_version(VersionId(2)),
                     Some(PersonVersion {
-                        state: PersonVersionState::State(updated_person),
+                        id: updated_person.id.clone(),
+                        state: PersonVersionState::State(updated_person.clone()),
                         version: VersionId(2),
                         transaction_id: TransactionId(2),
                     })
@@ -712,6 +740,7 @@ mod tests {
                 assert_eq!(
                     person_row.at_version(VersionId(3)),
                     Some(PersonVersion {
+                        id: updated_person.id.clone(),
                         state: PersonVersionState::Delete,
                         version: VersionId(3),
                         transaction_id: TransactionId(3),

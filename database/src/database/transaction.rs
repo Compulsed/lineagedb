@@ -23,6 +23,8 @@ pub struct Transaction {
 pub struct TransactionLog {
     pub transactions: Vec<Transaction>,
     log_file: File,
+    data_directory: PathBuf,
+    current_transaction_id: TransactionId,
 }
 
 fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
@@ -38,17 +40,33 @@ impl TransactionLog {
         let log_file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open(get_transaction_log_location(data_directory))
+            .open(get_transaction_log_location(data_directory.clone()))
             .expect("Cannot open file");
 
         Self {
             transactions: vec![],
             log_file,
+            data_directory: data_directory,
+            current_transaction_id: TransactionId::new_first_transaction(),
         }
     }
 
-    pub fn get_current_transaction_id(&self) -> TransactionId {
-        TransactionId(self.transactions.len())
+    pub fn flush_transactions(&mut self) {
+        self.transactions = vec![];
+
+        let path = get_transaction_log_location(self.data_directory.clone());
+
+        fs::remove_file(&path).expect("Unable to remove file");
+
+        self.log_file = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&path)
+            .expect("Cannot open file");
+    }
+
+    pub fn get_current_transaction_id(&self) -> &TransactionId {
+        &self.current_transaction_id
     }
 
     pub fn add_applying(&mut self, actions: Vec<Action>) -> TransactionId {
@@ -63,13 +81,15 @@ impl TransactionLog {
         new_transaction_id
     }
 
-    pub fn update_committed(&mut self, restore: bool) {
+    pub fn update_committed(&mut self, applied_transaction_id: TransactionId, restore: bool) {
         let last_transaction = self
             .transactions
             .last_mut()
             .expect("should exist as all mutations are written to the log");
 
         last_transaction.status = TransactionStatus::Committed;
+
+        self.current_transaction_id = applied_transaction_id;
 
         if !restore {
             let transaction_json_line =
@@ -109,5 +129,9 @@ impl TransactionLog {
         }
 
         transactions
+    }
+
+    pub fn set_current_transaction_id(&mut self, transaction_id: TransactionId) {
+        self.current_transaction_id = transaction_id;
     }
 }

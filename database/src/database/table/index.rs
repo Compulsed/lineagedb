@@ -1,8 +1,11 @@
 use std::{collections::HashMap, collections::HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::consts::consts::EntityId;
 
 /// Index captures values + null
+#[derive(Serialize, Deserialize, Debug)]
 pub struct FullNameIndex {
     index: HashMap<Option<String>, HashSet<EntityId>>,
 }

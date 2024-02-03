@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub struct TransactionId(pub usize);
 
 impl TransactionId {
-    pub fn to_number(self) -> usize {
+    pub fn to_number(&self) -> usize {
         self.0
     }
 
@@ -17,6 +17,7 @@ impl TransactionId {
         TransactionId(self.0 + 1)
     }
 
+    // TODO: There is a bug here, we should be able to start at 0
     pub fn new_first_transaction() -> TransactionId {
         TransactionId(1)
     }

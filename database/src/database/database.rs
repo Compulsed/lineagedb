@@ -13,7 +13,8 @@ use crate::{
 };
 
 use super::{
-    request_manager::DatabaseRequest, table::table::PersonTable, transaction::TransactionLog,
+    request_manager::DatabaseRequest, snapshot::SnapshotManager, table::table::PersonTable,
+    transaction::TransactionLog,
 };
 
 pub struct DatabaseOptions {
@@ -47,6 +48,7 @@ pub struct Database {
     transaction_log: TransactionLog,
     database_receiver: Receiver<DatabaseRequest>,
     database_options: DatabaseOptions,
+    snapshot_manager: SnapshotManager,
 }
 
 impl Database {
@@ -54,6 +56,7 @@ impl Database {
         Self {
             person_table: PersonTable::new(),
             transaction_log: TransactionLog::new(options.data_directory.clone()),
+            snapshot_manager: SnapshotManager::new(options.data_directory.clone()),
             database_receiver,
             database_options: options,
         }
@@ -72,6 +75,7 @@ impl Database {
         Self {
             person_table: PersonTable::new(),
             transaction_log: TransactionLog::new(options.data_directory.clone()),
+            snapshot_manager: SnapshotManager::new(options.data_directory.clone()),
             database_receiver: database_receiver,
             database_options: options,
         }
@@ -87,8 +91,21 @@ impl Database {
 
         let now = Instant::now();
 
-        // On spin-up restore database from disk
-        for transaction in TransactionLog::restore(transaction_log_location) {
+        // Restore from snapshots
+        // Call chain -> snapshot_manager -> person_table
+        let (snapshot_count, metadata) = self
+            .snapshot_manager
+            .restore_snapshot(&mut self.person_table);
+
+        // If there was a snapshot to restore from we update the transaction log
+        self.transaction_log
+            .set_current_transaction_id(metadata.current_transaction_id.clone());
+
+        let restored_transactions = TransactionLog::restore(transaction_log_location);
+        let restored_transaction_count = restored_transactions.len();
+
+        // Then add states from the transaction log
+        for transaction in restored_transactions {
             if let DatabaseResponseAction::TransactionRollback(rollback_message) =
                 self.process_actions(transaction.actions, true)
             {
@@ -100,8 +117,14 @@ impl Database {
         }
 
         log::info!(
-            "Restored [Duration {}ms, Tx Count {}]",
+            "✅ Successful Restore [Duration: {}ms]",
             now.elapsed().as_millis(),
+        );
+
+        log::info!(
+            "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
+            snapshot_count,
+            restored_transaction_count,
             self.transaction_log
                 .get_current_transaction_id()
                 .to_number()
@@ -123,6 +146,32 @@ impl Database {
                     ));
 
                     return;
+                }
+                DatabaseRequestAction::SaveSnapshot => {
+                    // Persist current state to disk
+                    let result = self.snapshot_manager.create_snapshot(
+                        &mut self.person_table,
+                        self.transaction_log.get_current_transaction_id().clone(),
+                    );
+
+                    // As we have persisted the snapshot, we can now trim the transaction log
+                    // TODO: This does not work
+                    self.transaction_log.flush_transactions();
+
+                    let action_response: DatabaseResponseAction = match result {
+                        Ok(_) => DatabaseResponseAction::new_single_response(
+                            ActionResult::SuccessStatus(
+                                "Successfully snap shotted database".to_string(),
+                            ),
+                        ),
+                        Err(err) => DatabaseResponseAction::CommandError(format!("{}", err)),
+                    };
+
+                    response_sender
+                        .send(action_response)
+                        .expect("Should always be able to send a response back to the caller");
+
+                    continue;
                 }
             };
 
@@ -156,7 +205,7 @@ impl Database {
         restore: bool,
     ) -> DatabaseResponseAction {
         // TODO: Consider filtering out transactions that have queries
-        let transaction_id = self.transaction_log.add_applying(user_actions.clone());
+        let applying_transaction_id = self.transaction_log.add_applying(user_actions.clone());
 
         let mut status = CommitStatus::Commit;
 
@@ -170,7 +219,7 @@ impl Database {
         for action in user_actions {
             let apply_result = self
                 .person_table
-                .apply(action.clone(), transaction_id.clone());
+                .apply(action.clone(), applying_transaction_id.clone());
 
             match apply_result {
                 Ok(action_result) => {
@@ -187,7 +236,8 @@ impl Database {
 
         match status {
             CommitStatus::Commit => {
-                self.transaction_log.update_committed(restore);
+                self.transaction_log
+                    .update_committed(applying_transaction_id, restore);
 
                 let action_result_stack: Vec<ActionResult> = action_stack
                     .into_iter()

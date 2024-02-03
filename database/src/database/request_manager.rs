@@ -15,12 +15,14 @@ use super::table::{query::QueryPersonData, row::UpdatePersonData};
 pub enum DatabaseRequestAction {
     Request(Vec<Action>),
     Shutdown,
+    SaveSnapshot,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum DatabaseResponseAction {
     Response(Vec<ActionResult>),
     TransactionRollback(String),
+    CommandError(String),
 }
 
 impl DatabaseResponseAction {
@@ -48,6 +50,8 @@ pub enum RequestManagerError {
     DatabaseTimeout,
     #[error("Rolled back transaction: {0}")]
     TransactionRollback(String),
+    #[error("Database Error Status: {0}")]
+    DatbaseErrorStatus(String),
 }
 
 /// Goal of the request manager is to provide a simple interface for interacting with the database
@@ -155,6 +159,9 @@ impl RequestManager {
             Ok(DatabaseResponseAction::Response(action_response)) => Ok(action_response),
             Ok(DatabaseResponseAction::TransactionRollback(s)) => {
                 Err(RequestManagerError::TransactionRollback(s))
+            }
+            Ok(DatabaseResponseAction::CommandError(s)) => {
+                Err(RequestManagerError::DatbaseErrorStatus(s))
             }
             Err(oneshot::RecvTimeoutError::Timeout) => Err(RequestManagerError::DatabaseTimeout),
             Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
