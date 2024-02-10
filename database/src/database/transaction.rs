@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use crate::consts::consts::TransactionId;
 use crate::model::action::Action;
 
+// Todo: use this status to denote if we have done an fsync on the transaction log
+//  once fsync is done, THEN we can consider the transaction committed / durable
+//  then we can send the message to the caller that we have committed the transaction
 #[derive(Serialize, Deserialize, Debug)]
 pub enum TransactionStatus {
-    Applying,
     Committed,
 }
 
@@ -20,8 +22,7 @@ pub struct Transaction {
 }
 
 #[derive(Debug)]
-pub struct TransactionLog {
-    pub transactions: Vec<Transaction>,
+pub struct TransactionWAL {
     log_file: File,
     data_directory: PathBuf,
     current_transaction_id: TransactionId,
@@ -32,7 +33,7 @@ fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
     data_directory.join("transaction_log.json")
 }
 
-impl TransactionLog {
+impl TransactionWAL {
     pub fn new(data_directory: PathBuf) -> Self {
         fs::create_dir_all(&data_directory)
             .expect("Should always be able to create a path at data/");
@@ -44,7 +45,6 @@ impl TransactionLog {
             .expect("Cannot open file");
 
         Self {
-            transactions: vec![],
             log_file,
             data_directory: data_directory,
             current_transaction_id: TransactionId::new_first_transaction(),
@@ -52,8 +52,6 @@ impl TransactionLog {
     }
 
     pub fn flush_transactions(&mut self) {
-        self.transactions = vec![];
-
         let path = get_transaction_log_location(self.data_directory.clone());
 
         fs::remove_file(&path).expect("Unable to remove file");
@@ -69,41 +67,41 @@ impl TransactionLog {
         &self.current_transaction_id
     }
 
-    pub fn add_applying(&mut self, actions: Vec<Action>) -> TransactionId {
-        let new_transaction_id = self.get_current_transaction_id().increment();
-
-        self.transactions.push(Transaction {
-            id: new_transaction_id.clone(),
-            actions,
-            status: TransactionStatus::Applying,
-        });
-
-        new_transaction_id
-    }
-
-    pub fn update_committed(&mut self, applied_transaction_id: TransactionId, restore: bool) {
-        let last_transaction = self
-            .transactions
-            .last_mut()
-            .expect("should exist as all mutations are written to the log");
-
-        last_transaction.status = TransactionStatus::Committed;
-
-        self.current_transaction_id = applied_transaction_id;
-
+    pub fn commit(
+        &mut self,
+        applied_transaction_id: TransactionId,
+        actions: Vec<Action>,
+        restore: bool,
+    ) {
+        // We do not need to write back to the WAL if we restoring the database
         if !restore {
-            let transaction_json_line =
-                format!("{}\n", serde_json::to_string(last_transaction).unwrap());
+            // TODO: We should add a transaction lifetime, though it messes with the deserialize trait
+            let transaction_json_line = format!(
+                "{}\n",
+                serde_json::to_string(&Transaction {
+                    id: applied_transaction_id.clone(),
+                    actions: actions.clone(),
+                    status: TransactionStatus::Committed,
+                })
+                .unwrap()
+            );
 
             let _ = &self
                 .log_file
                 .write_all(transaction_json_line.as_bytes())
                 .unwrap();
-        }
-    }
 
-    pub fn update_failed(&mut self) {
-        self.transactions.pop();
+            // Performs an fsync on the transaction log, ensuring that the transaction is durable
+            //
+            // Note: This is likely a slow operation and if possible we should allow multiple transactions to be committed at once
+            //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
+            //
+            // I'm not sure the best way to do this, i.e. another thread that flushes the log / calls commit every 5ms?
+            //   we use the DB thread to do this, wake up at least every 5ms, and if there are transactions to commit, we do so
+            let _ = &self.log_file.sync_all().unwrap();
+        }
+
+        self.current_transaction_id = applied_transaction_id;
     }
 
     pub fn restore(data_directory: PathBuf) -> Vec<Transaction> {

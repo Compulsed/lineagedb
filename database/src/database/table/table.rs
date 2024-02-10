@@ -4,7 +4,6 @@ use thiserror::Error;
 
 use crate::{
     consts::consts::{EntityId, TransactionId, VersionId},
-    database::snapshot::Metadata,
     model::{
         action::{Action, ActionResult},
         person::Person,
