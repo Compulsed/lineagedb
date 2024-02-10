@@ -140,7 +140,7 @@ cargo bench --all
   - Filtering 
     - AND ✅
     - OR
-  - Using indexes  
+  - Using indexes ✅
 - List at transaction id
 - Create 
   - Single ✅ 
