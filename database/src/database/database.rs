@@ -137,6 +137,7 @@ impl Database {
                 action,
                 response_sender,
             } = self.database_receiver.recv().unwrap();
+            log::info!("Received request: {}", action.log_format());
 
             let process_action = match action {
                 DatabaseRequestAction::Request(action) => action,
@@ -238,6 +239,10 @@ impl Database {
 
         match status {
             CommitStatus::Commit => {
+                if !restore {
+                    log::info!("✅ Committed: [TX: {}]", &applying_transaction_id);
+                }
+
                 self.transaction_wal
                     .commit(applying_transaction_id, user_actions, restore);
 
@@ -249,6 +254,10 @@ impl Database {
                 DatabaseResponseAction::Response(action_result_stack)
             }
             CommitStatus::Rollback(error_status) => {
+                if !restore {
+                    log::info!("⚠️  Rolled back: [TX: {}]", &applying_transaction_id);
+                }
+
                 // TODO: Write a test to ensure that we rollback in the correct order
                 for ActionAndResult { action, result: _ } in action_stack.into_iter().rev() {
                     self.person_table.apply_rollback(action)
