@@ -1,6 +1,8 @@
 use actix_cors::Cors;
 use actix_web::{
-    get, middleware, route,
+    get,
+    middleware::{self, Condition},
+    route,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
@@ -62,6 +64,13 @@ struct Cli {
     /// Address the graphql server will run on
     #[clap(short, long, default_value = "0.0.0.0")]
     address: String,
+
+    /// Address the graphql server will run on
+    #[clap(long)]
+    log_http: bool,
+
+    #[clap(long, default_value_t = 2)]
+    http_workers: usize,
 }
 
 #[actix_web::main]
@@ -112,15 +121,17 @@ async fn main() -> io::Result<()> {
 
     // Start HTTP server
     HttpServer::new(move || {
-        App::new()
+        let app = App::new()
             .app_data(Data::from(schema.clone()))
             .app_data(web::Data::new(database_sender.clone()))
             .service(graphql)
             .service(graphql_playground)
             .wrap(Cors::permissive())
-            .wrap(middleware::Logger::default())
+            .wrap(Condition::new(args.log_http, middleware::Logger::default()));
+
+        app
     })
-    .workers(8)
+    .workers(args.http_workers)
     .bind((args.address, args.port))?
     .run()
     .await

@@ -12,10 +12,27 @@ use crate::{
 
 use super::table::{query::QueryPersonData, row::UpdatePersonData};
 
+#[derive(Debug)]
 pub enum DatabaseRequestAction {
     Request(Vec<Action>),
     Shutdown,
     SaveSnapshot,
+}
+
+impl DatabaseRequestAction {
+    /// Prints complex logs in a more readable format
+    pub fn log_format(&self) -> String {
+        match self {
+            DatabaseRequestAction::Request(actions) => {
+                if actions.len() > 1 {
+                    format!("{:#?}", self)
+                } else {
+                    format!("{:?}", self)
+                }
+            }
+            o => format!("{:?}", self),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]

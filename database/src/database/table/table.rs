@@ -19,6 +19,7 @@ use super::{
     },
 };
 
+// These are examples of 'logical' errors -- https://youtu.be/5blTGTwKZPI?si=tonGUDRXr9p9tTYu&t=685
 #[derive(Error, Debug)]
 pub enum ApplyErrors {
     // CRUD - GET
