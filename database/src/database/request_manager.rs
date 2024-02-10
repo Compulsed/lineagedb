@@ -30,7 +30,7 @@ impl DatabaseRequestAction {
                     format!("{:?}", self)
                 }
             }
-            o => format!("{:?}", self),
+            _ => format!("{:?}", self),
         }
     }
 }
