@@ -10,6 +10,12 @@ pub struct FullNameIndex {
     index: HashMap<Option<String>, HashSet<EntityId>>,
 }
 
+impl Default for FullNameIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // TODO: Index features:
 //  1. Uniqueness constraints -- could this be implemented as a trait?
 //  2. Search not null (scan index?), aka. everything in the index is good except the null entries

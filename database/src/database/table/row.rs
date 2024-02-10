@@ -48,7 +48,7 @@ pub enum PersonVersionState {
 pub struct PersonVersion {
     pub id: EntityId,
     pub state: PersonVersionState,
-    pub version: VersionId,
+    pub version: VersionId, // Version Ids are re-indexed back to 1 on a restore
     pub transaction_id: TransactionId,
 }
 
