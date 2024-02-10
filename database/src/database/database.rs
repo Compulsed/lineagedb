@@ -137,7 +137,6 @@ impl Database {
                 action,
                 response_sender,
             } = self.database_receiver.recv().unwrap();
-
             log::info!("Received request: {}", action.log_format());
 
             let process_action = match action {

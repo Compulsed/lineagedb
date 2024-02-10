@@ -69,6 +69,27 @@ impl TransactionLog {
         &self.current_transaction_id
     }
 
+    ///
+    /// # WAL NOTES
+    /// This is the point where we could do a WAL, the issue is, why would this make sense?
+    ///
+    /// If we want durability the write at the end of the transaction is enough.
+    ///
+    /// I could maybe see a use case for the WAL in the case of performance, i.e. we know the transaction will
+    /// be committed (& we respond success) so we can write it to the WAL and then apply it to the database in the background.
+    ///
+    /// The issue is to know that the transaction will be committed we need to do a all of the work to validate the constraints (no Logical OR Internal Errors).
+    ///
+    /// Also the way we are doing this today (just storing the transaction in a vector or transactions) is not useful. The only
+    ///     step that makes sense is that we perform the database apply then we write the transaction to disk (transaction.update_committed()).
+    ///
+    /// WAL notes off of wikipedia:
+    /// 1. After a certain amount of operations the WAL should be written to the database & deleted (check point)
+    /// 2. WAL allows updates of a database to be done in-place
+    /// 3. In a system using WAL, all modifications are written to a log before they are applied. Usually both redo and undo information is stored in the log.
+    ///    - This is confusing, how do we respond OK to the client if we haven't actually applied the transaction to the database ('tell the outside world it is committed when it is not')?
+    ///     https://www.youtube.com/watch?v=5blTGTwKZPI. is this just consistency levels? Oh, maybe it's to do with the fact a 'transaction' is eventual.    
+    ///
     pub fn add_applying(&mut self, actions: Vec<Action>) -> TransactionId {
         let new_transaction_id = self.get_current_transaction_id().increment();
 

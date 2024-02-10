@@ -77,6 +77,10 @@ struct Cli {
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
+    panic::set_hook(Box::new(|panic_info| {
+        log::error!("Panic occurred - {:?}", panic_info);
+    }));
+
     let args = Cli::parse();
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
@@ -86,14 +90,12 @@ async fn main() -> io::Result<()> {
 
     // Setup database thread
     thread::spawn(move || {
-        panic::set_hook(Box::new(|panic_info| {
-            log::error!("Panic! occurred in database thread - {:?}", panic_info);
-        }));
-
         // TOOD: We should improve how we handle panics, problems are as follows:
         //  1. The database shuts down and all the requests are lost (perhaps we should reset or process should exit?)
         //  2. The result of a panic is hitting in STD out (colorful info logs mask the plain panic message)
         let mut database = Database::new(database_receiver, database_options);
+
+        panic!("test panic");
 
         database.run();
     });
