@@ -8,12 +8,14 @@ use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
-    database::request_manager::{DatabaseRequestStatement, DatabaseResponseStatement},
+    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
     model::statement::{Statement, StatementResult},
 };
 
 use super::{
-    request_manager::DatabaseRequest, snapshot::SnapshotManager, table::table::PersonTable,
+    commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
+    snapshot::SnapshotManager,
+    table::table::PersonTable,
     transaction::TransactionWAL,
 };
 
@@ -38,6 +40,7 @@ impl Default for DatabaseOptions {
     }
 }
 
+// TODO: This is a part of the transaction_wal, should be moved there
 enum CommitStatus {
     Commit,
     Rollback(String),
@@ -46,13 +49,16 @@ enum CommitStatus {
 pub struct Database {
     person_table: PersonTable,
     transaction_wal: TransactionWAL,
-    database_receiver: Receiver<DatabaseRequest>,
+    database_receiver: Receiver<DatabaseCommandRequest>,
     database_options: DatabaseOptions,
     snapshot_manager: SnapshotManager,
 }
 
 impl Database {
-    pub fn new(database_receiver: Receiver<DatabaseRequest>, options: DatabaseOptions) -> Self {
+    pub fn new(
+        database_receiver: Receiver<DatabaseCommandRequest>,
+        options: DatabaseOptions,
+    ) -> Self {
         Self {
             person_table: PersonTable::new(),
             transaction_wal: TransactionWAL::new(options.data_directory.clone()),
@@ -63,8 +69,10 @@ impl Database {
     }
 
     pub fn new_test() -> Self {
-        let (_, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
-            mpsc::channel();
+        let (_, database_receiver): (
+            Sender<DatabaseCommandRequest>,
+            Receiver<DatabaseCommandRequest>,
+        ) = mpsc::channel();
 
         let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
             .iter()
@@ -81,7 +89,9 @@ impl Database {
         }
     }
 
-    pub fn reset_database_state(&mut self) {
+    pub fn reset_database_state(&mut self) -> usize {
+        let row_count = self.person_table.person_rows.len();
+
         // Clean out snapshot and transaction log
         self.snapshot_manager.delete_snapshot();
 
@@ -89,6 +99,8 @@ impl Database {
         self.person_table = PersonTable::new();
         self.transaction_wal = TransactionWAL::new(self.database_options.data_directory.clone());
         self.snapshot_manager = SnapshotManager::new(self.database_options.data_directory.clone());
+
+        row_count
     }
 
     pub fn run(&mut self) {
@@ -116,8 +128,10 @@ impl Database {
 
         // Then add states from the transaction log
         for transaction in restored_transactions {
-            if let DatabaseResponseStatement::TransactionRollback(rollback_message) =
-                self.apply_transaction(transaction.statements, true)
+            let apply_transaction_result = self.apply_transaction(transaction.statements, true);
+
+            if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
+                apply_transaction_result
             {
                 panic!(
                     "Should not be able to rollback a transaction on startup: {}",
@@ -141,99 +155,72 @@ impl Database {
                 .to_formatted_string(&Locale::en)
         );
 
-        // Process incoming requests from the channel
+        // Loop over the receive channel and serially process commands from the various clients
         loop {
-            let DatabaseRequest {
-                statement,
-                response_sender,
-            } = self.database_receiver.recv().unwrap();
-            log::info!("Received request: {}", statement.log_format());
+            let DatabaseCommandRequest { command, resolver } =
+                self.database_receiver.recv().unwrap();
 
-            let process_statement = match statement {
-                DatabaseRequestStatement::Request(statement) => statement,
-                DatabaseRequestStatement::Shutdown => {
-                    let _ = response_sender.send(DatabaseResponseStatement::new_single_response(
-                        StatementResult::SuccessStatus(
-                            "Successfully shutdown database".to_string(),
-                        ),
-                    ));
+            log::info!("Received request: {}", command.log_format());
 
-                    return;
-                }
-                DatabaseRequestStatement::DropDatabase => {
-                    self.reset_database_state();
+            // TODO: We assume that the send() commands are successful. This is likely okay? because if
+            //   if sender is disconnected that should not impact the database
+            let process_statement = match command {
+                DatabaseCommand::Transaction(statements) => statements,
+                DatabaseCommand::Control(control) => {
+                    match control {
+                        Control::Shutdown => {
+                            let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                "Successfully shutdown database",
+                            ));
 
-                    let statement_response = DatabaseResponseStatement::new_single_response(
-                        StatementResult::SuccessStatus(
-                            "Successfully dropped and shutdown the database".to_string(),
-                        ),
-                    );
+                            return;
+                        }
+                        Control::ResetDatabase => {
+                            let dropped_row_count = self.reset_database_state();
 
-                    response_sender
-                        .send(statement_response)
-                        .expect("Should always be able to send a response back to the caller");
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully reset database, dropped: {} rows",
+                                    dropped_row_count
+                                )));
 
-                    continue;
-                }
-                DatabaseRequestStatement::SnapshotDatabase => {
-                    // Persist current state to disk
-                    let result = self.snapshot_manager.create_snapshot(
-                        &mut self.person_table,
-                        self.transaction_wal.get_current_transaction_id().clone(),
-                    );
+                            continue;
+                        }
+                        Control::SnapshotDatabase => {
+                            // Persist current state to disk
+                            self.snapshot_manager.create_snapshot(
+                                &mut self.person_table,
+                                self.transaction_wal.get_current_transaction_id().clone(),
+                            );
 
-                    self.transaction_wal.flush_transactions();
+                            let flush_transactions = self.transaction_wal.flush_transactions();
 
-                    let action_response: DatabaseResponseStatement = match result {
-                        Ok(_) => DatabaseResponseStatement::new_single_response(
-                            StatementResult::SuccessStatus(
-                                "Successfully snap shotted database".to_string(),
-                            ),
-                        ),
-                        Err(err) => DatabaseResponseStatement::CommandError(format!("{}", err)),
-                    };
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully created snapshot: compressed {} txs",
+                                    flush_transactions
+                                )));
 
-                    response_sender
-                        .send(action_response)
-                        .expect("Should always be able to send a response back to the caller");
-
-                    continue;
+                            continue;
+                        }
+                    }
                 }
             };
 
             let statement_response = self.apply_transaction(process_statement, false);
 
             // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
-            response_sender
-                .send(statement_response)
-                .expect("Should always be able to send a response back to the caller")
+            let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                statement_response,
+            ));
         }
-    }
-
-    pub fn apply_statement(
-        &mut self,
-        statement: Statement,
-        restore: bool,
-    ) -> DatabaseResponseStatement {
-        let results = self.apply_transaction(vec![statement], restore);
-
-        if let DatabaseResponseStatement::Response(mut results) = results {
-            return DatabaseResponseStatement::new_single_response(
-                results
-                    .pop()
-                    .expect("should exist due to process_actions returning the same length"),
-            );
-        }
-
-        // Transaction rollback
-        return results;
     }
 
     pub fn apply_transaction(
         &mut self,
         statements: Vec<Statement>,
         restore: bool,
-    ) -> DatabaseResponseStatement {
+    ) -> DatabaseCommandTransactionResponse {
         let applying_transaction_id = self
             .transaction_wal
             .get_current_transaction_id()
@@ -280,7 +267,7 @@ impl Database {
                     .map(|action_and_result| action_and_result.result)
                     .collect();
 
-                DatabaseResponseStatement::Response(action_result_stack)
+                DatabaseCommandTransactionResponse::Commit(action_result_stack)
             }
             CommitStatus::Rollback(error_status) => {
                 if !restore {
@@ -296,7 +283,7 @@ impl Database {
                     self.person_table.apply_rollback(statement)
                 }
 
-                DatabaseResponseStatement::TransactionRollback(error_status)
+                DatabaseCommandTransactionResponse::Rollback(error_status)
             }
         }
     }
@@ -316,11 +303,11 @@ mod tests {
     };
 
     use super::test_utils::database_test;
+    use crate::database::commands::DatabaseCommandTransactionResponse;
     use crate::database::database::Database;
     use crate::model::statement::StatementResult;
 
     mod add {
-        use crate::database::request_manager::DatabaseResponseStatement;
 
         use super::*;
 
@@ -330,11 +317,14 @@ mod tests {
 
             let person = Person::new_test();
 
-            let statement_result = database.apply_statement(Statement::Add(person.clone()), false);
+            let transcation_result =
+                database.apply_transaction(vec![Statement::Add(person.clone())], false);
 
             assert_eq!(
-                statement_result,
-                DatabaseResponseStatement::new_single_response(StatementResult::Single(person))
+                transcation_result,
+                DatabaseCommandTransactionResponse::new_committed_single_result(
+                    StatementResult::Single(person)
+                )
             );
         }
 
@@ -344,28 +334,28 @@ mod tests {
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
-            let statement_result_one =
-                database.apply_statement(Statement::Add(person_one.clone()), false);
+            let transcation_result_one =
+                database.apply_transaction(vec![Statement::Add(person_one.clone())], false);
 
             assert_eq!(
-                statement_result_one,
-                DatabaseResponseStatement::new_single_response(StatementResult::Single(
-                    person_one.clone()
-                )),
+                transcation_result_one,
+                DatabaseCommandTransactionResponse::new_committed_single_result(
+                    StatementResult::Single(person_one.clone())
+                ),
                 "Person should be returned as a single statement result"
             );
 
             let person_two: Person =
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let statement_result_two =
-                database.apply_statement(Statement::Add(person_two.clone()), false);
+            let transcation_result_two =
+                database.apply_transaction(vec![Statement::Add(person_two.clone())], false);
 
             assert_eq!(
-                statement_result_two,
-                DatabaseResponseStatement::new_single_response(StatementResult::Single(
-                    person_two.clone()
-                )),
+                transcation_result_two,
+                DatabaseCommandTransactionResponse::new_committed_single_result(
+                    StatementResult::Single(person_two.clone())
+                ),
                 "Person should be returned as a single statement result"
             );
         }
@@ -387,7 +377,7 @@ mod tests {
 
             assert_eq!(
                 action_results,
-                DatabaseResponseStatement::new_multiple_response(vec![
+                DatabaseCommandTransactionResponse::new_committed_multiple(vec![
                     StatementResult::Single(person_one),
                     StatementResult::Single(person_two)
                 ])
@@ -420,7 +410,7 @@ mod tests {
 
             assert_eq!(
                 action_error,
-                DatabaseResponseStatement::TransactionRollback(
+                DatabaseCommandTransactionResponse::Rollback(
                     "Cannot add row as a person already exists with this email: OverlappingEmail"
                         .to_string()
                 ),
@@ -430,9 +420,7 @@ mod tests {
     }
 
     mod transaction_rollback {
-        use crate::{
-            consts::consts::TransactionId, database::request_manager::DatabaseResponseStatement,
-        };
+        use crate::consts::consts::TransactionId;
 
         use super::*;
 
@@ -449,7 +437,7 @@ mod tests {
             // The transaction log will be empty
             assert_eq!(
                 error_message,
-                DatabaseResponseStatement::TransactionRollback(
+                DatabaseCommandTransactionResponse::Rollback(
                     "Cannot add row as a person already exists with this email: OverlappingEmail"
                         .to_string()
                 )
@@ -600,8 +588,9 @@ pub mod test_utils {
 
     use crate::{
         database::{
+            commands::DatabaseCommandRequest,
             database::{Database, DatabaseOptions},
-            request_manager::{DatabaseRequest, RequestManager},
+            request_manager::RequestManager,
         },
         model::statement::{Statement, StatementResult},
     };
@@ -617,8 +606,8 @@ pub mod test_utils {
         action_generator: fn(i32, u32) -> Statement,
     ) {
         let (database_sender, database_receiver): (
-            Sender<DatabaseRequest>,
-            Receiver<DatabaseRequest>,
+            Sender<DatabaseCommandRequest>,
+            Receiver<DatabaseCommandRequest>,
         ) = mpsc::channel();
 
         thread::spawn(move || {

@@ -1,7 +1,7 @@
 use database::{
     consts::consts::EntityId,
     database::{
-        request_manager::{DatabaseRequestStatement, RequestManager},
+        request_manager::RequestManager,
         table::{
             query::{QueryMatch, QueryPersonData},
             row::{UpdatePersonData, UpdateStatement},
@@ -196,23 +196,17 @@ impl MutationRoot {
     fn snapshot(context: &'db GraphQLContext) -> FieldResult<String> {
         let database = context.request_manager.lock().unwrap();
 
-        let single_statement_result = database
-            .send_database_request(DatabaseRequestStatement::SnapshotDatabase)?
-            .pop()
-            .expect("single a statement should generate single response");
+        let shutdown_status = database.send_snapshot_request()?;
 
-        return Ok(single_statement_result.success_status());
+        return Ok(shutdown_status);
     }
 
-    fn drop(context: &'db GraphQLContext) -> FieldResult<String> {
+    fn reset(context: &'db GraphQLContext) -> FieldResult<String> {
         let database = context.request_manager.lock().unwrap();
 
-        let single_statement_result = database
-            .send_database_request(DatabaseRequestStatement::DropDatabase)?
-            .pop()
-            .expect("single a statement should generate single response");
+        let reset_status = database.send_reset_request()?;
 
-        return Ok(single_statement_result.success_status());
+        return Ok(reset_status);
     }
 }
 

@@ -12,11 +12,7 @@ use crate::{
     model::statement::Statement,
 };
 
-use super::table::{
-    index::FullNameIndex,
-    row::PersonVersion,
-    table::{ApplyErrors, PersonTable},
-};
+use super::table::{index::FullNameIndex, row::PersonVersion, table::PersonTable};
 
 enum FileType {
     Metadata,
@@ -146,14 +142,11 @@ impl SnapshotManager {
         return (snapeshot_count, metadata_data);
     }
 
-    pub fn create_snapshot(
-        &self,
-        table: &mut PersonTable,
-        transaction_id: TransactionId,
-    ) -> Result<(), ApplyErrors> {
+    pub fn create_snapshot(&self, table: &mut PersonTable, transaction_id: TransactionId) {
         // -- Table
         let result = table
-            .apply(Statement::ListLatestVersions, transaction_id.clone())?
+            .apply(Statement::ListLatestVersions, transaction_id.clone())
+            .expect("Should always be able to list latest versions")
             .list_version();
 
         self.snapshot_file.write(&result);
@@ -168,8 +161,6 @@ impl SnapshotManager {
 
         self.unique_email_index_file
             .write(&table.unique_email_index);
-
-        Ok(())
     }
 
     pub fn delete_snapshot(&self) {

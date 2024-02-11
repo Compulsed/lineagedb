@@ -10,90 +10,41 @@ use crate::{
     },
 };
 
-use super::table::{query::QueryPersonData, row::UpdatePersonData};
-
-#[derive(Debug)]
-pub enum DatabaseRequestStatement {
-    /// Transactionally sends a set of actions to the database and returns the results
-    Request(Vec<Statement>),
-    /// Performs a safe shutdown of the database, requests before the shutdown will be run / committed, requests after the shutdown will be ignored
-    Shutdown,
-    /// Writes the current state of the database to disk, removes the need for a WAL replay on next startup
-    SnapshotDatabase,
-    /// Resets the database to the initial state, removes all data from the database, resets transaction ids, etc
-    DropDatabase,
-}
-
-impl DatabaseRequestStatement {
-    /// Prints complex logs in a more readable format
-    pub fn log_format(&self) -> String {
-        match self {
-            DatabaseRequestStatement::Request(actions) => {
-                if actions.len() > 1 {
-                    format!("{:#?}", self)
-                } else {
-                    format!("{:?}", self)
-                }
-            }
-            _ => format!("{:?}", self),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum DatabaseResponseStatement {
-    Response(Vec<StatementResult>),
-    TransactionRollback(String),
-    CommandError(String),
-}
-
-impl DatabaseResponseStatement {
-    pub fn new_single_response(action_result: StatementResult) -> Self {
-        DatabaseResponseStatement::Response(vec![action_result])
-    }
-
-    pub fn new_multiple_response(action_results: Vec<StatementResult>) -> Self {
-        DatabaseResponseStatement::Response(action_results)
-    }
-}
-
-pub struct DatabaseRequest {
-    pub response_sender: oneshot::Sender<DatabaseResponseStatement>,
-    pub statement: DatabaseRequestStatement,
-}
+use super::{
+    commands::{
+        Control, DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandRequest,
+        DatabaseCommandResponse, DatabaseCommandTransactionResponse,
+    },
+    table::{query::QueryPersonData, row::UpdatePersonData},
+};
 
 pub struct RequestManager {
-    database_sender: Sender<DatabaseRequest>,
+    database_sender: Sender<DatabaseCommandRequest>,
 }
 
+/// Converts the database command hierarchy into a simple string, this is an easy interface to work with
 #[derive(Error, Debug)]
 pub enum RequestManagerError {
+    /// From issues dealing with the channel
     #[error("Database too too long to response to request")]
     DatabaseTimeout,
+
+    /// From transaction rollbacks
     #[error("Rolled back transaction: {0}")]
     TransactionRollback(String),
+
+    /// From control commands
     #[error("Database Error Status: {0}")]
-    DatbaseErrorStatus(String),
+    DatabaseErrorStatus(String),
 }
 
 /// Goal of the request manager is to provide a simple interface for interacting with the database
-///
-/// The request manager providers the following APIs. These are sorted by the easiest to use to the most complex
-/// 1. CRUD operations on a single person -- these are completely type safe
-/// 2. Generic Statement based API -- not type safe because you need to know what statement maps ActionResult (e.g. Statement::Add maps -> ActionResult::Single)
-/// 3. Transaction based API -- similar to the generic statement based API, but allows you to send multiple statements to the database at once
-///
-/// For 2/ Can we improve the type safety of the generic statement based API?
-/// - Statement knows what ActionResult it maps to
-/// - ActionResult knows what Statement it maps to
-/// - Generics...?
-///
-/// For 3/ Can we improve the type safety of the transaction based API?
-/// Might be hard because the results are a vector of ActionResult, which is a enum of all possible results (meaning we have to match on all of them)
 impl RequestManager {
-    pub fn new(database_sender: Sender<DatabaseRequest>) -> Self {
+    pub fn new(database_sender: Sender<DatabaseCommandRequest>) -> Self {
         Self { database_sender }
     }
+
+    // -- Transaction Methods --
 
     pub fn send_add(&self, person: Person) -> Result<Person, RequestManagerError> {
         let action_result = self.send_single_statement(Statement::Add(person))?;
@@ -131,64 +82,112 @@ impl RequestManager {
         return Ok(action_result.list());
     }
 
-    /// Sends a shutdown request to the database and returns the database's response
-    pub fn send_shutdown_request(&self) -> Result<String, RequestManagerError> {
-        let single_action_result = self
-            .send_database_request(DatabaseRequestStatement::Shutdown)?
-            .pop()
-            .expect("single a statement should generate single response");
-
-        return Ok(single_action_result.success_status());
-    }
-
-    /// Sends a single statement to the database and returns a single statement result
+    /// Convenience method to send a single statement to the database and returns the response
+    ///
+    /// The reason this method exists is because it's a common pattern to send a single statement to the database and get a single response back
     pub fn send_single_statement(
         &self,
         statement: Statement,
     ) -> Result<StatementResult, RequestManagerError> {
         let single_statement_result = self
-            .send_database_request(DatabaseRequestStatement::Request(vec![statement]))?
+            .send_transaction(vec![statement])?
             .pop()
             .expect("single a statement should generate single response");
 
         return Ok(single_statement_result);
     }
 
-    /// Used to create a transaction
+    /// Sends a set of statements to the database and returns the response
     pub fn send_transaction(
         &self,
-        actions: Vec<Statement>,
+        statements: Vec<Statement>,
     ) -> Result<Vec<StatementResult>, RequestManagerError> {
-        let action_results =
-            self.send_database_request(DatabaseRequestStatement::Request(actions))?;
+        let command_result =
+            self.send_database_command(DatabaseCommand::Transaction(statements))?;
 
-        return Ok(action_results);
+        match command_result {
+            DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                DatabaseCommandTransactionResponse::Commit(action_results),
+            ) => Ok(action_results),
+            _ => panic!("Transaction commands should always return a commit or rollback"),
+        }
     }
 
-    pub fn send_database_request(
-        &self,
-        database_request: DatabaseRequestStatement,
-    ) -> Result<Vec<StatementResult>, RequestManagerError> {
-        let (response_sender, response_receiver) = oneshot::channel::<DatabaseResponseStatement>();
+    // -- Control Methods --
 
-        let request = DatabaseRequest {
-            response_sender,
-            statement: database_request,
+    /// Sends a shutdown request to the database and returns the database's response
+    pub fn send_shutdown_request(&self) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::Shutdown);
+    }
+
+    pub fn send_reset_request(&self) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::ResetDatabase);
+    }
+
+    pub fn send_snapshot_request(&self) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::SnapshotDatabase);
+    }
+
+    // -- Internal methods --
+
+    fn send_control(&self, control: Control) -> Result<String, RequestManagerError> {
+        let command_result = self.send_database_command(DatabaseCommand::Control(control))?;
+
+        match command_result {
+            DatabaseCommandResponse::DatabaseCommandControlResponse(
+                DatabaseCommandControlResponse::Success(s),
+            ) => Ok(s),
+            _ => panic!("Controls should always return a success or error status"),
+        }
+    }
+
+    /// Generic method to send a transaction or control command to the database and returns the response. For type safety this method should not be used
+    /// use the more specific methods instead. These specific methods ensure that the correct response is returned
+    fn send_database_command(
+        &self,
+        database_request: DatabaseCommand,
+    ) -> Result<DatabaseCommandResponse, RequestManagerError> {
+        let (response_sender, response_receiver) = oneshot::channel::<DatabaseCommandResponse>();
+
+        let request = DatabaseCommandRequest {
+            resolver: response_sender,
+            command: database_request,
         };
 
         // Sends the request to the database worker, database will response
         //  on the response_receiver once it's finished processing it's request
-        // TOOD: If we panic the
         self.database_sender.send(request).unwrap();
 
-        match response_receiver.recv_timeout(Duration::from_secs(5)) {
-            Ok(DatabaseResponseStatement::Response(action_response)) => Ok(action_response),
-            Ok(DatabaseResponseStatement::TransactionRollback(s)) => {
-                Err(RequestManagerError::TransactionRollback(s))
+        let response = response_receiver.recv_timeout(Duration::from_secs(5));
+
+        match response {
+            // Transaction commands
+            Ok(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                transaction_response,
+            )) => match transaction_response {
+                DatabaseCommandTransactionResponse::Commit(statement_result) => {
+                    Ok(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                        DatabaseCommandTransactionResponse::Commit(statement_result),
+                    ))
+                }
+                DatabaseCommandTransactionResponse::Rollback(s) => {
+                    Err(RequestManagerError::TransactionRollback(s))
+                }
+            },
+            // Control commands
+            Ok(DatabaseCommandResponse::DatabaseCommandControlResponse(control_response)) => {
+                match control_response {
+                    DatabaseCommandControlResponse::Success(s) => {
+                        Ok(DatabaseCommandResponse::DatabaseCommandControlResponse(
+                            DatabaseCommandControlResponse::Success(s),
+                        ))
+                    }
+                    DatabaseCommandControlResponse::Error(s) => {
+                        Err(RequestManagerError::DatabaseErrorStatus(s))
+                    }
+                }
             }
-            Ok(DatabaseResponseStatement::CommandError(s)) => {
-                Err(RequestManagerError::DatbaseErrorStatus(s))
-            }
+            // Issues with the channel
             Err(oneshot::RecvTimeoutError::Timeout) => Err(RequestManagerError::DatabaseTimeout),
             Err(oneshot::RecvTimeoutError::Disconnected) => panic!("Processor exited"),
         }

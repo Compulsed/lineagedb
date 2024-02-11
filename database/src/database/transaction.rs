@@ -26,6 +26,7 @@ pub struct TransactionWAL {
     log_file: File,
     data_directory: PathBuf,
     current_transaction_id: TransactionId,
+    size: usize,
 }
 
 fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
@@ -48,11 +49,16 @@ impl TransactionWAL {
             log_file,
             data_directory: data_directory,
             current_transaction_id: TransactionId::new_first_transaction(),
+            size: 0,
         }
     }
 
-    pub fn flush_transactions(&mut self) {
+    pub fn flush_transactions(&mut self) -> usize {
         let path = get_transaction_log_location(self.data_directory.clone());
+
+        let flushed_size = self.size;
+
+        self.size = 0;
 
         fs::remove_file(&path).expect("Unable to remove file");
 
@@ -61,6 +67,8 @@ impl TransactionWAL {
             .append(true)
             .open(&path)
             .expect("Cannot open file");
+
+        flushed_size
     }
 
     pub fn get_current_transaction_id(&self) -> &TransactionId {
@@ -105,6 +113,7 @@ impl TransactionWAL {
         }
 
         self.current_transaction_id = applied_transaction_id;
+        self.size += 1;
     }
 
     pub fn restore(data_directory: PathBuf) -> Vec<Transaction> {

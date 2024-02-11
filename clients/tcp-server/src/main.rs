@@ -6,8 +6,9 @@ use std::thread;
 
 use clap::Parser;
 use database::consts::consts::EntityId;
+use database::database::commands::DatabaseCommandRequest;
 use database::database::database::{Database, DatabaseOptions};
-use database::database::request_manager::{DatabaseRequest, RequestManager};
+use database::database::request_manager::RequestManager;
 use database::database::table::row::{UpdatePersonData, UpdateStatement};
 use database::model::person::Person;
 use database::model::statement::Statement; // TCP Stream defines implementation
@@ -39,8 +40,10 @@ fn main() {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
-        mpsc::channel();
+    let (database_sender, database_receiver): (
+        Sender<DatabaseCommandRequest>,
+        Receiver<DatabaseCommandRequest>,
+    ) = mpsc::channel();
 
     // Setup database thread
     thread::spawn(move || {
