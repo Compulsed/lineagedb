@@ -134,7 +134,7 @@ impl Database {
                 apply_transaction_result
             {
                 panic!(
-                    "Should not be able to rollback a transaction on startup: {}",
+                    "All committed transactions should be replayable on startup: {}",
                     rollback_message
                 );
             }
