@@ -92,13 +92,16 @@ impl TransactionWAL {
                 .unwrap();
 
             // Performs an fsync on the transaction log, ensuring that the transaction is durable
+            // https://www.postgresql.org/docs/current/wal-reliability.html
             //
-            // Note: This is likely a slow operation and if possible we should allow multiple transactions to be committed at once
+            // Note: This is a slow operation and if possible we should allow multiple transactions to be committed at once
             //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
+            //
+            // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
             //
             // I'm not sure the best way to do this, i.e. another thread that flushes the log / calls commit every 5ms?
             //   we use the DB thread to do this, wake up at least every 5ms, and if there are transactions to commit, we do so
-            let _ = &self.log_file.sync_all().unwrap();
+            // let _ = &self.log_file.sync_all().unwrap();
         }
 
         self.current_transaction_id = applied_transaction_id;

@@ -1,8 +1,6 @@
 use std::{
     path::PathBuf,
-    process,
     sync::mpsc::{self, Receiver, Sender},
-    thread::sleep,
     time::Instant,
 };
 
