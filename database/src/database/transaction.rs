@@ -4,7 +4,7 @@ use std::io::prelude::*;
 use std::path::PathBuf;
 
 use crate::consts::consts::TransactionId;
-use crate::model::action::Action;
+use crate::model::action::Statement;
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -17,7 +17,7 @@ pub enum TransactionStatus {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Transaction {
     pub id: TransactionId,
-    pub actions: Vec<Action>,
+    pub statements: Vec<Statement>,
     pub status: TransactionStatus,
 }
 
@@ -70,7 +70,7 @@ impl TransactionWAL {
     pub fn commit(
         &mut self,
         applied_transaction_id: TransactionId,
-        actions: Vec<Action>,
+        statements: Vec<Statement>,
         restore: bool,
     ) {
         // We do not need to write back to the WAL if we restoring the database
@@ -80,7 +80,7 @@ impl TransactionWAL {
                 "{}\n",
                 serde_json::to_string(&Transaction {
                     id: applied_transaction_id.clone(),
-                    actions: actions.clone(),
+                    statements: statements.clone(),
                     status: TransactionStatus::Committed,
                 })
                 .unwrap()

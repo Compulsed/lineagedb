@@ -9,7 +9,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     consts::consts::{EntityId, TransactionId},
-    model::action::Action,
+    model::action::Statement,
 };
 
 use super::table::{
@@ -153,7 +153,7 @@ impl SnapshotManager {
     ) -> Result<(), ApplyErrors> {
         // -- Table
         let result = table
-            .apply(Action::ListLatestVersions, transaction_id.clone())?
+            .apply(Statement::ListLatestVersions, transaction_id.clone())?
             .list_version();
 
         self.snapshot_file.write(&result);

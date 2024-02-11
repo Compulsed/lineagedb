@@ -1,13 +1,13 @@
 use database::{
     consts::consts::EntityId,
     database::{
-        request_manager::{DatabaseRequestAction, RequestManager},
+        request_manager::{DatabaseRequestStatement, RequestManager},
         table::{
             query::{QueryMatch, QueryPersonData},
-            row::{UpdateAction, UpdatePersonData},
+            row::{UpdatePersonData, UpdateStatement},
         },
     },
-    model::{action::Action, person::Person},
+    model::{action::Statement, person::Person},
 };
 use juniper::{EmptySubscription, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;
@@ -150,7 +150,7 @@ impl MutationRoot {
         let add_people = new_humans
             .into_iter()
             .map(NewHuman::to_person)
-            .map(Action::Add)
+            .map(Statement::Add)
             .collect();
 
         // TODO: In this context we can use single, but, because it can panic an exception
@@ -172,15 +172,15 @@ impl MutationRoot {
         let database = context.request_manager.lock().unwrap();
 
         let full_name_update = match update_human.full_name {
-            Nullable::ImplicitNull => UpdateAction::NoChanges,
-            Nullable::ExplicitNull => UpdateAction::Unset,
-            Nullable::Some(t) => UpdateAction::Set(t),
+            Nullable::ImplicitNull => UpdateStatement::NoChanges,
+            Nullable::ExplicitNull => UpdateStatement::Unset,
+            Nullable::Some(t) => UpdateStatement::Set(t),
         };
 
         let email_update = match update_human.email {
-            Nullable::ImplicitNull => UpdateAction::NoChanges,
-            Nullable::ExplicitNull => UpdateAction::Unset,
-            Nullable::Some(t) => UpdateAction::Set(t),
+            Nullable::ImplicitNull => UpdateStatement::NoChanges,
+            Nullable::ExplicitNull => UpdateStatement::Unset,
+            Nullable::Some(t) => UpdateStatement::Set(t),
         };
 
         let update_person_date = UpdatePersonData {
@@ -196,23 +196,23 @@ impl MutationRoot {
     fn snapshot(context: &'db GraphQLContext) -> FieldResult<String> {
         let database = context.request_manager.lock().unwrap();
 
-        let single_action_result = database
-            .send_database_request(DatabaseRequestAction::SnapshotDatabase)?
+        let single_statement_result = database
+            .send_database_request(DatabaseRequestStatement::SnapshotDatabase)?
             .pop()
-            .expect("single a action should generate single response");
+            .expect("single a statement should generate single response");
 
-        return Ok(single_action_result.success_status());
+        return Ok(single_statement_result.success_status());
     }
 
     fn drop(context: &'db GraphQLContext) -> FieldResult<String> {
         let database = context.request_manager.lock().unwrap();
 
-        let single_action_result = database
-            .send_database_request(DatabaseRequestAction::DropDatabase)?
+        let single_statement_result = database
+            .send_database_request(DatabaseRequestStatement::DropDatabase)?
             .pop()
-            .expect("single a action should generate single response");
+            .expect("single a statement should generate single response");
 
-        return Ok(single_action_result.success_status());
+        return Ok(single_statement_result.success_status());
     }
 }
 

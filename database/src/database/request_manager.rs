@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{
     consts::consts::{EntityId, VersionId},
     model::{
-        action::{Action, ActionResult},
+        action::{Statement, StatementResult},
         person::Person,
     },
 };
@@ -13,9 +13,9 @@ use crate::{
 use super::table::{query::QueryPersonData, row::UpdatePersonData};
 
 #[derive(Debug)]
-pub enum DatabaseRequestAction {
+pub enum DatabaseRequestStatement {
     /// Transactionally sends a set of actions to the database and returns the results
-    Request(Vec<Action>),
+    Request(Vec<Statement>),
     /// Performs a safe shutdown of the database, requests before the shutdown will be run / committed, requests after the shutdown will be ignored
     Shutdown,
     /// Writes the current state of the database to disk, removes the need for a WAL replay on next startup
@@ -24,11 +24,11 @@ pub enum DatabaseRequestAction {
     DropDatabase,
 }
 
-impl DatabaseRequestAction {
+impl DatabaseRequestStatement {
     /// Prints complex logs in a more readable format
     pub fn log_format(&self) -> String {
         match self {
-            DatabaseRequestAction::Request(actions) => {
+            DatabaseRequestStatement::Request(actions) => {
                 if actions.len() > 1 {
                     format!("{:#?}", self)
                 } else {
@@ -41,25 +41,25 @@ impl DatabaseRequestAction {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum DatabaseResponseAction {
-    Response(Vec<ActionResult>),
+pub enum DatabaseResponseStatement {
+    Response(Vec<StatementResult>),
     TransactionRollback(String),
     CommandError(String),
 }
 
-impl DatabaseResponseAction {
-    pub fn new_single_response(action_result: ActionResult) -> Self {
-        DatabaseResponseAction::Response(vec![action_result])
+impl DatabaseResponseStatement {
+    pub fn new_single_response(action_result: StatementResult) -> Self {
+        DatabaseResponseStatement::Response(vec![action_result])
     }
 
-    pub fn new_multiple_response(action_results: Vec<ActionResult>) -> Self {
-        DatabaseResponseAction::Response(action_results)
+    pub fn new_multiple_response(action_results: Vec<StatementResult>) -> Self {
+        DatabaseResponseStatement::Response(action_results)
     }
 }
 
 pub struct DatabaseRequest {
-    pub response_sender: oneshot::Sender<DatabaseResponseAction>,
-    pub action: DatabaseRequestAction,
+    pub response_sender: oneshot::Sender<DatabaseResponseStatement>,
+    pub statement: DatabaseRequestStatement,
 }
 
 pub struct RequestManager {
@@ -96,7 +96,7 @@ impl RequestManager {
     }
 
     pub fn send_add(&self, person: Person) -> Result<Person, RequestManagerError> {
-        let action_result = self.send_single_action(Action::Add(person))?;
+        let action_result = self.send_single_statement(Statement::Add(person))?;
         return Ok(action_result.single());
     }
 
@@ -105,12 +105,12 @@ impl RequestManager {
         id: EntityId,
         person_update: UpdatePersonData,
     ) -> Result<Person, RequestManagerError> {
-        let action_result = self.send_single_action(Action::Update(id, person_update))?;
+        let action_result = self.send_single_statement(Statement::Update(id, person_update))?;
         return Ok(action_result.single());
     }
 
     pub fn send_get(&self, id: EntityId) -> Result<Option<Person>, RequestManagerError> {
-        let action_result = self.send_single_action(Action::Get(id))?;
+        let action_result = self.send_single_statement(Statement::Get(id))?;
         return Ok(action_result.get_single());
     }
 
@@ -119,7 +119,7 @@ impl RequestManager {
         id: EntityId,
         version_id: VersionId,
     ) -> Result<Option<Person>, RequestManagerError> {
-        let action_result = self.send_single_action(Action::GetVersion(id, version_id))?;
+        let action_result = self.send_single_statement(Statement::GetVersion(id, version_id))?;
         return Ok(action_result.get_single());
     }
 
@@ -127,14 +127,14 @@ impl RequestManager {
         &self,
         query: Option<QueryPersonData>,
     ) -> Result<Vec<Person>, RequestManagerError> {
-        let action_result = self.send_single_action(Action::List(query))?;
+        let action_result = self.send_single_statement(Statement::List(query))?;
         return Ok(action_result.list());
     }
 
     /// Sends a shutdown request to the database and returns the database's response
     pub fn send_shutdown_request(&self) -> Result<String, RequestManagerError> {
         let single_action_result = self
-            .send_database_request(DatabaseRequestAction::Shutdown)?
+            .send_database_request(DatabaseRequestStatement::Shutdown)?
             .pop()
             .expect("single a action should generate single response");
 
@@ -142,9 +142,12 @@ impl RequestManager {
     }
 
     /// Sends a single action to the database and returns a single action result
-    pub fn send_single_action(&self, action: Action) -> Result<ActionResult, RequestManagerError> {
+    pub fn send_single_statement(
+        &self,
+        action: Statement,
+    ) -> Result<StatementResult, RequestManagerError> {
         let single_action_result = self
-            .send_database_request(DatabaseRequestAction::Request(vec![action]))?
+            .send_database_request(DatabaseRequestStatement::Request(vec![action]))?
             .pop()
             .expect("single a action should generate single response");
 
@@ -154,22 +157,23 @@ impl RequestManager {
     /// Used to create a transaction
     pub fn send_transaction(
         &self,
-        actions: Vec<Action>,
-    ) -> Result<Vec<ActionResult>, RequestManagerError> {
-        let action_results = self.send_database_request(DatabaseRequestAction::Request(actions))?;
+        actions: Vec<Statement>,
+    ) -> Result<Vec<StatementResult>, RequestManagerError> {
+        let action_results =
+            self.send_database_request(DatabaseRequestStatement::Request(actions))?;
 
         return Ok(action_results);
     }
 
     pub fn send_database_request(
         &self,
-        database_request: DatabaseRequestAction,
-    ) -> Result<Vec<ActionResult>, RequestManagerError> {
-        let (response_sender, response_receiver) = oneshot::channel::<DatabaseResponseAction>();
+        database_request: DatabaseRequestStatement,
+    ) -> Result<Vec<StatementResult>, RequestManagerError> {
+        let (response_sender, response_receiver) = oneshot::channel::<DatabaseResponseStatement>();
 
         let request = DatabaseRequest {
             response_sender,
-            action: database_request,
+            statement: database_request,
         };
 
         // Sends the request to the database worker, database will response
@@ -178,11 +182,11 @@ impl RequestManager {
         self.database_sender.send(request).unwrap();
 
         match response_receiver.recv_timeout(Duration::from_secs(5)) {
-            Ok(DatabaseResponseAction::Response(action_response)) => Ok(action_response),
-            Ok(DatabaseResponseAction::TransactionRollback(s)) => {
+            Ok(DatabaseResponseStatement::Response(action_response)) => Ok(action_response),
+            Ok(DatabaseResponseStatement::TransactionRollback(s)) => {
                 Err(RequestManagerError::TransactionRollback(s))
             }
-            Ok(DatabaseResponseAction::CommandError(s)) => {
+            Ok(DatabaseResponseStatement::CommandError(s)) => {
                 Err(RequestManagerError::DatbaseErrorStatus(s))
             }
             Err(oneshot::RecvTimeoutError::Timeout) => Err(RequestManagerError::DatabaseTimeout),

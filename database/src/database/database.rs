@@ -8,8 +8,8 @@ use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
-    database::request_manager::{DatabaseRequestAction, DatabaseResponseAction},
-    model::action::{Action, ActionResult},
+    database::request_manager::{DatabaseRequestStatement, DatabaseResponseStatement},
+    model::action::{Statement, StatementResult},
 };
 
 use super::{
@@ -116,8 +116,8 @@ impl Database {
 
         // Then add states from the transaction log
         for transaction in restored_transactions {
-            if let DatabaseResponseAction::TransactionRollback(rollback_message) =
-                self.process_actions(transaction.actions, true)
+            if let DatabaseResponseStatement::TransactionRollback(rollback_message) =
+                self.apply_transaction(transaction.statements, true)
             {
                 panic!(
                     "Should not be able to rollback a transaction on startup: {}",
@@ -144,35 +144,38 @@ impl Database {
         // Process incoming requests from the channel
         loop {
             let DatabaseRequest {
-                action,
+                statement,
                 response_sender,
             } = self.database_receiver.recv().unwrap();
-            log::info!("Received request: {}", action.log_format());
+            log::info!("Received request: {}", statement.log_format());
 
-            let process_action = match action {
-                DatabaseRequestAction::Request(action) => action,
-                DatabaseRequestAction::Shutdown => {
-                    let _ = response_sender.send(DatabaseResponseAction::new_single_response(
-                        ActionResult::SuccessStatus("Successfully shutdown database".to_string()),
+            let process_statement = match statement {
+                DatabaseRequestStatement::Request(statement) => statement,
+                DatabaseRequestStatement::Shutdown => {
+                    let _ = response_sender.send(DatabaseResponseStatement::new_single_response(
+                        StatementResult::SuccessStatus(
+                            "Successfully shutdown database".to_string(),
+                        ),
                     ));
 
                     return;
                 }
-                DatabaseRequestAction::DropDatabase => {
+                DatabaseRequestStatement::DropDatabase => {
                     self.reset_database_state();
 
-                    let action_response =
-                        DatabaseResponseAction::new_single_response(ActionResult::SuccessStatus(
+                    let statement_response = DatabaseResponseStatement::new_single_response(
+                        StatementResult::SuccessStatus(
                             "Successfully dropped and shutdown the database".to_string(),
-                        ));
+                        ),
+                    );
 
                     response_sender
-                        .send(action_response)
+                        .send(statement_response)
                         .expect("Should always be able to send a response back to the caller");
 
                     continue;
                 }
-                DatabaseRequestAction::SnapshotDatabase => {
+                DatabaseRequestStatement::SnapshotDatabase => {
                     // Persist current state to disk
                     let result = self.snapshot_manager.create_snapshot(
                         &mut self.person_table,
@@ -181,13 +184,13 @@ impl Database {
 
                     self.transaction_wal.flush_transactions();
 
-                    let action_response: DatabaseResponseAction = match result {
-                        Ok(_) => DatabaseResponseAction::new_single_response(
-                            ActionResult::SuccessStatus(
+                    let action_response: DatabaseResponseStatement = match result {
+                        Ok(_) => DatabaseResponseStatement::new_single_response(
+                            StatementResult::SuccessStatus(
                                 "Successfully snap shotted database".to_string(),
                             ),
                         ),
-                        Err(err) => DatabaseResponseAction::CommandError(format!("{}", err)),
+                        Err(err) => DatabaseResponseStatement::CommandError(format!("{}", err)),
                     };
 
                     response_sender
@@ -198,20 +201,24 @@ impl Database {
                 }
             };
 
-            let action_response = self.process_actions(process_action, false);
+            let statement_response = self.apply_transaction(process_statement, false);
 
             // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
             response_sender
-                .send(action_response)
+                .send(statement_response)
                 .expect("Should always be able to send a response back to the caller")
         }
     }
 
-    pub fn process_action(&mut self, user_action: Action, restore: bool) -> DatabaseResponseAction {
-        let results = self.process_actions(vec![user_action], restore);
+    pub fn apply_statement(
+        &mut self,
+        statement: Statement,
+        restore: bool,
+    ) -> DatabaseResponseStatement {
+        let results = self.apply_transaction(vec![statement], restore);
 
-        if let DatabaseResponseAction::Response(mut results) = results {
-            return DatabaseResponseAction::new_single_response(
+        if let DatabaseResponseStatement::Response(mut results) = results {
+            return DatabaseResponseStatement::new_single_response(
                 results
                     .pop()
                     .expect("should exist due to process_actions returning the same length"),
@@ -222,11 +229,11 @@ impl Database {
         return results;
     }
 
-    pub fn process_actions(
+    pub fn apply_transaction(
         &mut self,
-        user_actions: Vec<Action>,
+        statements: Vec<Statement>,
         restore: bool,
-    ) -> DatabaseResponseAction {
+    ) -> DatabaseResponseStatement {
         let applying_transaction_id = self
             .transaction_wal
             .get_current_transaction_id()
@@ -234,23 +241,23 @@ impl Database {
 
         let mut status = CommitStatus::Commit;
 
-        struct ActionAndResult {
-            action: Action,
-            result: ActionResult,
+        struct StatementAndResult {
+            statement: Statement,
+            result: StatementResult,
         }
 
-        let mut action_stack: Vec<ActionAndResult> = Vec::new();
+        let mut statement_stack: Vec<StatementAndResult> = Vec::new();
 
-        for action in user_actions.clone() {
+        for statement in statements.clone() {
             let apply_result = self
                 .person_table
-                .apply(action.clone(), applying_transaction_id.clone());
+                .apply(statement.clone(), applying_transaction_id.clone());
 
             match apply_result {
-                Ok(action_result) => {
-                    action_stack.push(ActionAndResult {
-                        action,
-                        result: action_result,
+                Ok(statement_result) => {
+                    statement_stack.push(StatementAndResult {
+                        statement,
+                        result: statement_result,
                     });
                 }
                 Err(err_string) => {
@@ -266,14 +273,14 @@ impl Database {
                 }
 
                 self.transaction_wal
-                    .commit(applying_transaction_id, user_actions, restore);
+                    .commit(applying_transaction_id, statements, restore);
 
-                let action_result_stack: Vec<ActionResult> = action_stack
+                let action_result_stack: Vec<StatementResult> = statement_stack
                     .into_iter()
                     .map(|action_and_result| action_and_result.result)
                     .collect();
 
-                DatabaseResponseAction::Response(action_result_stack)
+                DatabaseResponseStatement::Response(action_result_stack)
             }
             CommitStatus::Rollback(error_status) => {
                 if !restore {
@@ -281,11 +288,15 @@ impl Database {
                 }
 
                 // TODO: Write a test to ensure that we rollback in the correct order
-                for ActionAndResult { action, result: _ } in action_stack.into_iter().rev() {
-                    self.person_table.apply_rollback(action)
+                for StatementAndResult {
+                    statement,
+                    result: _,
+                } in statement_stack.into_iter().rev()
+                {
+                    self.person_table.apply_rollback(statement)
                 }
 
-                DatabaseResponseAction::TransactionRollback(error_status)
+                DatabaseResponseStatement::TransactionRollback(error_status)
             }
         }
     }
@@ -297,19 +308,19 @@ mod tests {
 
     use crate::{
         consts::consts::EntityId,
-        database::table::row::{UpdateAction, UpdatePersonData},
+        database::table::row::{UpdatePersonData, UpdateStatement},
         model::{
-            action::Action,
+            action::Statement,
             person::{self, Person},
         },
     };
 
     use super::test_utils::database_test;
     use crate::database::database::Database;
-    use crate::model::action::ActionResult;
+    use crate::model::action::StatementResult;
 
     mod add {
-        use crate::database::request_manager::DatabaseResponseAction;
+        use crate::database::request_manager::DatabaseResponseStatement;
 
         use super::*;
 
@@ -319,11 +330,11 @@ mod tests {
 
             let person = Person::new_test();
 
-            let action_result = database.process_action(Action::Add(person.clone()), false);
+            let statement_result = database.apply_statement(Statement::Add(person.clone()), false);
 
             assert_eq!(
-                action_result,
-                DatabaseResponseAction::new_single_response(ActionResult::Single(person))
+                statement_result,
+                DatabaseResponseStatement::new_single_response(StatementResult::Single(person))
             );
         }
 
@@ -333,11 +344,12 @@ mod tests {
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
-            let action_result_one = database.process_action(Action::Add(person_one.clone()), false);
+            let statement_result_one =
+                database.apply_statement(Statement::Add(person_one.clone()), false);
 
             assert_eq!(
-                action_result_one,
-                DatabaseResponseAction::new_single_response(ActionResult::Single(
+                statement_result_one,
+                DatabaseResponseStatement::new_single_response(StatementResult::Single(
                     person_one.clone()
                 )),
                 "Person should be returned as a single action result"
@@ -346,11 +358,12 @@ mod tests {
             let person_two: Person =
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let action_result_two = database.process_action(Action::Add(person_two.clone()), false);
+            let action_result_two =
+                database.apply_statement(Statement::Add(person_two.clone()), false);
 
             assert_eq!(
                 action_result_two,
-                DatabaseResponseAction::new_single_response(ActionResult::Single(
+                DatabaseResponseStatement::new_single_response(StatementResult::Single(
                     person_two.clone()
                 )),
                 "Person should be returned as a single action result"
@@ -364,19 +377,19 @@ mod tests {
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
             let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let action_results = database.process_actions(
+            let action_results = database.apply_transaction(
                 vec![
-                    Action::Add(person_one.clone()),
-                    Action::Add(person_two.clone()),
+                    Statement::Add(person_one.clone()),
+                    Statement::Add(person_two.clone()),
                 ],
                 false,
             );
 
             assert_eq!(
                 action_results,
-                DatabaseResponseAction::new_multiple_response(vec![
-                    ActionResult::Single(person_one),
-                    ActionResult::Single(person_two)
+                DatabaseResponseStatement::new_multiple_response(vec![
+                    StatementResult::Single(person_one),
+                    StatementResult::Single(person_two)
                 ])
             );
         }
@@ -395,10 +408,10 @@ mod tests {
                 Some("OverlappingEmail".to_string()),
             );
 
-            let process_action_result = database.process_actions(
+            let process_action_result = database.apply_transaction(
                 vec![
-                    Action::Add(person_one.clone()),
-                    Action::Add(person_two.clone()),
+                    Statement::Add(person_one.clone()),
+                    Statement::Add(person_two.clone()),
                 ],
                 false,
             );
@@ -407,7 +420,7 @@ mod tests {
 
             assert_eq!(
                 action_error,
-                DatabaseResponseAction::TransactionRollback(
+                DatabaseResponseStatement::TransactionRollback(
                     "Cannot add row as a person already exists with this email: OverlappingEmail"
                         .to_string()
                 ),
@@ -418,7 +431,7 @@ mod tests {
 
     mod transaction_rollback {
         use crate::{
-            consts::consts::TransactionId, database::request_manager::DatabaseResponseAction,
+            consts::consts::TransactionId, database::request_manager::DatabaseResponseStatement,
         };
 
         use super::*;
@@ -431,12 +444,12 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_actions();
 
-            let error_message = database.process_actions(rollback_actions, false);
+            let error_message = database.apply_transaction(rollback_actions, false);
 
             // The transaction log will be empty
             assert_eq!(
                 error_message,
-                DatabaseResponseAction::TransactionRollback(
+                DatabaseResponseStatement::TransactionRollback(
                     "Cannot add row as a person already exists with this email: OverlappingEmail"
                         .to_string()
                 )
@@ -451,7 +464,7 @@ mod tests {
             let rollback_actions = create_rollback_actions();
 
             // When a rollback happens
-            database.process_actions(rollback_actions, false);
+            database.apply_transaction(rollback_actions, false);
 
             // Then there should be no items in the transaction log
             assert_eq!(
@@ -469,7 +482,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_actions();
 
-            let _ = database.process_actions(rollback_actions, false);
+            let _ = database.apply_transaction(rollback_actions, false);
 
             // Then the items at the start of the transaction, should be emptied from the index
             assert_eq!(
@@ -487,7 +500,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_actions();
 
-            let _ = database.process_actions(rollback_actions, false);
+            let _ = database.apply_transaction(rollback_actions, false);
 
             // The row that was created for the item is removed
             assert_eq!(
@@ -497,7 +510,7 @@ mod tests {
             );
         }
 
-        fn create_rollback_actions() -> Vec<Action> {
+        fn create_rollback_actions() -> Vec<Statement> {
             let person_one = Person::new(
                 "Person One".to_string(),
                 Some("OverlappingEmail".to_string()),
@@ -509,8 +522,8 @@ mod tests {
             );
 
             vec![
-                Action::Add(person_one.clone()),
-                Action::Add(person_two.clone()),
+                Statement::Add(person_one.clone()),
+                Statement::Add(person_two.clone()),
             ]
         }
     }
@@ -527,18 +540,18 @@ mod tests {
                 let email = format!("Email {}-{}", thread, index);
 
                 if index == 0 {
-                    return Action::Add(Person {
+                    return Statement::Add(Person {
                         id,
                         full_name,
                         email: Some(email),
                     });
                 }
 
-                return Action::Update(
+                return Statement::Update(
                     id,
                     UpdatePersonData {
-                        full_name: UpdateAction::Set(full_name),
-                        email: UpdateAction::Set(email),
+                        full_name: UpdateStatement::Set(full_name),
+                        email: UpdateStatement::Set(email),
                     },
                 );
             };
@@ -549,7 +562,7 @@ mod tests {
         #[test]
         fn add() {
             let action_generator = |_, _| {
-                Action::Add(person::Person {
+                Statement::Add(person::Person {
                     id: EntityId::new(),
                     full_name: "Test".to_string(),
                     email: Some(Uuid::new_v4().to_string()),
@@ -567,14 +580,14 @@ mod tests {
                 let email = format!("Email {}-{}", thread_id, index);
 
                 if index == 0 {
-                    return Action::Add(Person {
+                    return Statement::Add(Person {
                         id,
                         full_name,
                         email: Some(email),
                     });
                 }
 
-                return Action::Get(id);
+                return Statement::Get(id);
             };
 
             database_test(1, 5, action_generator);
@@ -590,7 +603,7 @@ pub mod test_utils {
             database::{Database, DatabaseOptions},
             request_manager::{DatabaseRequest, RequestManager},
         },
-        model::action::{Action, ActionResult},
+        model::action::{Statement, StatementResult},
     };
     use std::{
         path::PathBuf,
@@ -601,7 +614,7 @@ pub mod test_utils {
     pub fn database_test(
         worker_threads: i32,
         actions: u32,
-        action_generator: fn(i32, u32) -> Action,
+        action_generator: fn(i32, u32) -> Statement,
     ) {
         let (database_sender, database_receiver): (
             Sender<DatabaseRequest>,
@@ -629,13 +642,15 @@ pub mod test_utils {
                 for index in 0..actions {
                     let action = action_generator(thread_id, index);
 
-                    let action_result = rm.send_single_action(action).expect("Should not timeout");
+                    let action_result = rm
+                        .send_single_statement(action)
+                        .expect("Should not timeout");
 
                     // Single will panic if this fails
                     match action_result {
-                        ActionResult::Single(_)
-                        | ActionResult::GetSingle(_)
-                        | ActionResult::List(_) => {}
+                        StatementResult::Single(_)
+                        | StatementResult::GetSingle(_)
+                        | StatementResult::List(_) => {}
                         _ => panic!("Unexpected response type"),
                     }
                 }
