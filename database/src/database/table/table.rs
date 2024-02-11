@@ -5,8 +5,8 @@ use thiserror::Error;
 use crate::{
     consts::consts::{EntityId, TransactionId, VersionId},
     model::{
-        action::{Statement, StatementResult},
         person::Person,
+        statement::{Statement, StatementResult},
     },
 };
 
@@ -86,16 +86,16 @@ impl PersonTable {
         }
     }
 
-    // Each mutation action can be broken up into 3 steps
+    // Each mutation statement can be broken up into 3 steps
     //  - Verifying validity / constraints (uniqueness)
-    //  - Applying action
+    //  - Applying statement
     //  - Clean up
     pub fn apply(
         &mut self,
-        action: Statement,
+        statement: Statement,
         transaction_id: TransactionId,
     ) -> Result<StatementResult, ApplyErrors> {
-        let action_result = match action {
+        let action_result = match statement {
             Statement::Add(person) => {
                 let id = person.id.clone();
                 let person_to_persist = person.clone();
@@ -897,12 +897,12 @@ mod tests {
 
             // When we add an item
             let person = Person::new("1".to_string(), Some("email".to_string()));
-            let action = Statement::Add(person.clone());
-            table.apply(action, TransactionId(1)).unwrap();
+            let statement = Statement::Add(person.clone());
+            table.apply(statement, TransactionId(1)).unwrap();
 
             // And we delete the item
-            let action = Statement::Remove(person.id.clone());
-            table.apply(action, TransactionId(2)).unwrap();
+            let statement = Statement::Remove(person.id.clone());
+            table.apply(statement, TransactionId(2)).unwrap();
 
             // Then we can add another item with the same email
             let person = Person::new("2".to_string(), Some("email".to_string()));
@@ -969,7 +969,7 @@ mod tests {
         let mut updated_person = person.clone();
         updated_person.email = Some("email".to_string());
 
-        let action = Statement::Update(
+        let statement = Statement::Update(
             person.id.clone(),
             UpdatePersonData {
                 full_name: UpdateStatement::NoChanges,
@@ -977,7 +977,7 @@ mod tests {
             },
         );
 
-        table.apply(action, next_transaction_id.clone()).unwrap();
+        table.apply(statement, next_transaction_id.clone()).unwrap();
 
         (updated_person, next_transaction_id.increment())
     }
@@ -987,9 +987,9 @@ mod tests {
         id: &EntityId,
         next_transaction_id: TransactionId,
     ) -> TransactionId {
-        let action = Statement::Remove(id.clone());
+        let statement = Statement::Remove(id.clone());
 
-        table.apply(action, next_transaction_id.clone()).unwrap();
+        table.apply(statement, next_transaction_id.clone()).unwrap();
 
         next_transaction_id.increment()
     }

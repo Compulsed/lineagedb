@@ -7,7 +7,7 @@ use database::{
             row::{UpdatePersonData, UpdateStatement},
         },
     },
-    model::{action::Statement, person::Person},
+    model::{person::Person, statement::Statement},
 };
 use juniper::{EmptySubscription, FieldResult, Nullable, RootNode};
 use std::sync::Mutex;

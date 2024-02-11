@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     database::request_manager::{DatabaseRequestStatement, DatabaseResponseStatement},
-    model::action::{Statement, StatementResult},
+    model::statement::{Statement, StatementResult},
 };
 
 use super::{
@@ -310,14 +310,14 @@ mod tests {
         consts::consts::EntityId,
         database::table::row::{UpdatePersonData, UpdateStatement},
         model::{
-            action::Statement,
             person::{self, Person},
+            statement::Statement,
         },
     };
 
     use super::test_utils::database_test;
     use crate::database::database::Database;
-    use crate::model::action::StatementResult;
+    use crate::model::statement::StatementResult;
 
     mod add {
         use crate::database::request_manager::DatabaseResponseStatement;
@@ -352,21 +352,21 @@ mod tests {
                 DatabaseResponseStatement::new_single_response(StatementResult::Single(
                     person_one.clone()
                 )),
-                "Person should be returned as a single action result"
+                "Person should be returned as a single statement result"
             );
 
             let person_two: Person =
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let action_result_two =
+            let statement_result_two =
                 database.apply_statement(Statement::Add(person_two.clone()), false);
 
             assert_eq!(
-                action_result_two,
+                statement_result_two,
                 DatabaseResponseStatement::new_single_response(StatementResult::Single(
                     person_two.clone()
                 )),
-                "Person should be returned as a single action result"
+                "Person should be returned as a single statement result"
             );
         }
 
@@ -424,7 +424,7 @@ mod tests {
                     "Cannot add row as a person already exists with this email: OverlappingEmail"
                         .to_string()
                 ),
-                "When one action fails, all actions should be rolled back"
+                "When one statement fails, all actions should be rolled back"
             );
         }
     }
@@ -442,7 +442,7 @@ mod tests {
             let mut database = Database::new_test();
 
             // When a rollback happens
-            let rollback_actions = create_rollback_actions();
+            let rollback_actions = create_rollback_statements();
 
             let error_message = database.apply_transaction(rollback_actions, false);
 
@@ -461,7 +461,7 @@ mod tests {
             // Given an empty database
             let mut database = Database::new_test();
 
-            let rollback_actions = create_rollback_actions();
+            let rollback_actions = create_rollback_statements();
 
             // When a rollback happens
             database.apply_transaction(rollback_actions, false);
@@ -480,7 +480,7 @@ mod tests {
             let mut database = Database::new_test();
 
             // When a rollback happens
-            let rollback_actions = create_rollback_actions();
+            let rollback_actions = create_rollback_statements();
 
             let _ = database.apply_transaction(rollback_actions, false);
 
@@ -498,7 +498,7 @@ mod tests {
             let mut database = Database::new_test();
 
             // When a rollback happens
-            let rollback_actions = create_rollback_actions();
+            let rollback_actions = create_rollback_statements();
 
             let _ = database.apply_transaction(rollback_actions, false);
 
@@ -510,7 +510,7 @@ mod tests {
             );
         }
 
-        fn create_rollback_actions() -> Vec<Statement> {
+        fn create_rollback_statements() -> Vec<Statement> {
             let person_one = Person::new(
                 "Person One".to_string(),
                 Some("OverlappingEmail".to_string()),
@@ -603,7 +603,7 @@ pub mod test_utils {
             database::{Database, DatabaseOptions},
             request_manager::{DatabaseRequest, RequestManager},
         },
-        model::action::{Statement, StatementResult},
+        model::statement::{Statement, StatementResult},
     };
     use std::{
         path::PathBuf,
@@ -640,10 +640,10 @@ pub mod test_utils {
 
             let sender_thread = thread::spawn(move || {
                 for index in 0..actions {
-                    let action = action_generator(thread_id, index);
+                    let statement = action_generator(thread_id, index);
 
                     let action_result = rm
-                        .send_single_statement(action)
+                        .send_single_statement(statement)
                         .expect("Should not timeout");
 
                     // Single will panic if this fails

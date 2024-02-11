@@ -9,8 +9,8 @@ use database::consts::consts::EntityId;
 use database::database::database::{Database, DatabaseOptions};
 use database::database::request_manager::{DatabaseRequest, RequestManager};
 use database::database::table::row::{UpdatePersonData, UpdateStatement};
-use database::model::action::Statement;
-use database::model::person::Person; // TCP Stream defines implementation
+use database::model::person::Person;
+use database::model::statement::Statement; // TCP Stream defines implementation
 
 /// 📀 Lineagedb TCP Server, provides a simple tcp interface for interacting with the database
 ///

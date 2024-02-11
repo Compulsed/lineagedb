@@ -8,7 +8,7 @@ use database::{
             row::{UpdatePersonData, UpdateStatement},
         },
     },
-    model::{action::Statement, person::Person},
+    model::{person::Person, statement::Statement},
 };
 use uuid::Uuid;
 

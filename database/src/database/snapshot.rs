@@ -9,7 +9,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     consts::consts::{EntityId, TransactionId},
-    model::action::Statement,
+    model::statement::Statement,
 };
 
 use super::table::{

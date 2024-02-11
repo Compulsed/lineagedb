@@ -5,8 +5,8 @@ use thiserror::Error;
 use crate::{
     consts::consts::{EntityId, VersionId},
     model::{
-        action::{Statement, StatementResult},
         person::Person,
+        statement::{Statement, StatementResult},
     },
 };
 
@@ -80,12 +80,12 @@ pub enum RequestManagerError {
 ///
 /// The request manager providers the following APIs. These are sorted by the easiest to use to the most complex
 /// 1. CRUD operations on a single person -- these are completely type safe
-/// 2. Generic Action based API -- not type safe because you need to know what Action maps ActionResult (e.g. Action::Add maps -> ActionResult::Single)
-/// 3. Transaction based API -- similar to the generic action based API, but allows you to send multiple actions to the database at once
+/// 2. Generic Statement based API -- not type safe because you need to know what statement maps ActionResult (e.g. Statement::Add maps -> ActionResult::Single)
+/// 3. Transaction based API -- similar to the generic statement based API, but allows you to send multiple statements to the database at once
 ///
-/// For 2/ Can we improve the type safety of the generic action based API?
-/// - Action knows what ActionResult it maps to
-/// - ActionResult knows what Action it maps to
+/// For 2/ Can we improve the type safety of the generic statement based API?
+/// - Statement knows what ActionResult it maps to
+/// - ActionResult knows what Statement it maps to
 /// - Generics...?
 ///
 /// For 3/ Can we improve the type safety of the transaction based API?
@@ -136,22 +136,22 @@ impl RequestManager {
         let single_action_result = self
             .send_database_request(DatabaseRequestStatement::Shutdown)?
             .pop()
-            .expect("single a action should generate single response");
+            .expect("single a statement should generate single response");
 
         return Ok(single_action_result.success_status());
     }
 
-    /// Sends a single action to the database and returns a single action result
+    /// Sends a single statement to the database and returns a single statement result
     pub fn send_single_statement(
         &self,
-        action: Statement,
+        statement: Statement,
     ) -> Result<StatementResult, RequestManagerError> {
-        let single_action_result = self
-            .send_database_request(DatabaseRequestStatement::Request(vec![action]))?
+        let single_statement_result = self
+            .send_database_request(DatabaseRequestStatement::Request(vec![statement]))?
             .pop()
-            .expect("single a action should generate single response");
+            .expect("single a statement should generate single response");
 
-        return Ok(single_action_result);
+        return Ok(single_statement_result);
     }
 
     /// Used to create a transaction
