@@ -14,9 +14,14 @@ use super::table::{query::QueryPersonData, row::UpdatePersonData};
 
 #[derive(Debug)]
 pub enum DatabaseRequestAction {
+    /// Transactionally sends a set of actions to the database and returns the results
     Request(Vec<Action>),
+    /// Performs a safe shutdown of the database, requests before the shutdown will be run / committed, requests after the shutdown will be ignored
     Shutdown,
-    SaveSnapshot,
+    /// Writes the current state of the database to disk, removes the need for a WAL replay on next startup
+    SnapshotDatabase,
+    /// Resets the database to the initial state, removes all data from the database, resets transaction ids, etc
+    DropDatabase,
 }
 
 impl DatabaseRequestAction {
