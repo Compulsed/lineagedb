@@ -1,6 +1,8 @@
 use std::{
     path::PathBuf,
+    process,
     sync::mpsc::{self, Receiver, Sender},
+    thread::sleep,
     time::Instant,
 };
 
@@ -81,6 +83,16 @@ impl Database {
         }
     }
 
+    pub fn reset_database_state(&mut self) {
+        // Clean out snapshot and transaction log
+        self.snapshot_manager.delete_snapshot();
+
+        // Reset the database to a clean state
+        self.person_table = PersonTable::new();
+        self.transaction_wal = TransactionWAL::new(self.database_options.data_directory.clone());
+        self.snapshot_manager = SnapshotManager::new(self.database_options.data_directory.clone());
+    }
+
     pub fn run(&mut self) {
         let transaction_log_location = self.database_options.data_directory.clone();
 
@@ -148,15 +160,27 @@ impl Database {
 
                     return;
                 }
-                DatabaseRequestAction::SaveSnapshot => {
+                DatabaseRequestAction::DropDatabase => {
+                    self.reset_database_state();
+
+                    let action_response =
+                        DatabaseResponseAction::new_single_response(ActionResult::SuccessStatus(
+                            "Successfully dropped and shutdown the database".to_string(),
+                        ));
+
+                    response_sender
+                        .send(action_response)
+                        .expect("Should always be able to send a response back to the caller");
+
+                    continue;
+                }
+                DatabaseRequestAction::SnapshotDatabase => {
                     // Persist current state to disk
                     let result = self.snapshot_manager.create_snapshot(
                         &mut self.person_table,
                         self.transaction_wal.get_current_transaction_id().clone(),
                     );
 
-                    // As we have persisted the snapshot, we can now trim the transaction log
-                    // TODO: This does not work
                     self.transaction_wal.flush_transactions();
 
                     let action_response: DatabaseResponseAction = match result {

@@ -77,6 +77,15 @@ query listHumanWithQuery {
     email
   }
 }
+
+mutation dbSnapshot {
+  snapshot
+}
+
+
+mutation dbDrop {
+  drop
+}
 ```
 
 **CLI**

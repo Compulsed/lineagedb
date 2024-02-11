@@ -197,7 +197,18 @@ impl MutationRoot {
         let database = context.request_manager.lock().unwrap();
 
         let single_action_result = database
-            .send_database_request(DatabaseRequestAction::SaveSnapshot)?
+            .send_database_request(DatabaseRequestAction::SnapshotDatabase)?
+            .pop()
+            .expect("single a action should generate single response");
+
+        return Ok(single_action_result.success_status());
+    }
+
+    fn drop(context: &'db GraphQLContext) -> FieldResult<String> {
+        let database = context.request_manager.lock().unwrap();
+
+        let single_action_result = database
+            .send_database_request(DatabaseRequestAction::DropDatabase)?
             .pop()
             .expect("single a action should generate single response");
 

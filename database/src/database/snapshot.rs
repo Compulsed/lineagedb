@@ -84,10 +84,6 @@ impl<T: Default + DeserializeOwned + Serialize> PersistanceManager<T> {
         file.write_all(serialized_bytes)
             .expect("Cannot write to file");
     }
-
-    fn delete(&self) {
-        fs::remove_file(&self.file).expect("Unable to remove file");
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -104,6 +100,7 @@ impl Default for Metadata {
 }
 
 pub struct SnapshotManager {
+    data_directory: PathBuf,
     snapshot_file: PersistanceManager<Vec<PersonVersion>>,
     metadata_file: PersistanceManager<Metadata>,
     full_name_index_file: PersistanceManager<FullNameIndex>,
@@ -126,6 +123,7 @@ impl SnapshotManager {
                 &data_directory,
                 FileType::SecondaryIndexUniqueEmail,
             ),
+            data_directory,
         }
     }
 
@@ -175,9 +173,7 @@ impl SnapshotManager {
     }
 
     pub fn delete_snapshot(&self) {
-        self.snapshot_file.delete();
-        self.metadata_file.delete();
-        self.full_name_index_file.delete();
-        self.unique_email_index_file.delete();
+        fs::remove_dir_all(&self.data_directory)
+            .expect("Should always exist, folder is created on init");
     }
 }
