@@ -142,7 +142,7 @@ impl SnapshotManager {
         return (snapeshot_count, metadata_data);
     }
 
-    pub fn create_snapshot(&self, table: &mut PersonTable, transaction_id: TransactionId) {
+    pub fn create_snapshot(&mut self, table: &mut PersonTable, transaction_id: TransactionId) {
         // -- Table
         let result = table
             .apply(Statement::ListLatestVersions, transaction_id.clone())

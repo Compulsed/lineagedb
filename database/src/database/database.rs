@@ -1,10 +1,18 @@
-use std::{path::PathBuf, thread, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+    thread,
+    time::Instant,
+};
 
 use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
-    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
+    database::{
+        commands::{Control, DatabaseCommand, DatabaseCommandResponse},
+        snapshot,
+    },
     model::statement::{Statement, StatementResult},
 };
 
@@ -142,8 +150,11 @@ impl Database {
 
         let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
 
+        let database_mutex = Arc::new(RwLock::new(self));
+
         thread::spawn(move || {
             let thread_rx = rx.clone();
+            let database_rw = database_mutex.clone();
 
             // Loop over the receive channel and serially process commands from the various clients
             loop {
@@ -153,7 +164,7 @@ impl Database {
 
                 // TODO: We assume that the send() commands are successful. This is likely okay? because if
                 //   if sender is disconnected that should not impact the database
-                let process_statement = match command {
+                let transaction_statements = match command {
                     DatabaseCommand::Transaction(statements) => statements,
                     DatabaseCommand::Control(control) => {
                         match control {
@@ -165,7 +176,8 @@ impl Database {
                                 return;
                             }
                             Control::ResetDatabase => {
-                                let dropped_row_count = self.reset_database_state();
+                                let dropped_row_count =
+                                    database_rw.write().unwrap().reset_database_state();
 
                                 let _ = resolver.send(DatabaseCommandResponse::control_success(
                                     &format!(
@@ -177,13 +189,22 @@ impl Database {
                                 continue;
                             }
                             Control::SnapshotDatabase => {
-                                // Persist current state to disk
-                                self.snapshot_manager.create_snapshot(
-                                    &mut self.person_table,
-                                    self.transaction_wal.get_current_transaction_id().clone(),
-                                );
+                                let mut database = database_rw.write().unwrap();
 
-                                let flush_transactions = self.transaction_wal.flush_transactions();
+                                let transaction_id = database
+                                    .transaction_wal
+                                    .get_current_transaction_id()
+                                    .clone();
+
+                                let table = &mut database.person_table;
+
+                                let snapshot_manager = &mut database.snapshot_manager;
+
+                                // Persist current state to disk
+                                // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
+
+                                let flush_transactions =
+                                    database.transaction_wal.flush_transactions();
 
                                 let _ = resolver.send(DatabaseCommandResponse::control_success(
                                     &format!(
@@ -198,7 +219,21 @@ impl Database {
                     }
                 };
 
-                let statement_response = self.apply_transaction(process_statement, false);
+                // If all statements are read, only use the reader lock
+                let contains_mutation = transaction_statements
+                    .iter()
+                    .any(|statement| statement.is_mutation());
+
+                let statement_response = match contains_mutation {
+                    true => database_rw
+                        .write()
+                        .unwrap()
+                        .apply_transaction(transaction_statements, false),
+                    false => database_rw
+                        .read()
+                        .unwrap()
+                        .query_transaction(transaction_statements),
+                };
 
                 // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
                 let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
@@ -208,6 +243,30 @@ impl Database {
         });
 
         return tx;
+    }
+
+    pub fn query_transaction(
+        &self,
+        statements: Vec<Statement>,
+    ) -> DatabaseCommandTransactionResponse {
+        let query_latest_transaction_id = self.transaction_wal.get_current_transaction_id();
+
+        let mut statement_results: Vec<StatementResult> = Vec::new();
+
+        for statement in statements {
+            let statement_result = self
+                .person_table
+                .query_statement(statement.clone(), query_latest_transaction_id);
+
+            match statement_result {
+                Ok(statement_result) => statement_results.push(statement_result),
+                Err(err) => {
+                    return DatabaseCommandTransactionResponse::Rollback(format!("{}", err))
+                }
+            }
+        }
+
+        DatabaseCommandTransactionResponse::Commit(statement_results)
     }
 
     pub fn apply_transaction(

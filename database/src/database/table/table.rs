@@ -86,6 +86,56 @@ impl PersonTable {
         }
     }
 
+    pub fn query_statement(
+        &self,
+        statement: Statement,
+        transaction_id: &TransactionId,
+    ) -> Result<StatementResult, ApplyErrors> {
+        let action_result = match statement {
+            Statement::Get(id) => {
+                let person = match &self.person_rows.get(&id) {
+                    Some(person_data) => person_data.current_state(),
+                    None => return Err(ApplyErrors::CannotGetDoesNotExist(id)),
+                };
+
+                StatementResult::GetSingle(person)
+            }
+            Statement::GetVersion(id, version) => {
+                let person = match &self.person_rows.get(&id) {
+                    Some(person_data) => person_data.person_at_version(version),
+                    None => return Err(ApplyErrors::CannotGetAtVersionDoesNotExist(id, version)),
+                };
+
+                StatementResult::GetSingle(person)
+            }
+            Statement::List(query_person_data) => {
+                let mut people = query(&self, &transaction_id, &query_person_data, true);
+
+                sort_list(&mut people);
+
+                if let Some(q) = query_person_data {
+                    people = filter(people, q)
+                }
+
+                StatementResult::List(people)
+            }
+            Statement::ListLatestVersions => {
+                let people_at_transaction_id: Vec<PersonVersion> = self
+                    .person_rows
+                    .iter()
+                    .filter_map(|(_, value)| value.version_at_transaction_id(&transaction_id))
+                    .collect();
+
+                StatementResult::ListVersion(people_at_transaction_id)
+            }
+            Statement::Add(_) | Statement::Update(_, _) | Statement::Remove(_) => {
+                panic!("Should not be a mutation statement")
+            }
+        };
+
+        return Ok(action_result);
+    }
+
     // Each mutation statement can be broken up into 3 steps
     //  - Verifying validity / constraints (uniqueness)
     //  - Applying statement
@@ -207,41 +257,11 @@ impl PersonTable {
 
                 StatementResult::Single(previous)
             }
-            Statement::Get(id) => {
-                let person = match &self.person_rows.get(&id) {
-                    Some(person_data) => person_data.current_state(),
-                    None => return Err(ApplyErrors::CannotGetDoesNotExist(id)),
-                };
-
-                StatementResult::GetSingle(person)
-            }
-            Statement::GetVersion(id, version) => {
-                let person = match &self.person_rows.get(&id) {
-                    Some(person_data) => person_data.person_at_version(version),
-                    None => return Err(ApplyErrors::CannotGetAtVersionDoesNotExist(id, version)),
-                };
-
-                StatementResult::GetSingle(person)
-            }
-            Statement::List(query_person_data) => {
-                let mut people = query(&self, &transaction_id, &query_person_data, true);
-
-                sort_list(&mut people);
-
-                if let Some(q) = query_person_data {
-                    people = filter(people, q)
-                }
-
-                StatementResult::List(people)
-            }
-            Statement::ListLatestVersions => {
-                let people_at_transaction_id: Vec<PersonVersion> = self
-                    .person_rows
-                    .iter()
-                    .filter_map(|(_, value)| value.version_at_transaction_id(&transaction_id))
-                    .collect();
-
-                StatementResult::ListVersion(people_at_transaction_id)
+            s @ Statement::Get(_)
+            | s @ Statement::GetVersion(_, _)
+            | s @ Statement::List(_)
+            | s @ Statement::ListLatestVersions => {
+                return self.query_statement(s, &transaction_id);
             }
         };
 
