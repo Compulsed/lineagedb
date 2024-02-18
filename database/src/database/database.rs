@@ -96,7 +96,93 @@ impl Database {
         row_count
     }
 
-    pub fn run(mut self) -> flume::Sender<DatabaseCommandRequest> {
+    fn start_thread(
+        receiver: flume::Receiver<DatabaseCommandRequest>,
+        database_rw: Arc<RwLock<Self>>,
+    ) {
+        loop {
+            let DatabaseCommandRequest { command, resolver } = receiver.recv().unwrap();
+
+            log::info!("Received request: {}", command.log_format());
+
+            // TODO: We assume that the send() commands are successful. This is likely okay? because if
+            //   if sender is disconnected that should not impact the database
+            let transaction_statements = match command {
+                DatabaseCommand::Transaction(statements) => statements,
+                DatabaseCommand::Control(control) => {
+                    match control {
+                        Control::Shutdown => {
+                            let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                "Successfully shutdown database",
+                            ));
+
+                            return;
+                        }
+                        Control::ResetDatabase => {
+                            let dropped_row_count =
+                                database_rw.write().unwrap().reset_database_state();
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully reset database, dropped: {} rows",
+                                    dropped_row_count
+                                )));
+
+                            continue;
+                        }
+                        Control::SnapshotDatabase => {
+                            let mut database = database_rw.write().unwrap();
+
+                            let transaction_id = database
+                                .transaction_wal
+                                .get_current_transaction_id()
+                                .clone();
+
+                            let table = &mut database.person_table;
+
+                            let snapshot_manager = &mut database.snapshot_manager;
+
+                            // Persist current state to disk
+                            // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
+
+                            let flush_transactions = database.transaction_wal.flush_transactions();
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully created snapshot: compressed {} txs",
+                                    flush_transactions
+                                )));
+
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // If all statements are read, only use the reader lock
+            let contains_mutation = transaction_statements
+                .iter()
+                .any(|statement| statement.is_mutation());
+
+            let statement_response = match contains_mutation {
+                true => database_rw
+                    .write()
+                    .unwrap()
+                    .apply_transaction(transaction_statements, false),
+                false => database_rw
+                    .read()
+                    .unwrap()
+                    .query_transaction(transaction_statements),
+            };
+
+            // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
+            let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                statement_response,
+            ));
+        }
+    }
+
+    pub fn run(mut self, threads: u32) -> flume::Sender<DatabaseCommandRequest> {
         let transaction_log_location = self.database_options.data_directory.clone();
 
         log::info!(
@@ -152,95 +238,15 @@ impl Database {
 
         let database_mutex = Arc::new(RwLock::new(self));
 
-        thread::spawn(move || {
+        for _ in 0..threads {
             let thread_rx = rx.clone();
             let database_rw = database_mutex.clone();
 
-            // Loop over the receive channel and serially process commands from the various clients
-            loop {
-                let DatabaseCommandRequest { command, resolver } = thread_rx.recv().unwrap();
-
-                log::info!("Received request: {}", command.log_format());
-
-                // TODO: We assume that the send() commands are successful. This is likely okay? because if
-                //   if sender is disconnected that should not impact the database
-                let transaction_statements = match command {
-                    DatabaseCommand::Transaction(statements) => statements,
-                    DatabaseCommand::Control(control) => {
-                        match control {
-                            Control::Shutdown => {
-                                let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                    "Successfully shutdown database",
-                                ));
-
-                                return;
-                            }
-                            Control::ResetDatabase => {
-                                let dropped_row_count =
-                                    database_rw.write().unwrap().reset_database_state();
-
-                                let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                    &format!(
-                                        "Successfully reset database, dropped: {} rows",
-                                        dropped_row_count
-                                    ),
-                                ));
-
-                                continue;
-                            }
-                            Control::SnapshotDatabase => {
-                                let mut database = database_rw.write().unwrap();
-
-                                let transaction_id = database
-                                    .transaction_wal
-                                    .get_current_transaction_id()
-                                    .clone();
-
-                                let table = &mut database.person_table;
-
-                                let snapshot_manager = &mut database.snapshot_manager;
-
-                                // Persist current state to disk
-                                // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
-
-                                let flush_transactions =
-                                    database.transaction_wal.flush_transactions();
-
-                                let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                    &format!(
-                                        "Successfully created snapshot: compressed {} txs",
-                                        flush_transactions
-                                    ),
-                                ));
-
-                                continue;
-                            }
-                        }
-                    }
-                };
-
-                // If all statements are read, only use the reader lock
-                let contains_mutation = transaction_statements
-                    .iter()
-                    .any(|statement| statement.is_mutation());
-
-                let statement_response = match contains_mutation {
-                    true => database_rw
-                        .write()
-                        .unwrap()
-                        .apply_transaction(transaction_statements, false),
-                    false => database_rw
-                        .read()
-                        .unwrap()
-                        .query_transaction(transaction_statements),
-                };
-
-                // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
-                let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
-                    statement_response,
-                ));
-            }
-        });
+            // Spawn a new thread for each request
+            thread::spawn(move || {
+                Database::start_thread(thread_rx, database_rw);
+            });
+        }
 
         return tx;
     }
@@ -663,7 +669,7 @@ pub mod test_utils {
 
         let options = DatabaseOptions::default().set_data_directory(database_dir);
 
-        let database_sender: flume::Sender<DatabaseCommandRequest> = Database::new(options).run();
+        let database_sender: flume::Sender<DatabaseCommandRequest> = Database::new(options).run(5);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 

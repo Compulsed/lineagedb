@@ -39,7 +39,7 @@ fn main() {
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
     // Setup database
-    let database_sender = Database::new(database_options).run();
+    let database_sender = Database::new(database_options).run(5);
 
     let listener = TcpListener::bind(format!("{}:{}", args.address, args.port)).unwrap();
 

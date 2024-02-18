@@ -76,7 +76,7 @@ async fn main() -> io::Result<()> {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let database_sender = Database::new(database_options).run();
+    let database_sender = Database::new(database_options).run(5);
 
     // Set up Ctrl-C handler
     let set_handler_database_sender_clone = database_sender.clone();
