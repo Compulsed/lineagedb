@@ -3,13 +3,12 @@
 Lineage DB is an educational MVCC database and has the following functionality:
 1. Supports ACID transactions (* with an exception to durability, * everything currently runs as serialization)
 1. Utilizes a WAL for performant writes / supports trimming the WAL
-1. Time travel, query the database at any given transaction id (* assuming it is untrimmed)
-1. For any given item can look at all revisions (* assuming it is untrimmed)
+1. Time travel; query the database at any given transaction id (* assuming the previous transactions are untrimmed)
+1. For any given item can look at all revisions (* assuming the previous transactions are untrimmed)
 1. Supports index based queries
 
-The database is sufficiently isolated, this means it exists in its own crate / is independent from any clients.
 
-Where current limitations:
+Current limitations:
 1. Does not support session based transactions, statements in a transaction must be sent all at once
 1. Transaction durability is not yet resilient to power failures (system does not yet use fsync)
 1. Does not support DDL statements, at the moment the system is limited to a single entity (Person)
@@ -24,6 +23,8 @@ Where current limitations:
 ## How to use 
 
 To play around / interact with the database I have provided a GraphQL / TCP client, though, you could implement your own frontend.
+
+The database is sufficiently isolated, this means it exists in its own crate / is independent from any clients.
 
 **Start the database**
 `cargo run`
