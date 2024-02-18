@@ -157,6 +157,10 @@ Handling session based transactions will have the following challenges
 1. Write-write conflicts, i.e. when two transactions update the same item, one will need to be rolled back
 1. GraphQL might not be the right mechanism for managing transaction BEGIN; COMMIT; 
 
+### Usage of MVCC
+
+By using MVCC we do not need to implement the more complicated 2PL (2 Phase Locking) protocol.
+
 ## Areas of improvement
 
 **GraphQL Feature**
