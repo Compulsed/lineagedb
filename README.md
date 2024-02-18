@@ -192,6 +192,7 @@ Handling session based transactions will have the following challenges
 - Update conditions
 - Transaction queue (max length, 5s timeout)
 - Referential integrity
+- Does not support changes to the underlying snapshot / transaction else serialization / deserialization will fail
 
 **Architecture**
 - Split the database / clients components into their own libraries ✅
