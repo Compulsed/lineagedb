@@ -83,8 +83,8 @@ mutation dbSnapshot {
 }
 
 
-mutation dbDrop {
-  drop
+mutation dbReset {
+  reset
 }
 ```
 

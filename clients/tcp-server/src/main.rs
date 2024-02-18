@@ -6,11 +6,12 @@ use std::thread;
 
 use clap::Parser;
 use database::consts::consts::EntityId;
+use database::database::commands::DatabaseCommandRequest;
 use database::database::database::{Database, DatabaseOptions};
-use database::database::request_manager::{DatabaseRequest, RequestManager};
-use database::database::table::row::{UpdateAction, UpdatePersonData};
-use database::model::action::Action;
-use database::model::person::Person; // TCP Stream defines implementation
+use database::database::request_manager::RequestManager;
+use database::database::table::row::{UpdatePersonData, UpdateStatement};
+use database::model::person::Person;
+use database::model::statement::Statement; // TCP Stream defines implementation
 
 /// 📀 Lineagedb TCP Server, provides a simple tcp interface for interacting with the database
 ///
@@ -39,8 +40,10 @@ fn main() {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
-        mpsc::channel();
+    let (database_sender, database_receiver): (
+        Sender<DatabaseCommandRequest>,
+        Receiver<DatabaseCommandRequest>,
+    ) = mpsc::channel();
 
     // Setup database thread
     thread::spawn(move || {
@@ -69,29 +72,29 @@ fn main() {
 
                             log::info!("Request: {}", request);
 
-                            let action = match request {
-                                "l" => Some(Action::List(None)),
-                                "a" => Some(Action::Add(Person {
+                            let statement = match request {
+                                "l" => Some(Statement::List(None)),
+                                "a" => Some(Statement::Add(Person {
                                     id: EntityId("test".to_string()),
                                     full_name: format!("[Count 0] Dale Salter"),
                                     email: Some(format!("dalejsalter-{}@outlook.com", "test")),
                                 })),
-                                "u" => Some(Action::Update(
+                                "u" => Some(Statement::Update(
                                     EntityId("test".to_string()),
                                     UpdatePersonData {
-                                        full_name: UpdateAction::Set(format!(
+                                        full_name: UpdateStatement::Set(format!(
                                             "[Count TEST] Dale Salter"
                                         )),
-                                        email: UpdateAction::NoChanges,
+                                        email: UpdateStatement::NoChanges,
                                     },
                                 )),
-                                "d" => Some(Action::Remove(EntityId("test".to_string()))),
+                                "d" => Some(Statement::Remove(EntityId("test".to_string()))),
                                 _ => None,
                             };
 
-                            if let Some(action) = action {
+                            if let Some(statement) = statement {
                                 let response = request_manager
-                                    .send_single_action(action)
+                                    .send_single_statement(statement)
                                     .expect("Should not timeout");
 
                                 writeln!(stream, "{:#?}", response).unwrap();

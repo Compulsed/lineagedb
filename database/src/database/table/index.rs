@@ -27,7 +27,7 @@ impl FullNameIndex {
         }
     }
 
-    /// Action: Add
+    /// Statement: Add
     pub fn save_to_index(&mut self, id: EntityId, full_name: Option<String>) {
         match self.index.get_mut(&full_name) {
             Some(ids) => {
@@ -41,7 +41,7 @@ impl FullNameIndex {
         }
     }
 
-    /// Action: Update, moving from one index to another
+    /// Statement: Update, moving from one index to another
     pub fn update_index(
         &mut self,
         id: EntityId,
@@ -57,7 +57,7 @@ impl FullNameIndex {
         self.save_to_index(id, new_full_name);
     }
 
-    /// Action: Delete, removes item from index
+    /// Statement: Delete, removes item from index
     pub fn remove_from_index(&mut self, id: &EntityId, full_name: &Option<String>) {
         match self.index.get_mut(full_name) {
             Some(ids) => {

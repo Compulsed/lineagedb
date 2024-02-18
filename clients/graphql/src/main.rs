@@ -9,8 +9,9 @@ use actix_web::{
 use actix_web_lab::respond::Html;
 use clap::Parser;
 use database::database::{
+    commands::DatabaseCommandRequest,
     database::{Database, DatabaseOptions},
-    request_manager::{DatabaseRequest, RequestManager},
+    request_manager::RequestManager,
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::{io, sync::Arc};
@@ -36,7 +37,7 @@ async fn graphql_playground() -> impl Responder {
 #[route("/graphql", method = "GET", method = "POST")]
 async fn graphql(
     schema: web::Data<Schema>,
-    database_sender: web::Data<Sender<DatabaseRequest>>,
+    database_sender: web::Data<Sender<DatabaseCommandRequest>>,
     data: web::Json<GraphQLRequest>,
 ) -> impl Responder {
     let sender = database_sender.as_ref();
@@ -81,8 +82,10 @@ async fn main() -> io::Result<()> {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let (database_sender, database_receiver): (Sender<DatabaseRequest>, Receiver<DatabaseRequest>) =
-        mpsc::channel();
+    let (database_sender, database_receiver): (
+        Sender<DatabaseCommandRequest>,
+        Receiver<DatabaseCommandRequest>,
+    ) = mpsc::channel();
 
     // Setup database thread
     thread::spawn(move || {

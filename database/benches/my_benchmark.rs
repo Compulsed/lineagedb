@@ -5,10 +5,10 @@ use database::{
         database::test_utils::database_test,
         table::{
             query::{QueryMatch, QueryPersonData},
-            row::{UpdateAction, UpdatePersonData},
+            row::{UpdatePersonData, UpdateStatement},
         },
     },
-    model::{action::Action, person::Person},
+    model::{person::Person, statement::Statement},
 };
 use uuid::Uuid;
 
@@ -16,7 +16,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("add 100", |b| {
         b.iter(|| {
             let action_generator = |_, _| {
-                Action::Add(Person {
+                Statement::Add(Person {
                     id: EntityId::new(),
                     full_name: "Test".to_string(),
                     email: Some(Uuid::new_v4().to_string()),
@@ -35,18 +35,18 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let email = format!("Email {}-{}", thread, index);
 
                 if index == 0 {
-                    return Action::Add(Person {
+                    return Statement::Add(Person {
                         id,
                         full_name,
                         email: Some(email),
                     });
                 }
 
-                return Action::Update(
+                return Statement::Update(
                     id,
                     UpdatePersonData {
-                        full_name: UpdateAction::Set(full_name),
-                        email: UpdateAction::Set(email),
+                        full_name: UpdateStatement::Set(full_name),
+                        email: UpdateStatement::Set(email),
                     },
                 );
             };
@@ -63,14 +63,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let email = format!("Email {}-{}", thread_id, index);
 
                 if index == 0 {
-                    return Action::Add(Person {
+                    return Statement::Add(Person {
                         id,
                         full_name,
                         email: Some(email),
                     });
                 }
 
-                return Action::Get(id);
+                return Statement::Get(id);
             };
 
             database_test(1, 100, action_generator);
@@ -84,10 +84,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let email = format!("Email {}-{}", thread_id, index);
 
                 if index < 100 {
-                    return Action::Add(Person::new(full_name, Some(email)));
+                    return Statement::Add(Person::new(full_name, Some(email)));
                 } else {
                     // Email is not indexed
-                    return Action::List(Some(QueryPersonData {
+                    return Statement::List(Some(QueryPersonData {
                         full_name: QueryMatch::Any,
                         email: QueryMatch::Value("Will never match".to_string()),
                     }));
@@ -105,11 +105,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let email = format!("Email {}-{}", thread_id, index);
 
                 if index < 100 {
-                    return Action::Add(Person::new(full_name, Some(email)));
+                    return Statement::Add(Person::new(full_name, Some(email)));
                 } else {
                     // Full name is index, which means it will return 'NoResults' and this is a
                     //  must faster path
-                    return Action::List(Some(QueryPersonData {
+                    return Statement::List(Some(QueryPersonData {
                         full_name: QueryMatch::Value("Will never match".to_string()),
                         email: QueryMatch::Any,
                     }));

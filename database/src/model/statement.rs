@@ -11,7 +11,7 @@ use crate::{
 use super::person::Person;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum Action {
+pub enum Statement {
     Add(Person),
     Update(EntityId, UpdatePersonData),
     Remove(EntityId),
@@ -23,22 +23,22 @@ pub enum Action {
     ListLatestVersions,
 }
 
-impl Action {
+impl Statement {
     pub fn is_mutation(&self) -> bool {
         match self {
-            Action::Add(_) | Action::Remove(_) | Action::Update(_, _) => true,
-            Action::List(_)
-            | Action::ListLatestVersions
-            | Action::Get(_)
-            | Action::GetVersion(_, _) => false,
+            Statement::Add(_) | Statement::Remove(_) | Statement::Update(_, _) => true,
+            Statement::List(_)
+            | Statement::ListLatestVersions
+            | Statement::Get(_)
+            | Statement::GetVersion(_, _) => false,
         }
     }
 }
 
 // TODO: Is there a better way to type this? Like if we know we are going to get a SuccessStatus, we should be able to unwrap it
-//  Note: the solution could be similiar to how we make the send_request method accept specific action types, and thus, return their corresponding response.
+//  Note: the solution could be similiar to how we make the send_request method accept specific statement types, and thus, return their corresponding response.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum ActionResult {
+pub enum StatementResult {
     /// Used for database status messages
     SuccessStatus(String),
     Single(Person),
@@ -47,44 +47,44 @@ pub enum ActionResult {
     ListVersion(Vec<PersonVersion>),
 }
 
-impl ActionResult {
+impl StatementResult {
     // TODO: Consider removing these methods and localizing them in the request_manager
     pub fn single(self) -> Person {
-        if let ActionResult::Single(p) = self {
+        if let StatementResult::Single(p) = self {
             p
         } else {
-            panic!("Action result is not of type Single")
+            panic!("Statement result is not of type Single")
         }
     }
 
     pub fn get_single(self) -> Option<Person> {
-        if let ActionResult::GetSingle(p) = self {
+        if let StatementResult::GetSingle(p) = self {
             p
         } else {
-            panic!("Action result is not of type GetSingle")
+            panic!("Statement result is not of type GetSingle")
         }
     }
 
     pub fn list(self) -> Vec<Person> {
-        if let ActionResult::List(l) = self {
+        if let StatementResult::List(l) = self {
             l
         } else {
-            panic!("Action result is not of type List")
+            panic!("Statement result is not of type List")
         }
     }
 
     #[allow(dead_code)]
     pub fn list_version(self) -> Vec<PersonVersion> {
-        if let ActionResult::ListVersion(p) = self {
+        if let StatementResult::ListVersion(p) = self {
             p
         } else {
-            panic!("Action result is not of type ListVersion")
+            panic!("Statement result is not of type ListVersion")
         }
     }
 
     #[allow(dead_code)]
     pub fn success_status(self) -> String {
-        if let ActionResult::SuccessStatus(s) = self {
+        if let StatementResult::SuccessStatus(s) = self {
             s
         } else {
             panic!("Success status code")

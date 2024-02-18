@@ -5,8 +5,8 @@ use thiserror::Error;
 use crate::{
     consts::consts::{EntityId, TransactionId, VersionId},
     model::{
-        action::{Action, ActionResult},
         person::Person,
+        statement::{Statement, StatementResult},
     },
 };
 
@@ -15,7 +15,7 @@ use super::{
     query::{filter, query},
     row::{
         ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion,
-        PersonVersionState, UpdateAction,
+        PersonVersionState, UpdateStatement,
     },
 };
 
@@ -86,17 +86,17 @@ impl PersonTable {
         }
     }
 
-    // Each mutation action can be broken up into 3 steps
+    // Each mutation statement can be broken up into 3 steps
     //  - Verifying validity / constraints (uniqueness)
-    //  - Applying action
+    //  - Applying statement
     //  - Clean up
     pub fn apply(
         &mut self,
-        action: Action,
+        statement: Statement,
         transaction_id: TransactionId,
-    ) -> Result<ActionResult, ApplyErrors> {
-        let action_result = match action {
-            Action::Add(person) => {
+    ) -> Result<StatementResult, ApplyErrors> {
+        let action_result = match statement {
+            Statement::Add(person) => {
                 let id = person.id.clone();
                 let person_to_persist = person.clone();
 
@@ -131,15 +131,15 @@ impl PersonTable {
                 self.full_name_index
                     .save_to_index(id, Some(person.full_name.clone()));
 
-                ActionResult::Single(person)
+                StatementResult::Single(person)
             }
-            Action::Update(id, update_person) => {
+            Statement::Update(id, update_person) => {
                 let person_row = self
                     .person_rows
                     .get_mut(&id)
                     .ok_or(ApplyErrors::CannotUpdateDoesNotExist(id.clone()))?;
 
-                if let UpdateAction::Set(email_to_update) = &update_person.email {
+                if let UpdateStatement::Set(email_to_update) = &update_person.email {
                     let mut skip_check = false;
 
                     // Edge case: If we are updating the email to the same value, we don't need to check the uniqueness constraint
@@ -168,10 +168,10 @@ impl PersonTable {
 
                 // Persist / remove email from unique constraint index
                 match (&update_person.email, &previous.email) {
-                    (UpdateAction::Set(email), _) => {
+                    (UpdateStatement::Set(email), _) => {
                         self.unique_email_index.insert(email.clone(), id.clone());
                     }
-                    (UpdateAction::Unset, Some(email)) => {
+                    (UpdateStatement::Unset, Some(email)) => {
                         self.unique_email_index.remove(email);
                     }
                     _ => {}
@@ -186,9 +186,9 @@ impl PersonTable {
                     );
                 }
 
-                ActionResult::Single(current)
+                StatementResult::Single(current)
             }
-            Action::Remove(id) => {
+            Statement::Remove(id) => {
                 let person_row = self
                     .person_rows
                     .get_mut(&id)
@@ -205,25 +205,25 @@ impl PersonTable {
                 self.full_name_index
                     .remove_from_index(&id, &Some(previous.full_name.clone()));
 
-                ActionResult::Single(previous)
+                StatementResult::Single(previous)
             }
-            Action::Get(id) => {
+            Statement::Get(id) => {
                 let person = match &self.person_rows.get(&id) {
                     Some(person_data) => person_data.current_state(),
                     None => return Err(ApplyErrors::CannotGetDoesNotExist(id)),
                 };
 
-                ActionResult::GetSingle(person)
+                StatementResult::GetSingle(person)
             }
-            Action::GetVersion(id, version) => {
+            Statement::GetVersion(id, version) => {
                 let person = match &self.person_rows.get(&id) {
                     Some(person_data) => person_data.person_at_version(version),
                     None => return Err(ApplyErrors::CannotGetAtVersionDoesNotExist(id, version)),
                 };
 
-                ActionResult::GetSingle(person)
+                StatementResult::GetSingle(person)
             }
-            Action::List(query_person_data) => {
+            Statement::List(query_person_data) => {
                 let mut people = query(&self, &transaction_id, &query_person_data, true);
 
                 sort_list(&mut people);
@@ -232,37 +232,37 @@ impl PersonTable {
                     people = filter(people, q)
                 }
 
-                ActionResult::List(people)
+                StatementResult::List(people)
             }
-            Action::ListLatestVersions => {
+            Statement::ListLatestVersions => {
                 let people_at_transaction_id: Vec<PersonVersion> = self
                     .person_rows
                     .iter()
                     .filter_map(|(_, value)| value.version_at_transaction_id(&transaction_id))
                     .collect();
 
-                ActionResult::ListVersion(people_at_transaction_id)
+                StatementResult::ListVersion(people_at_transaction_id)
             }
         };
 
         Ok(action_result)
     }
 
-    pub fn apply_rollback(&mut self, action: Action) {
-        match action {
-            Action::Add(person) => {
+    pub fn apply_rollback(&mut self, statement: Statement) {
+        match statement {
+            Statement::Add(person) => {
                 self.remove_mutation(person.id);
             }
-            Action::Update(id, _) => {
+            Statement::Update(id, _) => {
                 self.remove_mutation(id);
             }
-            Action::Remove(id) => {
+            Statement::Remove(id) => {
                 self.remove_mutation(id);
             }
-            Action::Get(_)
-            | Action::GetVersion(_, _)
-            | Action::List(_)
-            | Action::ListLatestVersions => {}
+            Statement::Get(_)
+            | Statement::GetVersion(_, _)
+            | Statement::List(_)
+            | Statement::ListLatestVersions => {}
         }
     }
 
@@ -338,11 +338,11 @@ mod tests {
 
                 let seed_actions = seed_data
                     .iter()
-                    .map(|person| Action::Add(person.clone()))
+                    .map(|person| Statement::Add(person.clone()))
                     .collect();
 
                 // When query the table
-                let list_action = Action::List(None);
+                let list_action = Statement::List(None);
 
                 // Then we should get all items back
                 list_test(seed_actions, list_action, seed_data);
@@ -358,11 +358,11 @@ mod tests {
 
                 let seed_actions = seed_data
                     .iter()
-                    .map(|person| Action::Add(person.clone()))
+                    .map(|person| Statement::Add(person.clone()))
                     .collect();
 
                 // When query the table
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Value("1".to_string()),
                     email: QueryMatch::Any,
                 }));
@@ -381,11 +381,11 @@ mod tests {
 
                 let seed_actions = seed_data
                     .iter()
-                    .map(|person| Action::Add(person.clone()))
+                    .map(|person| Statement::Add(person.clone()))
                     .collect();
 
                 // When query the table
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Value("2".to_string()),
                     email: QueryMatch::Value("2".to_string()),
                 }));
@@ -404,11 +404,11 @@ mod tests {
 
                 let seed_actions = seed_data
                     .iter()
-                    .map(|person| Action::Add(person.clone()))
+                    .map(|person| Statement::Add(person.clone()))
                     .collect();
 
                 // When query the table
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Any,
                     email: QueryMatch::Null,
                 }));
@@ -427,11 +427,11 @@ mod tests {
 
                 let seed_actions = seed_data
                     .iter()
-                    .map(|person| Action::Add(person.clone()))
+                    .map(|person| Statement::Add(person.clone()))
                     .collect();
 
                 // When query the table
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Any,
                     email: QueryMatch::Value("1".to_string()),
                 }));
@@ -450,11 +450,11 @@ mod tests {
 
                 let seed_actions = seed_data
                     .iter()
-                    .map(|person| Action::Add(person.clone()))
+                    .map(|person| Statement::Add(person.clone()))
                     .collect();
 
                 // When query the table
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Any,
                     email: QueryMatch::NotNull,
                 }));
@@ -475,12 +475,12 @@ mod tests {
                 let person = Person::new("1".to_string(), Some("1".to_string()));
 
                 let seed_actions = vec![
-                    Action::Add(person.clone()),
-                    Action::Update(
+                    Statement::Add(person.clone()),
+                    Statement::Update(
                         person.id.clone(),
                         UpdatePersonData {
-                            full_name: UpdateAction::Set("2".to_string()),
-                            email: UpdateAction::NoChanges,
+                            full_name: UpdateStatement::Set("2".to_string()),
+                            email: UpdateStatement::NoChanges,
                         },
                     ),
                 ];
@@ -490,7 +490,7 @@ mod tests {
                 updated_person.full_name = "2".to_string();
 
                 // When query the table
-                let list_action = Action::List(None);
+                let list_action = Statement::List(None);
 
                 // Then we should get the updated item back
                 list_test(seed_actions, list_action, vec![updated_person]);
@@ -502,12 +502,12 @@ mod tests {
                 let person = Person::new("1".to_string(), Some("1".to_string()));
 
                 let seed_actions = vec![
-                    Action::Add(person.clone()),
-                    Action::Update(
+                    Statement::Add(person.clone()),
+                    Statement::Update(
                         person.id.clone(),
                         UpdatePersonData {
-                            full_name: UpdateAction::Set("2".to_string()),
-                            email: UpdateAction::NoChanges,
+                            full_name: UpdateStatement::Set("2".to_string()),
+                            email: UpdateStatement::NoChanges,
                         },
                     ),
                 ];
@@ -517,7 +517,7 @@ mod tests {
                 updated_person.full_name = "2".to_string();
 
                 // When querying the table with the current state
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Value("2".to_string()),
                     email: QueryMatch::Any,
                 }));
@@ -532,18 +532,18 @@ mod tests {
                 let person = Person::new("1".to_string(), Some("1".to_string()));
 
                 let seed_actions = vec![
-                    Action::Add(person.clone()),
-                    Action::Update(
+                    Statement::Add(person.clone()),
+                    Statement::Update(
                         person.id.clone(),
                         UpdatePersonData {
-                            full_name: UpdateAction::Set("2".to_string()),
-                            email: UpdateAction::NoChanges,
+                            full_name: UpdateStatement::Set("2".to_string()),
+                            email: UpdateStatement::NoChanges,
                         },
                     ),
                 ];
 
                 // When we query the table with the old state
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Value("1".to_string()),
                     email: QueryMatch::Any,
                 }));
@@ -564,12 +564,12 @@ mod tests {
                 let person = Person::new("1".to_string(), Some("1".to_string()));
 
                 let seed_actions = vec![
-                    Action::Add(person.clone()),
-                    Action::Remove(person.id.clone()),
+                    Statement::Add(person.clone()),
+                    Statement::Remove(person.id.clone()),
                 ];
 
                 // When we select all items
-                let list_action = Action::List(None);
+                let list_action = Statement::List(None);
 
                 // Then we should get no items back
                 list_test(seed_actions, list_action, vec![]);
@@ -581,12 +581,12 @@ mod tests {
                 let person = Person::new("1".to_string(), Some("1".to_string()));
 
                 let seed_actions = vec![
-                    Action::Add(person.clone()),
-                    Action::Remove(person.id.clone()),
+                    Statement::Add(person.clone()),
+                    Statement::Remove(person.id.clone()),
                 ];
 
                 // When we select all items
-                let list_action = Action::List(Some(QueryPersonData {
+                let list_action = Statement::List(Some(QueryPersonData {
                     full_name: QueryMatch::Any,
                     email: QueryMatch::Any,
                 }));
@@ -596,17 +596,21 @@ mod tests {
             }
         }
 
-        pub fn list_test(actions: Vec<Action>, list_action: Action, compare_to: Vec<Person>) -> () {
+        pub fn list_test(
+            statements: Vec<Statement>,
+            list_statement: Statement,
+            compare_to: Vec<Person>,
+        ) -> () {
             let mut table = PersonTable::new();
             let mut next_transaction_id = TransactionId::new_first_transaction();
 
-            for action in actions {
-                table.apply(action, next_transaction_id.clone()).unwrap();
+            for statement in statements {
+                table.apply(statement, next_transaction_id.clone()).unwrap();
                 next_transaction_id = next_transaction_id.increment();
             }
 
             let mut list_results = table
-                .apply(list_action, next_transaction_id)
+                .apply(list_statement, next_transaction_id)
                 .unwrap()
                 .list();
 
@@ -623,7 +627,7 @@ mod tests {
         use super::*;
 
         /// Tests are broken up into three categories:
-        /// - Get action
+        /// - Get Statement
         /// - Row data, normally would not depend on private fields, though MVCC has complex logic so this makes it easier to test
         mod row_data {
             use super::*;
@@ -749,7 +753,7 @@ mod tests {
             }
         }
 
-        mod get_action {
+        mod get_statement {
             use super::*;
 
             #[test]
@@ -867,18 +871,18 @@ mod tests {
             let mut table = PersonTable::new();
 
             let person = Person::new("1".to_string(), Some("email".to_string()));
-            let action = Action::Add(person);
+            let statement = Statement::Add(person);
 
             table
-                .apply(action, TransactionId(1))
+                .apply(statement, TransactionId(1))
                 .expect("should not throw an error because there is no data");
 
             // When we add an item with the same email
             let person = Person::new("2".to_string(), Some("email".to_string()));
-            let action = Action::Add(person);
+            let statement = Statement::Add(person);
 
             let result = table
-                .apply(action, TransactionId(2))
+                .apply(statement, TransactionId(2))
                 .err()
                 .expect("should error");
 
@@ -893,17 +897,17 @@ mod tests {
 
             // When we add an item
             let person = Person::new("1".to_string(), Some("email".to_string()));
-            let action = Action::Add(person.clone());
-            table.apply(action, TransactionId(1)).unwrap();
+            let statement = Statement::Add(person.clone());
+            table.apply(statement, TransactionId(1)).unwrap();
 
             // And we delete the item
-            let action = Action::Remove(person.id.clone());
-            table.apply(action, TransactionId(2)).unwrap();
+            let statement = Statement::Remove(person.id.clone());
+            table.apply(statement, TransactionId(2)).unwrap();
 
             // Then we can add another item with the same email
             let person = Person::new("2".to_string(), Some("email".to_string()));
-            let action = Action::Add(person.clone());
-            table.apply(action, TransactionId(3)).unwrap();
+            let statement = Statement::Add(person.clone());
+            table.apply(statement, TransactionId(3)).unwrap();
         }
 
         /// This caused a bug where we could not update ourself to the same email
@@ -913,27 +917,27 @@ mod tests {
             let mut table = PersonTable::new();
 
             let person = Person::new("1".to_string(), Some("email".to_string()));
-            let add_action = Action::Add(person.clone());
+            let add_statement = Statement::Add(person.clone());
 
             table
-                .apply(add_action, TransactionId(1))
+                .apply(add_statement, TransactionId(1))
                 .expect("should not throw an error because there is no table data");
 
             // When we update ourself to the same email
-            let update_action = Action::Update(
+            let update_statement = Statement::Update(
                 person.id.clone(),
                 UpdatePersonData {
-                    full_name: UpdateAction::NoChanges,
-                    email: UpdateAction::Set(person.email.clone().unwrap()),
+                    full_name: UpdateStatement::NoChanges,
+                    email: UpdateStatement::Set(person.email.clone().unwrap()),
                 },
             );
 
             let result = table
-                .apply(update_action, TransactionId(2))
+                .apply(update_statement, TransactionId(2))
                 .expect("should not throw an error because the email is the same");
 
             // Then the update should succeed
-            assert_eq!(result, ActionResult::Single(person));
+            assert_eq!(result, StatementResult::Single(person));
         }
     }
 
@@ -950,9 +954,9 @@ mod tests {
             next_transaction_id.to_string(),
             Some(next_transaction_id.to_string()),
         );
-        let action = Action::Add(person.clone());
+        let statement = Statement::Add(person.clone());
 
-        table.apply(action, next_transaction_id.clone()).unwrap();
+        table.apply(statement, next_transaction_id.clone()).unwrap();
 
         (person, next_transaction_id.increment())
     }
@@ -965,15 +969,15 @@ mod tests {
         let mut updated_person = person.clone();
         updated_person.email = Some("email".to_string());
 
-        let action = Action::Update(
+        let statement = Statement::Update(
             person.id.clone(),
             UpdatePersonData {
-                full_name: UpdateAction::NoChanges,
-                email: UpdateAction::Set("email".to_string()),
+                full_name: UpdateStatement::NoChanges,
+                email: UpdateStatement::Set("email".to_string()),
             },
         );
 
-        table.apply(action, next_transaction_id.clone()).unwrap();
+        table.apply(statement, next_transaction_id.clone()).unwrap();
 
         (updated_person, next_transaction_id.increment())
     }
@@ -983,9 +987,9 @@ mod tests {
         id: &EntityId,
         next_transaction_id: TransactionId,
     ) -> TransactionId {
-        let action = Action::Remove(id.clone());
+        let statement = Statement::Remove(id.clone());
 
-        table.apply(action, next_transaction_id.clone()).unwrap();
+        table.apply(statement, next_transaction_id.clone()).unwrap();
 
         next_transaction_id.increment()
     }
@@ -996,11 +1000,11 @@ mod tests {
         version: &VersionId,
         next_transaction_id: TransactionId,
     ) -> Option<Person> {
-        let action = Action::GetVersion(id.clone(), version.clone());
-        let result = table.apply(action, next_transaction_id).unwrap();
+        let statement = Statement::GetVersion(id.clone(), version.clone());
+        let result = table.apply(statement, next_transaction_id).unwrap();
 
         match result {
-            ActionResult::GetSingle(person) => person,
+            StatementResult::GetSingle(person) => person,
             _ => {
                 // Note: Unsure why but cannot panic here, just assert false
                 assert!(false, "should be a single person");

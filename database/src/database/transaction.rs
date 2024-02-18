@@ -4,7 +4,7 @@ use std::io::prelude::*;
 use std::path::PathBuf;
 
 use crate::consts::consts::TransactionId;
-use crate::model::action::Action;
+use crate::model::statement::Statement;
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -17,7 +17,7 @@ pub enum TransactionStatus {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Transaction {
     pub id: TransactionId,
-    pub actions: Vec<Action>,
+    pub statements: Vec<Statement>,
     pub status: TransactionStatus,
 }
 
@@ -26,6 +26,7 @@ pub struct TransactionWAL {
     log_file: File,
     data_directory: PathBuf,
     current_transaction_id: TransactionId,
+    size: usize,
 }
 
 fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
@@ -48,11 +49,16 @@ impl TransactionWAL {
             log_file,
             data_directory: data_directory,
             current_transaction_id: TransactionId::new_first_transaction(),
+            size: 0,
         }
     }
 
-    pub fn flush_transactions(&mut self) {
+    pub fn flush_transactions(&mut self) -> usize {
         let path = get_transaction_log_location(self.data_directory.clone());
+
+        let flushed_size = self.size;
+
+        self.size = 0;
 
         fs::remove_file(&path).expect("Unable to remove file");
 
@@ -61,6 +67,8 @@ impl TransactionWAL {
             .append(true)
             .open(&path)
             .expect("Cannot open file");
+
+        flushed_size
     }
 
     pub fn get_current_transaction_id(&self) -> &TransactionId {
@@ -70,7 +78,7 @@ impl TransactionWAL {
     pub fn commit(
         &mut self,
         applied_transaction_id: TransactionId,
-        actions: Vec<Action>,
+        statements: Vec<Statement>,
         restore: bool,
     ) {
         // We do not need to write back to the WAL if we restoring the database
@@ -80,7 +88,7 @@ impl TransactionWAL {
                 "{}\n",
                 serde_json::to_string(&Transaction {
                     id: applied_transaction_id.clone(),
-                    actions: actions.clone(),
+                    statements: statements.clone(),
                     status: TransactionStatus::Committed,
                 })
                 .unwrap()
@@ -92,16 +100,20 @@ impl TransactionWAL {
                 .unwrap();
 
             // Performs an fsync on the transaction log, ensuring that the transaction is durable
+            // https://www.postgresql.org/docs/current/wal-reliability.html
             //
-            // Note: This is likely a slow operation and if possible we should allow multiple transactions to be committed at once
+            // Note: This is a slow operation and if possible we should allow multiple transactions to be committed at once
             //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
+            //
+            // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
             //
             // I'm not sure the best way to do this, i.e. another thread that flushes the log / calls commit every 5ms?
             //   we use the DB thread to do this, wake up at least every 5ms, and if there are transactions to commit, we do so
-            let _ = &self.log_file.sync_all().unwrap();
+            // let _ = &self.log_file.sync_all().unwrap();
         }
 
         self.current_transaction_id = applied_transaction_id;
+        self.size += 1;
     }
 
     pub fn restore(data_directory: PathBuf) -> Vec<Transaction> {

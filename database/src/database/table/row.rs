@@ -20,12 +20,12 @@ pub struct ApplyDeleteResult {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UpdatePersonData {
-    pub full_name: UpdateAction,
-    pub email: UpdateAction,
+    pub full_name: UpdateStatement,
+    pub email: UpdateStatement,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum UpdateAction {
+pub enum UpdateStatement {
     Set(String),
     Unset,
     NoChanges,
@@ -130,19 +130,19 @@ impl PersonRow {
         let mut current_person = previous_person.clone();
 
         match &update.full_name {
-            UpdateAction::Set(full_name) => current_person.full_name = full_name.clone(),
-            UpdateAction::Unset => {
+            UpdateStatement::Set(full_name) => current_person.full_name = full_name.clone(),
+            UpdateStatement::Unset => {
                 return Err(ApplyErrors::NotNullConstraintViolation(
                     "Full Name".to_string(),
                 ))
             }
-            UpdateAction::NoChanges => {}
+            UpdateStatement::NoChanges => {}
         }
 
         match &update.email {
-            UpdateAction::Set(email) => current_person.email = Some(email.clone()),
-            UpdateAction::Unset => current_person.email = None,
-            UpdateAction::NoChanges => {}
+            UpdateStatement::Set(email) => current_person.email = Some(email.clone()),
+            UpdateStatement::Unset => current_person.email = None,
+            UpdateStatement::NoChanges => {}
         }
 
         // Apply
