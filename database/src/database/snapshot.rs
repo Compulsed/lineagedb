@@ -12,7 +12,11 @@ use crate::{
     model::statement::Statement,
 };
 
-use super::table::{index::FullNameIndex, row::PersonVersion, table::PersonTable};
+use super::table::{
+    index::FullNameIndex,
+    row::PersonVersion,
+    table::{ApplyErrors, PersonTable},
+};
 
 enum FileType {
     Metadata,

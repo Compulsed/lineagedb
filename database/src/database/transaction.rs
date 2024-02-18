@@ -1,10 +1,16 @@
+use oneshot::Sender;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 use crate::consts::consts::TransactionId;
 use crate::model::statement::Statement;
+
+use super::commands::DatabaseCommandResponse;
+use super::database::ApplyMode;
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -21,12 +27,21 @@ pub struct Transaction {
     pub status: TransactionStatus,
 }
 
+// TODO: Allow this to be externally set
+struct TransactionCommitData {
+    applied_transaction_id: TransactionId,
+    statements: Vec<Statement>,
+    response: DatabaseCommandResponse,
+    resolver: oneshot::Sender<DatabaseCommandResponse>,
+}
+
 #[derive(Debug)]
 pub struct TransactionWAL {
-    log_file: File,
+    log_file: Arc<Mutex<File>>,
     data_directory: PathBuf,
     current_transaction_id: TransactionId,
     size: usize,
+    commit_sender: mpsc::Sender<TransactionCommitData>,
 }
 
 fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
@@ -39,14 +54,73 @@ impl TransactionWAL {
         fs::create_dir_all(&data_directory)
             .expect("Should always be able to create a path at data/");
 
-        let log_file = OpenOptions::new()
+        let raw_log_file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(get_transaction_log_location(data_directory.clone()))
             .expect("Cannot open file");
 
+        let log_file = Arc::new(Mutex::new(raw_log_file));
+
+        let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
+
+        let thread_log_file = log_file.clone();
+
+        thread::spawn(move || {
+            let worker_log_file = thread_log_file;
+
+            loop {
+                let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
+                    vec![];
+
+                for transaction_data in receiver.try_iter() {
+                    let mut file = worker_log_file.lock().unwrap();
+
+                    let TransactionCommitData {
+                        applied_transaction_id,
+                        statements,
+                        response,
+                        resolver,
+                    } = transaction_data;
+
+                    let transaction_json_line = format!(
+                        "{}\n",
+                        serde_json::to_string(&Transaction {
+                            id: applied_transaction_id.clone(),
+                            statements: statements,
+                            status: TransactionStatus::Committed,
+                        })
+                        .unwrap()
+                    );
+
+                    file.write_all(transaction_json_line.as_bytes()).unwrap();
+
+                    batch.push((resolver, response));
+                }
+
+                let file = worker_log_file.lock().unwrap();
+
+                // Performs an fsync on the transaction log, ensuring that the transaction is durable
+                // https://www.postgresql.org/docs/current/wal-reliability.html
+                //
+                // Note: This is a slow operation and if possible we should allow multiple transactions to be committed at once
+                //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
+                //
+                // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
+                //
+                // I'm not sure the best way to do this, i.e. another thread that flushes the log / calls commit every 5ms?
+                //   we use the DB thread to do this, wake up at least every 5ms, and if there are transactions to commit, we do so
+                // let _ = file.sync_all().unwrap();
+
+                for (resolver, response) in batch {
+                    let _ = resolver.send(response);
+                }
+            }
+        });
+
         Self {
             log_file,
+            commit_sender: sender,
             data_directory: data_directory,
             current_transaction_id: TransactionId::new_first_transaction(),
             size: 0,
@@ -60,13 +134,22 @@ impl TransactionWAL {
 
         self.size = 0;
 
+        // When we flush we need to reset the file handle for the WAL
+        // TODO: Could there be a race condition here? Can someone be writing to the file while we are flushing?
+        // Also perhaps we need to lock the file path too
+        // Perhaps this file access is better managed via a channel w/ actions
+        let mut state = self.log_file.lock().unwrap();
+
         fs::remove_file(&path).expect("Unable to remove file");
 
-        self.log_file = OpenOptions::new()
+        let raw_log_file = OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&path)
             .expect("Cannot open file");
+
+        // Swap the old file handle (with transactions) with the new one (empty file handle)
+        *state = raw_log_file;
 
         flushed_size
     }
@@ -79,37 +162,19 @@ impl TransactionWAL {
         &mut self,
         applied_transaction_id: TransactionId,
         statements: Vec<Statement>,
-        restore: bool,
+        response: DatabaseCommandResponse,
+        mode: ApplyMode,
     ) {
         // We do not need to write back to the WAL if we restoring the database
-        if !restore {
-            // TODO: We should add a transaction lifetime, though it messes with the deserialize trait
-            let transaction_json_line = format!(
-                "{}\n",
-                serde_json::to_string(&Transaction {
-                    id: applied_transaction_id.clone(),
-                    statements: statements.clone(),
-                    status: TransactionStatus::Committed,
-                })
-                .unwrap()
-            );
+        if let ApplyMode::Request(resolver) = mode {
+            let commit_data = TransactionCommitData {
+                applied_transaction_id: applied_transaction_id.clone(),
+                statements,
+                response,
+                resolver,
+            };
 
-            let _ = &self
-                .log_file
-                .write_all(transaction_json_line.as_bytes())
-                .unwrap();
-
-            // Performs an fsync on the transaction log, ensuring that the transaction is durable
-            // https://www.postgresql.org/docs/current/wal-reliability.html
-            //
-            // Note: This is a slow operation and if possible we should allow multiple transactions to be committed at once
-            //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
-            //
-            // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
-            //
-            // I'm not sure the best way to do this, i.e. another thread that flushes the log / calls commit every 5ms?
-            //   we use the DB thread to do this, wake up at least every 5ms, and if there are transactions to commit, we do so
-            // let _ = &self.log_file.sync_all().unwrap();
+            self.commit_sender.send(commit_data).unwrap();
         }
 
         self.current_transaction_id = applied_transaction_id;

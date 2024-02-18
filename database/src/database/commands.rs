@@ -29,7 +29,7 @@ impl DatabaseCommand {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DatabaseCommandTransactionResponse {
     /// Transaction has successfully committed, returns a list of statement results
     Commit(Vec<StatementResult>),
@@ -49,7 +49,7 @@ impl DatabaseCommandTransactionResponse {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DatabaseCommandControlResponse {
     /// Successfully performed the control
     Success(String),
@@ -57,7 +57,7 @@ pub enum DatabaseCommandControlResponse {
     Error(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DatabaseCommandResponse {
     DatabaseCommandTransactionResponse(DatabaseCommandTransactionResponse),
     DatabaseCommandControlResponse(DatabaseCommandControlResponse),
