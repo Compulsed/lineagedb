@@ -1,15 +1,29 @@
 # Lineage DB
 
-Lineage DB is an experimental time traveling database. The database will have the following functionality:
-1. Query the database at any transaction id
-1. For any given item can look at all revisions
-1. Supports ACID transactions (it is single threaded / time traveling so this is almost 'free')
+Lineage DB is an educational MVCC database and has the following functionality:
+1. Supports ACID transactions (* with an exception to durability, * everything currently runs as serialization)
+1. Utilizes a WAL for performant writes / supports trimming the WAL
+1. Time travel, query the database at any given transaction id (* assuming it is untrimmed)
+1. For any given item can look at all revisions (* assuming it is untrimmed)
+1. Supports index based queries
 
 The database is sufficiently isolated, this means it exists in its own crate / is independent from any clients.
 
-To play around / interact with the database I have provided a GraphQL / TCP client.
+Where current limitations:
+1. Does not support session based transactions, statements in a transaction must be sent all at once
+1. Transaction durability is not yet resilient to power failures (system does not yet use fsync)
+1. Does not support DDL statements, at the moment the system is limited to a single entity (Person)
+1. There are no concurrent transactions, the database is currently single threaded
+1. The working dataset must fit entirely within memory, there is no storage pool / disk paging
+1. Does not have an SQL frontend
+1. Has limited querying capabilities, just `AND`, no `OR`, `IN`, etc.
+1. Does not clean up older item versions -- should implement this by looking at the oldest transaction and cleaning up items before that TX id
+1. Version compression, for each new version we make a clean copy of all of the previous versions' data
+
 
 ## How to use 
+
+To play around / interact with the database I have provided a GraphQL / TCP client, though, you could implement your own frontend.
 
 **Start the database**
 `cargo run`
@@ -89,6 +103,8 @@ mutation dbReset {
 ```
 
 **CLI**
+An optional CLI is provided for various configuration options
+
 ```
 📀 Lineagedb GraphQL Server, provides a simple GraphQL interface for interacting with the database
 
@@ -121,25 +137,31 @@ cargo run --package tcp-server --bin lineagedb-tcp-server
 
 ```
 cargo test --all
+
+# Benchmarking https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
 cargo bench --all
+cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to another branch
 ```
 
-## Features
-1. Input parser ✅
-1. Transaction Processor (Query, Add) ✅
-1. Read ✅
-1. Write ✅ 
-1. Apply ✅
-    1. World state ✅
-    1. Version history ✅
-    1. Transaction list ✅
-1. Multiple producers single consumer ✅
-1. Uniqueness constraints ✅
-1. Restore ✅
-1. Persist to file transaction log to a file ✅
-1. Pass result back to caller ✅
-1. Transaction return type with data (latch?) ✅
-1. Network based requests ✅
+## Notes
+
+### Concurrent Read / Write
+
+The database single threaded, this means neither reads or writes can be concurrent. Once they are concurrent we will need to address the following challenges:
+1. Will need to move away from vectors to linked lists (unless we use a RW Lock). Resizing vectors is not thread 'safe'
+1. Must create rust data structures that are both sync + send w/ some internal unsafe operations
+
+### Session Transactions
+
+Handling session based transactions will have the following challenges
+1. Write-write conflicts, i.e. when two transactions update the same item, one will need to be rolled back
+1. GraphQL might not be the right mechanism for managing transaction BEGIN; COMMIT; 
+
+### Usage of MVCC
+
+By using MVCC we do not need to implement the more complicated 2PL (2 Phase Locking) protocol.
+
+## Areas of improvement
 
 **GraphQL Feature**
 - Get ✅
@@ -174,25 +196,22 @@ cargo bench --all
 - Update conditions
 - Transaction queue (max length, 5s timeout)
 - Referential integrity
+- Does not support changes to the underlying snapshot / transaction else serialization / deserialization will fail
 
 **Architecture**
+- Split the database / clients components into their own libraries ✅
 - Transaction log listener (can run another db in another location)
 - Run on cloud via docker / lambda
-- Split the database / clients components into their own libraries
 
 **Performance**
 - Create a tx/s metrics (1ms for ~100 reads / writes) ✅
+- WAL ✅
 - Is there a way to monitor rust performance? Like where are we spending the most time
 - Is there a way to improve the performance of transaction writes?
   - i.e. we set the transaction log file to be larger than what we need
 - Read at a transaction id whilst there is a writer — may require thread safe data structures
 - Move away from a single thread per request (could implement a thread pool w/ channels?)
 - Reduce the amount of rust clones
-- State backups
-    - Maybe trim the transaction log
-    - Perform a state backup every N number of TXs (called a 'backup copy') -- (DI P12). 
-      - This is usually async / buffered. I suspect the async part is the state backup and not TX log as the log has to be written
-        to consider the transaction as 'committed'.
 - Investigate ~6k TX stall from load testing (was using AB, and running on a Mac)
 - Anywhere we would clone attempt to use an RC -- this happens with Actions (check performance after doing this)
 
