@@ -1,5 +1,5 @@
 use core::panic;
-use std::{sync::mpsc::Sender, time::Duration};
+use std::time::Duration;
 use thiserror::Error;
 
 use crate::{
@@ -19,7 +19,7 @@ use super::{
 };
 
 pub struct RequestManager {
-    database_sender: Sender<DatabaseCommandRequest>,
+    database_sender: flume::Sender<DatabaseCommandRequest>,
 }
 
 /// Converts the database command hierarchy into a simple string, this is an easy interface to work with
@@ -40,7 +40,7 @@ pub enum RequestManagerError {
 
 /// Goal of the request manager is to provide a simple interface for interacting with the database
 impl RequestManager {
-    pub fn new(database_sender: Sender<DatabaseCommandRequest>) -> Self {
+    pub fn new(database_sender: flume::Sender<DatabaseCommandRequest>) -> Self {
         Self { database_sender }
     }
 
