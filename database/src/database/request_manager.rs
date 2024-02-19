@@ -158,7 +158,7 @@ impl RequestManager {
         //  on the response_receiver once it's finished processing it's request
         self.database_sender.send(request).unwrap();
 
-        let response = response_receiver.recv_timeout(Duration::from_secs(5));
+        let response = response_receiver.recv_timeout(Duration::from_secs(10));
 
         match response {
             // Transaction commands

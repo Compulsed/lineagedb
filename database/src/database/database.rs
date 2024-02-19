@@ -101,7 +101,13 @@ impl Database {
         database_rw: Arc<RwLock<Self>>,
     ) {
         loop {
-            let DatabaseCommandRequest { command, resolver } = receiver.recv().unwrap();
+            let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
+                Ok(request) => request,
+                Err(e) => {
+                    log::error!("Failed to receive data from channel {}", e);
+                    continue;
+                }
+            };
 
             log::info!("Received request: {}", command.log_format());
 
@@ -581,7 +587,7 @@ mod tests {
         #[test]
         fn update() {
             // 65k tps on M1 MBA
-            let action_generator = |thread: i32, index: u32| {
+            let action_generator = |thread: u32, index: u32| {
                 let id = EntityId(thread.to_string());
                 let full_name = format!("Full Name {}-{}", thread, index);
                 let email = format!("Email {}-{}", thread, index);
@@ -603,7 +609,7 @@ mod tests {
                 );
             };
 
-            database_test(1, 5, action_generator);
+            database_test(1, 1, 5, action_generator);
         }
 
         #[test]
@@ -616,12 +622,12 @@ mod tests {
                 })
             };
 
-            database_test(1, 5, action_generator);
+            database_test(1, 1, 5, action_generator);
         }
 
         #[test]
         fn get() {
-            let action_generator = |thread_id: i32, index: u32| {
+            let action_generator = |thread_id: u32, index: u32| {
                 let id = EntityId(thread_id.to_string());
                 let full_name = format!("Full Name {}-{}", thread_id, index);
                 let email = format!("Email {}-{}", thread_id, index);
@@ -637,7 +643,7 @@ mod tests {
                 return Statement::Get(id);
             };
 
-            database_test(1, 5, action_generator);
+            database_test(1, 1, 5, action_generator);
         }
     }
 }
@@ -659,9 +665,10 @@ pub mod test_utils {
     };
 
     pub fn database_test(
-        worker_threads: i32,
+        worker_threads: u32,
+        database_threads: u32,
         actions: u32,
-        action_generator: fn(i32, u32) -> Statement,
+        action_generator: fn(u32, u32) -> Statement,
     ) {
         let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
             .iter()
@@ -669,7 +676,8 @@ pub mod test_utils {
 
         let options = DatabaseOptions::default().set_data_directory(database_dir);
 
-        let database_sender: flume::Sender<DatabaseCommandRequest> = Database::new(options).run(5);
+        let database_sender: flume::Sender<DatabaseCommandRequest> =
+            Database::new(options).run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
@@ -677,7 +685,7 @@ pub mod test_utils {
             let rm = RequestManager::new(database_sender.clone());
 
             let sender_thread = thread::spawn(move || {
-                for index in 0..actions {
+                for index in 0..(actions / worker_threads) {
                     let statement = action_generator(thread_id, index);
 
                     let action_result = rm
