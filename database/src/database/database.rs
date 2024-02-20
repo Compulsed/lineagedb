@@ -18,6 +18,7 @@ use crate::{
 
 use super::{
     commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
+    request_manager::RequestManager,
     snapshot::SnapshotManager,
     table::table::PersonTable,
     transaction::TransactionWAL,
@@ -188,7 +189,7 @@ impl Database {
         }
     }
 
-    pub fn run(mut self, threads: u32) -> flume::Sender<DatabaseCommandRequest> {
+    pub fn run(mut self, threads: u32) -> RequestManager {
         let transaction_log_location = self.database_options.data_directory.clone();
 
         log::info!(
@@ -254,7 +255,7 @@ impl Database {
             });
         }
 
-        return tx;
+        return RequestManager::new(tx);
     }
 
     pub fn query_transaction(
@@ -652,11 +653,7 @@ pub mod test_utils {
     use uuid::Uuid;
 
     use crate::{
-        database::{
-            commands::DatabaseCommandRequest,
-            database::{Database, DatabaseOptions},
-            request_manager::RequestManager,
-        },
+        database::database::{Database, DatabaseOptions},
         model::statement::{Statement, StatementResult},
     };
     use std::{
@@ -676,13 +673,12 @@ pub mod test_utils {
 
         let options = DatabaseOptions::default().set_data_directory(database_dir);
 
-        let database_sender: flume::Sender<DatabaseCommandRequest> =
-            Database::new(options).run(database_threads);
+        let rm = Database::new(options).run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
         for thread_id in 0..worker_threads {
-            let rm = RequestManager::new(database_sender.clone());
+            let rm = rm.clone();
 
             let sender_thread = thread::spawn(move || {
                 for index in 0..(actions / worker_threads) {
@@ -710,7 +706,8 @@ pub mod test_utils {
         }
 
         // Allows database thread to successfully exit
-        let shutdown_response = RequestManager::new(database_sender.clone())
+        let shutdown_response = rm
+            .clone()
             .send_shutdown_request()
             .expect("Should not timeout");
 

@@ -18,6 +18,7 @@ use super::{
     table::{query::QueryPersonData, row::UpdatePersonData},
 };
 
+#[derive(Clone)]
 pub struct RequestManager {
     database_sender: flume::Sender<DatabaseCommandRequest>,
 }
