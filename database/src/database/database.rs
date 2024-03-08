@@ -1,6 +1,7 @@
 use std::{
     path::PathBuf,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{Arc, RwLock},
+    thread,
     time::Instant,
 };
 
@@ -8,12 +9,16 @@ use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
-    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
+    database::{
+        commands::{Control, DatabaseCommand, DatabaseCommandResponse},
+        snapshot,
+    },
     model::statement::{Statement, StatementResult},
 };
 
 use super::{
     commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
+    request_manager::RequestManager,
     snapshot::SnapshotManager,
     table::table::PersonTable,
     transaction::TransactionWAL,
@@ -49,31 +54,21 @@ enum CommitStatus {
 pub struct Database {
     person_table: PersonTable,
     transaction_wal: TransactionWAL,
-    database_receiver: Receiver<DatabaseCommandRequest>,
     database_options: DatabaseOptions,
     snapshot_manager: SnapshotManager,
 }
 
 impl Database {
-    pub fn new(
-        database_receiver: Receiver<DatabaseCommandRequest>,
-        options: DatabaseOptions,
-    ) -> Self {
+    pub fn new(options: DatabaseOptions) -> Self {
         Self {
             person_table: PersonTable::new(),
             transaction_wal: TransactionWAL::new(options.data_directory.clone()),
             snapshot_manager: SnapshotManager::new(options.data_directory.clone()),
-            database_receiver,
             database_options: options,
         }
     }
 
     pub fn new_test() -> Self {
-        let (_, database_receiver): (
-            Sender<DatabaseCommandRequest>,
-            Receiver<DatabaseCommandRequest>,
-        ) = mpsc::channel();
-
         let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
             .iter()
             .collect();
@@ -84,7 +79,6 @@ impl Database {
             person_table: PersonTable::new(),
             transaction_wal: TransactionWAL::new(options.data_directory.clone()),
             snapshot_manager: SnapshotManager::new(options.data_directory.clone()),
-            database_receiver: database_receiver,
             database_options: options,
         }
     }
@@ -103,7 +97,99 @@ impl Database {
         row_count
     }
 
-    pub fn run(&mut self) {
+    fn start_thread(
+        receiver: flume::Receiver<DatabaseCommandRequest>,
+        database_rw: Arc<RwLock<Self>>,
+    ) {
+        loop {
+            let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
+                Ok(request) => request,
+                Err(e) => {
+                    log::error!("Failed to receive data from channel {}", e);
+                    continue;
+                }
+            };
+
+            log::info!("Received request: {}", command.log_format());
+
+            // TODO: We assume that the send() commands are successful. This is likely okay? because if
+            //   if sender is disconnected that should not impact the database
+            let transaction_statements = match command {
+                DatabaseCommand::Transaction(statements) => statements,
+                DatabaseCommand::Control(control) => {
+                    match control {
+                        Control::Shutdown => {
+                            let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                "Successfully shutdown database",
+                            ));
+
+                            return;
+                        }
+                        Control::ResetDatabase => {
+                            let dropped_row_count =
+                                database_rw.write().unwrap().reset_database_state();
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully reset database, dropped: {} rows",
+                                    dropped_row_count
+                                )));
+
+                            continue;
+                        }
+                        Control::SnapshotDatabase => {
+                            let mut database = database_rw.write().unwrap();
+
+                            let transaction_id = database
+                                .transaction_wal
+                                .get_current_transaction_id()
+                                .clone();
+
+                            let table = &mut database.person_table;
+
+                            let snapshot_manager = &mut database.snapshot_manager;
+
+                            // Persist current state to disk
+                            // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
+
+                            let flush_transactions = database.transaction_wal.flush_transactions();
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully created snapshot: compressed {} txs",
+                                    flush_transactions
+                                )));
+
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // If all statements are read, only use the reader lock
+            let contains_mutation = transaction_statements
+                .iter()
+                .any(|statement| statement.is_mutation());
+
+            let statement_response = match contains_mutation {
+                true => database_rw
+                    .write()
+                    .unwrap()
+                    .apply_transaction(transaction_statements, false),
+                false => database_rw
+                    .read()
+                    .unwrap()
+                    .query_transaction(transaction_statements),
+            };
+
+            // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
+            let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                statement_response,
+            ));
+        }
+    }
+
+    pub fn run(mut self, threads: u32) -> RequestManager {
         let transaction_log_location = self.database_options.data_directory.clone();
 
         log::info!(
@@ -155,65 +241,45 @@ impl Database {
                 .to_formatted_string(&Locale::en)
         );
 
-        // Loop over the receive channel and serially process commands from the various clients
-        loop {
-            let DatabaseCommandRequest { command, resolver } =
-                self.database_receiver.recv().unwrap();
+        let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
 
-            log::info!("Received request: {}", command.log_format());
+        let database_mutex = Arc::new(RwLock::new(self));
 
-            // TODO: We assume that the send() commands are successful. This is likely okay? because if
-            //   if sender is disconnected that should not impact the database
-            let process_statement = match command {
-                DatabaseCommand::Transaction(statements) => statements,
-                DatabaseCommand::Control(control) => {
-                    match control {
-                        Control::Shutdown => {
-                            let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                "Successfully shutdown database",
-                            ));
+        for _ in 0..threads {
+            let thread_rx = rx.clone();
+            let database_rw = database_mutex.clone();
 
-                            return;
-                        }
-                        Control::ResetDatabase => {
-                            let dropped_row_count = self.reset_database_state();
-
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully reset database, dropped: {} rows",
-                                    dropped_row_count
-                                )));
-
-                            continue;
-                        }
-                        Control::SnapshotDatabase => {
-                            // Persist current state to disk
-                            self.snapshot_manager.create_snapshot(
-                                &mut self.person_table,
-                                self.transaction_wal.get_current_transaction_id().clone(),
-                            );
-
-                            let flush_transactions = self.transaction_wal.flush_transactions();
-
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully created snapshot: compressed {} txs",
-                                    flush_transactions
-                                )));
-
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            let statement_response = self.apply_transaction(process_statement, false);
-
-            // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
-            let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
-                statement_response,
-            ));
+            // Spawn a new thread for each request
+            thread::spawn(move || {
+                Database::start_thread(thread_rx, database_rw);
+            });
         }
+
+        return RequestManager::new(tx);
+    }
+
+    pub fn query_transaction(
+        &self,
+        statements: Vec<Statement>,
+    ) -> DatabaseCommandTransactionResponse {
+        let query_latest_transaction_id = self.transaction_wal.get_current_transaction_id();
+
+        let mut statement_results: Vec<StatementResult> = Vec::new();
+
+        for statement in statements {
+            let statement_result = self
+                .person_table
+                .query_statement(statement.clone(), query_latest_transaction_id);
+
+            match statement_result {
+                Ok(statement_result) => statement_results.push(statement_result),
+                Err(err) => {
+                    return DatabaseCommandTransactionResponse::Rollback(format!("{}", err))
+                }
+            }
+        }
+
+        DatabaseCommandTransactionResponse::Commit(statement_results)
     }
 
     pub fn apply_transaction(
@@ -522,7 +588,7 @@ mod tests {
         #[test]
         fn update() {
             // 65k tps on M1 MBA
-            let action_generator = |thread: i32, index: u32| {
+            let action_generator = |thread: u32, index: u32| {
                 let id = EntityId(thread.to_string());
                 let full_name = format!("Full Name {}-{}", thread, index);
                 let email = format!("Email {}-{}", thread, index);
@@ -544,7 +610,7 @@ mod tests {
                 );
             };
 
-            database_test(1, 5, action_generator);
+            database_test(1, 1, 5, action_generator);
         }
 
         #[test]
@@ -557,12 +623,12 @@ mod tests {
                 })
             };
 
-            database_test(1, 5, action_generator);
+            database_test(1, 1, 5, action_generator);
         }
 
         #[test]
         fn get() {
-            let action_generator = |thread_id: i32, index: u32| {
+            let action_generator = |thread_id: u32, index: u32| {
                 let id = EntityId(thread_id.to_string());
                 let full_name = format!("Full Name {}-{}", thread_id, index);
                 let email = format!("Email {}-{}", thread_id, index);
@@ -578,7 +644,7 @@ mod tests {
                 return Statement::Get(id);
             };
 
-            database_test(1, 5, action_generator);
+            database_test(1, 1, 5, action_generator);
         }
     }
 }
@@ -587,48 +653,35 @@ pub mod test_utils {
     use uuid::Uuid;
 
     use crate::{
-        database::{
-            commands::DatabaseCommandRequest,
-            database::{Database, DatabaseOptions},
-            request_manager::RequestManager,
-        },
+        database::database::{Database, DatabaseOptions},
         model::statement::{Statement, StatementResult},
     };
     use std::{
         path::PathBuf,
-        sync::mpsc::{self, Receiver, Sender},
         thread::{self, JoinHandle},
     };
 
     pub fn database_test(
-        worker_threads: i32,
+        worker_threads: u32,
+        database_threads: u32,
         actions: u32,
-        action_generator: fn(i32, u32) -> Statement,
+        action_generator: fn(u32, u32) -> Statement,
     ) {
-        let (database_sender, database_receiver): (
-            Sender<DatabaseCommandRequest>,
-            Receiver<DatabaseCommandRequest>,
-        ) = mpsc::channel();
+        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            .iter()
+            .collect();
 
-        thread::spawn(move || {
-            let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-                .iter()
-                .collect();
+        let options = DatabaseOptions::default().set_data_directory(database_dir);
 
-            log::info!("Database directory: {}", database_dir.display());
-
-            let options = DatabaseOptions::default().set_data_directory(database_dir);
-
-            Database::new(database_receiver, options).run();
-        });
+        let rm = Database::new(options).run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
         for thread_id in 0..worker_threads {
-            let rm = RequestManager::new(database_sender.clone());
+            let rm = rm.clone();
 
             let sender_thread = thread::spawn(move || {
-                for index in 0..actions {
+                for index in 0..(actions / worker_threads) {
                     let statement = action_generator(thread_id, index);
 
                     let action_result = rm
@@ -653,7 +706,8 @@ pub mod test_utils {
         }
 
         // Allows database thread to successfully exit
-        let shutdown_response = RequestManager::new(database_sender.clone())
+        let shutdown_response = rm
+            .clone()
             .send_shutdown_request()
             .expect("Should not timeout");
 

@@ -1,14 +1,11 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::str::from_utf8;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use clap::Parser;
 use database::consts::consts::EntityId;
-use database::database::commands::DatabaseCommandRequest;
 use database::database::database::{Database, DatabaseOptions};
-use database::database::request_manager::RequestManager;
 use database::database::table::row::{UpdatePersonData, UpdateStatement};
 use database::model::person::Person;
 use database::model::statement::Statement; // TCP Stream defines implementation
@@ -40,24 +37,15 @@ fn main() {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let (database_sender, database_receiver): (
-        Sender<DatabaseCommandRequest>,
-        Receiver<DatabaseCommandRequest>,
-    ) = mpsc::channel();
-
-    // Setup database thread
-    thread::spawn(move || {
-        let mut database = Database::new(database_receiver, database_options);
-
-        database.run();
-    });
+    // Setup database
+    let rm = Database::new(database_options).run(5);
 
     let listener = TcpListener::bind(format!("{}:{}", args.address, args.port)).unwrap();
 
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                let request_manager = RequestManager::new(database_sender.clone());
+                let request_manager = rm.clone();
 
                 thread::spawn(move || {
                     println!("Connected stream");

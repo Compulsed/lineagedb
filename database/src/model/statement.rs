@@ -24,6 +24,10 @@ pub enum Statement {
 }
 
 impl Statement {
+    pub fn is_query(&self) -> bool {
+        !self.is_mutation()
+    }
+
     pub fn is_mutation(&self) -> bool {
         match self {
             Statement::Add(_) | Statement::Remove(_) | Statement::Update(_, _) => true,

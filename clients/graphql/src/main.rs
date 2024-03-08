@@ -14,14 +14,8 @@ use database::database::{
     request_manager::RequestManager,
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
+use std::sync::Mutex;
 use std::{io, sync::Arc};
-use std::{
-    sync::{
-        mpsc::{self, Receiver, Sender},
-        Mutex,
-    },
-    thread,
-};
 
 use crate::schema::{create_schema, GraphQLContext, Schema};
 
@@ -37,13 +31,13 @@ async fn graphql_playground() -> impl Responder {
 #[route("/graphql", method = "GET", method = "POST")]
 async fn graphql(
     schema: web::Data<Schema>,
-    database_sender: web::Data<Sender<DatabaseCommandRequest>>,
+    request_manager_ref: web::Data<RequestManager>,
     data: web::Json<GraphQLRequest>,
 ) -> impl Responder {
-    let sender = database_sender.as_ref();
+    let request_manager = request_manager_ref.as_ref();
 
     let graphql_context = GraphQLContext {
-        request_manager: Mutex::new(RequestManager::new(sender.clone())),
+        request_manager: Mutex::new(request_manager.clone()),
     };
 
     let user = data.execute(&schema, &graphql_context).await;
@@ -82,28 +76,14 @@ async fn main() -> io::Result<()> {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let (database_sender, database_receiver): (
-        Sender<DatabaseCommandRequest>,
-        Receiver<DatabaseCommandRequest>,
-    ) = mpsc::channel();
-
-    // Setup database thread
-    thread::spawn(move || {
-        // TOOD: We should improve how we handle panics, problems are as follows:
-        //  1. The database shuts down and all the requests are lost (perhaps we should reset or process should exit?)
-        //  2. The result of a panic is hitting in STD out (colorful info logs mask the plain panic message)
-        let mut database = Database::new(database_receiver, database_options);
-
-        database.run();
-    });
+    let request_manager = Database::new(database_options).run(5);
 
     // Set up Ctrl-C handler
-    let set_handler_database_sender_clone = database_sender.clone();
+    let set_handler_database_sender_clone = request_manager.clone();
 
     ctrlc::set_handler(move || {
-        let clean_up_hander_clone = set_handler_database_sender_clone.clone();
-
-        let shutdown_response = RequestManager::new(clean_up_hander_clone)
+        let shutdown_response = set_handler_database_sender_clone
+            .clone()
             .send_shutdown_request()
             .expect("Should not timeout");
 
@@ -126,7 +106,7 @@ async fn main() -> io::Result<()> {
     HttpServer::new(move || {
         let app = App::new()
             .app_data(Data::from(schema.clone()))
-            .app_data(web::Data::new(database_sender.clone()))
+            .app_data(web::Data::new(request_manager.clone()))
             .service(graphql)
             .service(graphql_playground)
             .wrap(Cors::permissive())
