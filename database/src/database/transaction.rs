@@ -23,7 +23,7 @@ pub struct Transaction {
 
 #[derive(Debug)]
 pub struct TransactionWAL {
-    log_file: File,
+    // log_file: File,
     data_directory: PathBuf,
     current_transaction_id: TransactionId,
     size: usize,
@@ -36,17 +36,17 @@ fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
 
 impl TransactionWAL {
     pub fn new(data_directory: PathBuf) -> Self {
-        fs::create_dir_all(&data_directory)
-            .expect("Should always be able to create a path at data/");
+        // fs::create_dir_all(&data_directory)
+        //     .expect("Should always be able to create a path at data/");
 
-        let log_file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(get_transaction_log_location(data_directory.clone()))
-            .expect("Cannot open file");
+        // let log_file = OpenOptions::new()
+        //     .append(true)
+        //     .create(true)
+        //     .open(get_transaction_log_location(data_directory.clone()))
+        //     .expect("Cannot open file");
 
         Self {
-            log_file,
+            // log_file,
             data_directory: data_directory,
             current_transaction_id: TransactionId::new_first_transaction(),
             size: 0,
@@ -60,13 +60,13 @@ impl TransactionWAL {
 
         self.size = 0;
 
-        fs::remove_file(&path).expect("Unable to remove file");
+        // fs::remove_file(&path).expect("Unable to remove file");
 
-        self.log_file = OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .open(&path)
-            .expect("Cannot open file");
+        // self.log_file = OpenOptions::new()
+        //     .create_new(true)
+        //     .append(true)
+        //     .open(&path)
+        //     .expect("Cannot open file");
 
         flushed_size
     }
@@ -84,20 +84,20 @@ impl TransactionWAL {
         // We do not need to write back to the WAL if we restoring the database
         if !restore {
             // TODO: We should add a transaction lifetime, though it messes with the deserialize trait
-            let transaction_json_line = format!(
-                "{}\n",
-                serde_json::to_string(&Transaction {
-                    id: applied_transaction_id.clone(),
-                    statements: statements.clone(),
-                    status: TransactionStatus::Committed,
-                })
-                .unwrap()
-            );
+            // let transaction_json_line = format!(
+            //     "{}\n",
+            //     serde_json::to_string(&Transaction {
+            //         id: applied_transaction_id.clone(),
+            //         statements: statements.clone(),
+            //         status: TransactionStatus::Committed,
+            //     })
+            //     .unwrap()
+            // );
 
-            let _ = &self
-                .log_file
-                .write_all(transaction_json_line.as_bytes())
-                .unwrap();
+            // let _ = &self
+            //     .log_file
+            //     .write_all(transaction_json_line.as_bytes())
+            //     .unwrap();
 
             // Performs an fsync on the transaction log, ensuring that the transaction is durable
             // https://www.postgresql.org/docs/current/wal-reliability.html

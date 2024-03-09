@@ -13,7 +13,7 @@ use database::{
 use uuid::Uuid;
 
 const WORKER_THREADS: u32 = 2;
-const DATABASE_THREADS: u32 = 1;
+const DATABASE_THREADS: u32 = 2;
 
 /// Actions are split across threads, so this is the total number of actions
 const ACTIONS: u32 = 100;
@@ -135,7 +135,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let email = format!("Email {}-{}", thread_id, index);
 
                 // Perform 5 adds, then the rest will be lists
-                if 1 > index {
+                if 0 > index {
                     return Statement::Add(Person::new(full_name, Some(email)));
                 } else {
                     // Full name is index, which means it will return 'NoResults' and this is a

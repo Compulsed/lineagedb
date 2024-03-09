@@ -96,11 +96,11 @@ impl Default for Metadata {
 }
 
 pub struct SnapshotManager {
-    data_directory: PathBuf,
-    snapshot_file: PersistanceManager<Vec<PersonVersion>>,
-    metadata_file: PersistanceManager<Metadata>,
-    full_name_index_file: PersistanceManager<FullNameIndex>,
-    unique_email_index_file: PersistanceManager<HashMap<String, EntityId>>,
+    // data_directory: PathBuf,
+    // snapshot_file: PersistanceManager<Vec<PersonVersion>>,
+    // metadata_file: PersistanceManager<Metadata>,
+    // full_name_index_file: PersistanceManager<FullNameIndex>,
+    // unique_email_index_file: PersistanceManager<HashMap<String, EntityId>>,
 }
 
 impl SnapshotManager {
@@ -109,62 +109,64 @@ impl SnapshotManager {
             .expect("Should always be able to create a path at data/");
 
         Self {
-            snapshot_file: PersistanceManager::new(&data_directory, FileType::Snapshot),
-            metadata_file: PersistanceManager::new(&data_directory, FileType::Metadata),
-            full_name_index_file: PersistanceManager::new(
-                &data_directory,
-                FileType::SecondaryIndexFullName,
-            ),
-            unique_email_index_file: PersistanceManager::new(
-                &data_directory,
-                FileType::SecondaryIndexUniqueEmail,
-            ),
-            data_directory,
+            // snapshot_file: PersistanceManager::new(&data_directory, FileType::Snapshot),
+            // metadata_file: PersistanceManager::new(&data_directory, FileType::Metadata),
+            // full_name_index_file: PersistanceManager::new(
+            //     &data_directory,
+            //     FileType::SecondaryIndexFullName,
+            // ),
+            // unique_email_index_file: PersistanceManager::new(
+            //     &data_directory,
+            //     FileType::SecondaryIndexUniqueEmail,
+            // ),
+            // data_directory,
         }
     }
 
     pub fn restore_snapshot(&self, table: &mut PersonTable) -> (usize, Metadata) {
-        // -- Table
-        let version_snapshots: Vec<PersonVersion> = self.snapshot_file.read();
+        // // -- Table
+        // let version_snapshots: Vec<PersonVersion> = self.snapshot_file.read();
 
-        let snapeshot_count = version_snapshots.len();
+        // let snapeshot_count = version_snapshots.len();
 
-        // -- Indexes
-        let full_name_index: FullNameIndex = self.full_name_index_file.read();
+        // // -- Indexes
+        // let full_name_index: FullNameIndex = self.full_name_index_file.read();
 
-        let unique_email_index: HashMap<String, EntityId> = self.unique_email_index_file.read();
+        // let unique_email_index: HashMap<String, EntityId> = self.unique_email_index_file.read();
 
-        // -- Perform the restore
-        table.from_restore(version_snapshots, unique_email_index, full_name_index);
+        // // -- Perform the restore
+        // table.from_restore(version_snapshots, unique_email_index, full_name_index);
 
-        let metadata_data: Metadata = self.metadata_file.read();
+        // let metadata_data: Metadata = self.metadata_file.read();
 
-        return (snapeshot_count, metadata_data);
+        // return (snapeshot_count, metadata_data);
+
+        return (0, Metadata::default());
     }
 
     pub fn create_snapshot(&mut self, table: &mut PersonTable, transaction_id: TransactionId) {
-        // -- Table
-        let result = table
-            .apply(Statement::ListLatestVersions, transaction_id.clone())
-            .expect("Should always be able to list latest versions")
-            .list_version();
+        // // -- Table
+        // let result = table
+        //     .apply(Statement::ListLatestVersions, transaction_id.clone())
+        //     .expect("Should always be able to list latest versions")
+        //     .list_version();
 
-        self.snapshot_file.write(&result);
+        // self.snapshot_file.write(&result);
 
-        // -- Metadata
-        self.metadata_file.write(&Metadata {
-            current_transaction_id: transaction_id,
-        });
+        // // -- Metadata
+        // self.metadata_file.write(&Metadata {
+        //     current_transaction_id: transaction_id,
+        // });
 
-        // -- Indexes
-        self.full_name_index_file.write(&table.full_name_index);
+        // // -- Indexes
+        // self.full_name_index_file.write(&table.full_name_index);
 
-        self.unique_email_index_file
-            .write(&table.unique_email_index);
+        // self.unique_email_index_file
+        //     .write(&table.unique_email_index);
     }
 
     pub fn delete_snapshot(&self) {
-        fs::remove_dir_all(&self.data_directory)
-            .expect("Should always exist, folder is created on init");
+        // fs::remove_dir_all(&self.data_directory)
+        //     .expect("Should always exist, folder is created on init");
     }
 }

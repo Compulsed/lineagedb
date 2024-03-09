@@ -97,11 +97,9 @@ impl Database {
         row_count
     }
 
-    fn start_thread(
-        receiver: flume::Receiver<DatabaseCommandRequest>,
-        database_rw: Arc<RwLock<Self>>,
-    ) {
+    fn start_thread(receiver: flume::Receiver<DatabaseCommandRequest>, database_rw: Arc<Self>) {
         loop {
+            // Maybe flume is slow...? 100ms is a _long_ time, we go from 0.3ms to 100ms
             let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
                 Ok(request) => request,
                 Err(e) => {
@@ -126,39 +124,39 @@ impl Database {
                             return;
                         }
                         Control::ResetDatabase => {
-                            let dropped_row_count =
-                                database_rw.write().unwrap().reset_database_state();
+                            // let dropped_row_count =
+                            //     database_rw.write().unwrap().reset_database_state();
 
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully reset database, dropped: {} rows",
-                                    dropped_row_count
-                                )));
+                            // let _ =
+                            //     resolver.send(DatabaseCommandResponse::control_success(&format!(
+                            //         "Successfully reset database, dropped: {} rows",
+                            //         dropped_row_count
+                            //     )));
 
                             continue;
                         }
                         Control::SnapshotDatabase => {
-                            let mut database = database_rw.write().unwrap();
+                            // let mut database = database_rw.write().unwrap();
 
-                            let transaction_id = database
-                                .transaction_wal
-                                .get_current_transaction_id()
-                                .clone();
+                            // let transaction_id = database
+                            //     .transaction_wal
+                            //     .get_current_transaction_id()
+                            //     .clone();
 
-                            let table = &mut database.person_table;
+                            // let table = &mut database.person_table;
 
-                            let snapshot_manager = &mut database.snapshot_manager;
+                            // let snapshot_manager = &mut database.snapshot_manager;
 
-                            // Persist current state to disk
-                            // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
+                            // // Persist current state to disk
+                            // // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
 
-                            let flush_transactions = database.transaction_wal.flush_transactions();
+                            // let flush_transactions = database.transaction_wal.flush_transactions();
 
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully created snapshot: compressed {} txs",
-                                    flush_transactions
-                                )));
+                            // let _ =
+                            //     resolver.send(DatabaseCommandResponse::control_success(&format!(
+                            //         "Successfully created snapshot: compressed {} txs",
+                            //         flush_transactions
+                            //     )));
 
                             continue;
                         }
@@ -167,20 +165,22 @@ impl Database {
             };
 
             // If all statements are read, only use the reader lock
-            let contains_mutation = transaction_statements
-                .iter()
-                .any(|statement| statement.is_mutation());
+            // let contains_mutation = transaction_statements
+            //     .iter()
+            //     .any(|statement| statement.is_mutation());
 
-            let statement_response = match contains_mutation {
-                true => database_rw
-                    .write()
-                    .unwrap()
-                    .apply_transaction(transaction_statements, false),
-                false => database_rw
-                    .read()
-                    .unwrap()
-                    .query_transaction(transaction_statements),
-            };
+            // let statement_response = match contains_mutation {
+            //     true => database_rw
+            //         .write()
+            //         .unwrap()
+            //         .apply_transaction(transaction_statements, false),
+            //     false => database_rw
+            //         .read()
+            //         .unwrap()
+            //         .query_transaction(transaction_statements),
+            // };
+
+            let statement_response = database_rw.query_transaction(transaction_statements);
 
             // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
             let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
@@ -245,7 +245,7 @@ impl Database {
 
         let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
 
-        let database_mutex = Arc::new(RwLock::new(self));
+        let database_mutex = Arc::new(self);
 
         for _ in 0..threads {
             let thread_rx = rx.clone();
