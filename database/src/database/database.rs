@@ -199,47 +199,49 @@ impl Database {
 
         let now = Instant::now();
 
-        // Restore from snapshots
-        // Call chain -> snapshot_manager -> person_table
-        let (snapshot_count, metadata) = self
-            .snapshot_manager
-            .restore_snapshot(&mut self.person_table);
+        if false {
+            // Restore from snapshots
+            // Call chain -> snapshot_manager -> person_table
+            let (snapshot_count, metadata) = self
+                .snapshot_manager
+                .restore_snapshot(&mut self.person_table);
 
-        // If there was a snapshot to restore from we update the transaction log
-        self.transaction_wal
-            .set_current_transaction_id(metadata.current_transaction_id.clone());
-
-        let restored_transactions = TransactionWAL::restore(transaction_log_location);
-        let restored_transaction_count = restored_transactions.len();
-
-        // Then add states from the transaction log
-        for transaction in restored_transactions {
-            let apply_transaction_result = self.apply_transaction(transaction.statements, true);
-
-            if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
-                apply_transaction_result
-            {
-                panic!(
-                    "All committed transactions should be replayable on startup: {}",
-                    rollback_message
-                );
-            }
-        }
-
-        log::info!(
-            "✅ Successful Restore [Duration: {}ms]",
-            now.elapsed().as_millis(),
-        );
-
-        log::info!(
-            "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
-            snapshot_count,
-            restored_transaction_count,
+            // If there was a snapshot to restore from we update the transaction log
             self.transaction_wal
-                .get_current_transaction_id()
-                .to_number()
-                .to_formatted_string(&Locale::en)
-        );
+                .set_current_transaction_id(metadata.current_transaction_id.clone());
+
+            let restored_transactions = TransactionWAL::restore(transaction_log_location);
+            let restored_transaction_count = restored_transactions.len();
+
+            // Then add states from the transaction log
+            for transaction in restored_transactions {
+                let apply_transaction_result = self.apply_transaction(transaction.statements, true);
+
+                if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
+                    apply_transaction_result
+                {
+                    panic!(
+                        "All committed transactions should be replayable on startup: {}",
+                        rollback_message
+                    );
+                }
+            }
+
+            log::info!(
+                "✅ Successful Restore [Duration: {}ms]",
+                now.elapsed().as_millis(),
+            );
+
+            log::info!(
+                "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
+                snapshot_count,
+                restored_transaction_count,
+                self.transaction_wal
+                    .get_current_transaction_id()
+                    .to_number()
+                    .to_formatted_string(&Locale::en)
+            );
+        }
 
         let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
 
@@ -650,16 +652,12 @@ mod tests {
 }
 
 pub mod test_utils {
-    use uuid::Uuid;
 
     use crate::{
-        database::database::{Database, DatabaseOptions},
+        database::{database::Database, request_manager::TaskStatementResponse},
         model::statement::{Statement, StatementResult},
     };
-    use std::{
-        path::PathBuf,
-        thread::{self, JoinHandle},
-    };
+    use std::thread::{self, JoinHandle};
 
     pub fn database_test(
         worker_threads: u32,
@@ -667,13 +665,7 @@ pub mod test_utils {
         actions: u32,
         action_generator: fn(u32, u32) -> Statement,
     ) {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
-
-        let options = DatabaseOptions::default().set_data_directory(database_dir);
-
-        let rm = Database::new(options).run(database_threads);
+        let rm = Database::new_test().run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
@@ -695,6 +687,59 @@ pub mod test_utils {
                         | StatementResult::List(_) => {}
                         _ => panic!("Unexpected response type"),
                     }
+                }
+            });
+
+            sender_threads.push(sender_thread);
+        }
+
+        for thread in sender_threads {
+            thread.join().unwrap();
+        }
+
+        // Allows database thread to successfully exit
+        let shutdown_response = rm
+            .clone()
+            .send_shutdown_request()
+            .expect("Should not timeout");
+
+        assert_eq!(
+            shutdown_response,
+            "Successfully shutdown database".to_string()
+        );
+    }
+
+    /// Sends N items into the channel and then awaits them all at the end. In theory this test
+    /// should be faster because it avoids all the 'ping-pong' of sending and receiving
+    ///
+    /// Note: At the moment we do not validate the results of the actions, but because we use
+    ///     get() we are validating that the transaction did commit
+    pub fn database_test_task(
+        worker_threads: u32,
+        database_threads: u32,
+        actions: u32,
+        action_generator: fn(u32, u32) -> Statement,
+    ) {
+        let rm = Database::new_test().run(database_threads);
+
+        let mut sender_threads: Vec<JoinHandle<()>> = vec![];
+
+        for thread_id in 0..worker_threads {
+            let rm = rm.clone();
+
+            let sender_thread = thread::spawn(move || {
+                let mut task_statement_response: Vec<TaskStatementResponse> = vec![];
+
+                for index in 0..(actions / worker_threads) {
+                    let statement = action_generator(thread_id, index);
+
+                    let action_result = rm.send_transaction_task(vec![statement]);
+
+                    task_statement_response.push(action_result);
+                }
+
+                for statement_response in task_statement_response {
+                    statement_response.get().expect("Should not timeout");
                 }
             });
 

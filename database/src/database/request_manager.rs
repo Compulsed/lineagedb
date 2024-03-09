@@ -262,7 +262,7 @@ fn send_request(
 }
 
 fn get_statement(
-    response: oneshot::Receiver<DatabaseCommandResponse>,
+    response: &oneshot::Receiver<DatabaseCommandResponse>,
 ) -> Result<Vec<StatementResult>, RequestManagerError> {
     let response = response.recv_timeout(Duration::from_secs(10));
 
@@ -276,19 +276,29 @@ fn get_statement(
     }
 }
 
+pub trait Wait {
+    fn wait(&self);
+}
+
 pub struct TaskCommandResponse {
     response: oneshot::Receiver<DatabaseCommandResponse>,
 }
 
 impl TaskCommandResponse {
-    fn send(response: oneshot::Receiver<DatabaseCommandResponse>) -> Self {
+    pub fn send(response: oneshot::Receiver<DatabaseCommandResponse>) -> Self {
         Self { response }
     }
 
-    fn get(&self) -> Result<DatabaseCommandResponse, RequestManagerError> {
+    pub fn get(&self) -> Result<DatabaseCommandResponse, RequestManagerError> {
         let response = self.response.recv_timeout(Duration::from_secs(10));
 
         map_response(response)
+    }
+}
+
+impl Wait for TaskCommandResponse {
+    fn wait(&self) {
+        self.get().expect("Should not timeout");
     }
 }
 
@@ -297,14 +307,20 @@ pub struct TaskStatementResponse {
 }
 
 impl TaskStatementResponse {
-    fn send(request_manager: &RequestManager, statement: Vec<Statement>) -> Self {
+    pub fn send(request_manager: &RequestManager, statement: Vec<Statement>) -> Self {
         Self {
             response: send_request(request_manager, statement),
         }
     }
 
-    fn get(self) -> Result<Vec<StatementResult>, RequestManagerError> {
-        get_statement(self.response)
+    pub fn get(&self) -> Result<Vec<StatementResult>, RequestManagerError> {
+        get_statement(&self.response)
+    }
+}
+
+impl Wait for TaskStatementResponse {
+    fn wait(&self) {
+        self.get().expect("Should not timeout");
     }
 }
 
@@ -313,19 +329,25 @@ pub struct TaskAddResponse {
 }
 
 impl TaskAddResponse {
-    fn send(request_manager: &RequestManager, person: Person) -> Self {
+    pub fn send(request_manager: &RequestManager, person: Person) -> Self {
         Self {
             response: send_request(request_manager, vec![Statement::Add(person)]),
         }
     }
 
-    fn get(self) -> Result<Person, RequestManagerError> {
-        get_statement(self.response).and_then(|mut action_result| {
+    pub fn get(&self) -> Result<Person, RequestManagerError> {
+        get_statement(&self.response).and_then(|mut action_result| {
             Ok(action_result
                 .pop()
                 .expect("single a statement should generate single response")
                 .single())
         })
+    }
+}
+
+impl Wait for TaskAddResponse {
+    fn wait(&self) {
+        self.get().expect("Should not timeout");
     }
 }
 
@@ -344,8 +366,8 @@ impl TaskUpdateResponse {
         }
     }
 
-    fn get(self) -> Result<Person, RequestManagerError> {
-        get_statement(self.response).and_then(|mut action_result| {
+    pub fn get(&self) -> Result<Person, RequestManagerError> {
+        get_statement(&self.response).and_then(|mut action_result| {
             Ok(action_result
                 .pop()
                 .expect("single a statement should generate single response")
@@ -354,19 +376,25 @@ impl TaskUpdateResponse {
     }
 }
 
+impl Wait for TaskUpdateResponse {
+    fn wait(&self) {
+        self.get().expect("Should not timeout");
+    }
+}
+
 pub struct TaskGetResponse {
     response: oneshot::Receiver<DatabaseCommandResponse>,
 }
 
 impl TaskGetResponse {
-    fn send(request_manager: &RequestManager, id: EntityId) -> Self {
+    pub fn send(request_manager: &RequestManager, id: EntityId) -> Self {
         Self {
             response: send_request(request_manager, vec![Statement::Get(id)]),
         }
     }
 
-    fn get(self) -> Result<Option<Person>, RequestManagerError> {
-        get_statement(self.response).and_then(|mut action_result| {
+    pub fn get(&self) -> Result<Option<Person>, RequestManagerError> {
+        get_statement(&self.response).and_then(|mut action_result| {
             Ok(action_result
                 .pop()
                 .expect("single a statement should generate single response")
@@ -380,14 +408,14 @@ pub struct TaskGetVersionResponse {
 }
 
 impl TaskGetVersionResponse {
-    fn send(request_manager: &RequestManager, id: EntityId, version_id: VersionId) -> Self {
+    pub fn send(request_manager: &RequestManager, id: EntityId, version_id: VersionId) -> Self {
         Self {
             response: send_request(request_manager, vec![Statement::GetVersion(id, version_id)]),
         }
     }
 
-    fn get(self) -> Result<Option<Person>, RequestManagerError> {
-        get_statement(self.response).and_then(|mut action_result| {
+    pub fn get(&self) -> Result<Option<Person>, RequestManagerError> {
+        get_statement(&self.response).and_then(|mut action_result| {
             Ok(action_result
                 .pop()
                 .expect("single a statement should generate single response")
@@ -396,24 +424,36 @@ impl TaskGetVersionResponse {
     }
 }
 
+impl Wait for TaskGetVersionResponse {
+    fn wait(&self) {
+        self.get().expect("Should not timeout");
+    }
+}
+
 pub struct TaskListResponse {
     response: oneshot::Receiver<DatabaseCommandResponse>,
 }
 
 impl TaskListResponse {
-    fn send(request_manager: &RequestManager, query: Option<QueryPersonData>) -> Self {
+    pub fn send(request_manager: &RequestManager, query: Option<QueryPersonData>) -> Self {
         Self {
             response: send_request(request_manager, vec![Statement::List(query)]),
         }
     }
 
-    fn get(self) -> Result<Vec<Person>, RequestManagerError> {
-        get_statement(self.response).and_then(|mut action_result| {
+    pub fn get(&self) -> Result<Vec<Person>, RequestManagerError> {
+        get_statement(&self.response).and_then(|mut action_result| {
             Ok(action_result
                 .pop()
                 .expect("single a statement should generate single response")
                 .list())
         })
+    }
+}
+
+impl Wait for TaskListResponse {
+    fn wait(&self) {
+        self.get().expect("Should not timeout");
     }
 }
 
