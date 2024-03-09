@@ -13,7 +13,7 @@ use database::{
 use uuid::Uuid;
 
 const WORKER_THREADS: u32 = 2;
-const DATABASE_THREADS: u32 = 2;
+const DATABASE_THREADS: u32 = 1;
 
 /// Actions are split across threads, so this is the total number of actions
 const ACTIONS: u32 = 100;
