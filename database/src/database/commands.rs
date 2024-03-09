@@ -87,6 +87,24 @@ impl DatabaseCommandResponse {
             DatabaseCommandTransactionResponse::Rollback(message.to_string()),
         )
     }
+
+    pub fn expect_transaction_commit(self) -> Vec<StatementResult> {
+        match self {
+            DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                DatabaseCommandTransactionResponse::Commit(results),
+            ) => results,
+            _ => panic!("Expected a transaction commit"),
+        }
+    }
+
+    pub fn expect_control_success(self) -> String {
+        match self {
+            DatabaseCommandResponse::DatabaseCommandControlResponse(
+                DatabaseCommandControlResponse::Success(message),
+            ) => message,
+            _ => panic!("Expected a control success"),
+        }
+    }
 }
 
 #[derive(Debug)]
