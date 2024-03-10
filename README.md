@@ -134,6 +134,15 @@ RUST_BACKTRACE=1 cargo run
 cargo run --package tcp-server --bin lineagedb-tcp-server
 ```
 
+**Performance**
+
+Tested on an M1 Mac.
+
+```
+Read speed ~800k statements/s
+Write speed ~80k statements/s
+```
+
 **Testing / Benchmarking**
 
 ```
@@ -154,6 +163,7 @@ cargo test --package database "database::database::tests::bulk" -- --nocapture -
 cargo bench --all
 cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to another branch
 ```
+
 
 ## Notes
 
