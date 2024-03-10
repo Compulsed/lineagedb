@@ -142,10 +142,10 @@ impl SnapshotManager {
         return (snapeshot_count, metadata_data);
     }
 
-    pub fn create_snapshot(&mut self, table: &mut PersonTable, transaction_id: TransactionId) {
+    pub fn create_snapshot(&self, table: &PersonTable, transaction_id: TransactionId) {
         // -- Table
         let result = table
-            .apply(Statement::ListLatestVersions, transaction_id.clone())
+            .query_statement(Statement::ListLatestVersions, &transaction_id.clone())
             .expect("Should always be able to list latest versions")
             .list_version();
 

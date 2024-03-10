@@ -9,7 +9,6 @@ use actix_web::{
 use actix_web_lab::respond::Html;
 use clap::Parser;
 use database::database::{
-    commands::DatabaseCommandRequest,
     database::{Database, DatabaseOptions},
     request_manager::RequestManager,
 };
