@@ -29,7 +29,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 })
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -57,7 +63,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 );
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -79,7 +91,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 return Statement::Get(id);
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -101,7 +119,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 }
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -124,7 +148,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 }
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 

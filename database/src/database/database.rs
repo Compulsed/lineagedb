@@ -370,7 +370,7 @@ mod tests {
         },
     };
 
-    use super::test_utils::database_test;
+    use super::test_utils::{database_test, database_test_task};
     use crate::database::commands::DatabaseCommandTransactionResponse;
     use crate::database::database::Database;
     use crate::model::statement::StatementResult;
@@ -585,38 +585,52 @@ mod tests {
     }
 
     mod bulk {
+        use crate::database::table::query::{QueryMatch, QueryPersonData};
+
         use super::*;
 
         #[test]
+        #[ignore]
         fn update() {
-            // 65k tps on M1 MBA
+            // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
+            // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
+            //  We are not technically flushing the WAL to disk, hence why
+            let setup_generator = |thread_id: u32| {
+                Statement::Add(person::Person {
+                    id: EntityId(thread_id.to_string()),
+                    full_name: "Test".to_string(),
+                    email: Some(format!("Email-{}", thread_id)),
+                })
+            };
+
             let action_generator = |thread: u32, index: u32| {
-                let id = EntityId(thread.to_string());
-                let full_name = format!("Full Name {}-{}", thread, index);
-                let email = format!("Email {}-{}", thread, index);
-
-                if index == 0 {
-                    return Statement::Add(Person {
-                        id,
-                        full_name,
-                        email: Some(email),
-                    });
-                }
-
                 return Statement::Update(
-                    id,
+                    EntityId(thread.to_string()),
                     UpdatePersonData {
-                        full_name: UpdateStatement::Set(full_name),
-                        email: UpdateStatement::Set(email),
+                        full_name: UpdateStatement::Set(index.to_string()),
+                        email: UpdateStatement::Set(format!("Email-{}{}", thread, index)),
                     },
                 );
             };
 
-            database_test(1, 1, 5, action_generator);
+            let metrics = database_test(5, 1, 200_000, action_generator, Some(setup_generator));
+
+            // ~82k s/ps on M1 MBA
+            println!("[Sync] Metrics: {:#?}", metrics);
+
+            let metrics =
+                database_test_task(4, 1, 200_000, action_generator, Some(setup_generator));
+
+            // ~82k s/ps on M1 MBA
+            println!("[Sync] Metrics: {:#?}", metrics);
         }
 
         #[test]
+        #[ignore]
         fn add() {
+            // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
+            // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
+            //  We are not technically flushing the WAL to disk, hence why
             let action_generator = |_, _| {
                 Statement::Add(person::Person {
                     id: EntityId::new(),
@@ -625,49 +639,171 @@ mod tests {
                 })
             };
 
-            database_test(1, 1, 5, action_generator);
+            let metrics = database_test(5, 1, 200_000, action_generator, None);
+
+            // ~75k s/ps on M1 MBA
+            println!("[Sync] Metrics: {:#?}", metrics);
+
+            let metrics = database_test_task(4, 1, 200_000, action_generator, None);
+
+            // ~75k s/ps on M1 MBA
+            println!("[Sync] Metrics: {:#?}", metrics);
         }
 
         #[test]
+        #[ignore]
         fn get() {
-            let action_generator = |thread_id: u32, index: u32| {
-                let id = EntityId(thread_id.to_string());
-                let full_name = format!("Full Name {}-{}", thread_id, index);
-                let email = format!("Email {}-{}", thread_id, index);
-
-                if index == 0 {
-                    return Statement::Add(Person {
-                        id,
-                        full_name,
-                        email: Some(email),
-                    });
-                }
-
-                return Statement::Get(id);
+            // Due to the RW Lock allows scaling, scaling reads scales logarithmically with the number of threads
+            let setup_generator = |thread_id: u32| {
+                Statement::Add(person::Person {
+                    id: EntityId(thread_id.to_string()),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                })
             };
 
-            database_test(1, 1, 5, action_generator);
+            let action_generator = |thread_id: u32, _: u32| {
+                return Statement::Get(EntityId(thread_id.to_string()));
+            };
+
+            let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
+
+            // ~300k-400k s/ps on M1 MBA
+            println!("[Sync] Metrics: {:#?}", metrics);
+
+            let metrics =
+                database_test_task(4, 4, 3_000_000, action_generator, Some(setup_generator));
+
+            // ~600k-~900k s/ps on M1 MBA
+            println!("[Async] Metrics: {:#?}", metrics);
+        }
+
+        #[test]
+        #[ignore]
+        fn list() {
+            // Due to the RW Lock allows scaling, scaling reads scales logarithmically with the number of threads
+            let setup_generator = |thread_id: u32| {
+                Statement::Add(person::Person {
+                    id: EntityId(thread_id.to_string()),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                })
+            };
+
+            let action_generator = |_: u32, _: u32| {
+                return Statement::List(Some(QueryPersonData {
+                    full_name: QueryMatch::Any,
+                    email: QueryMatch::Any,
+                }));
+            };
+
+            let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
+
+            // ~300k-400k s/ps on M1 MBA
+            println!("[Sync] Metrics: {:#?}", metrics);
+
+            let metrics =
+                database_test_task(3, 3, 3_000_000, action_generator, Some(setup_generator));
+
+            // ~600k-~900k s/ps on M1 MBA
+            println!("[Async] Metrics: {:#?}", metrics);
         }
     }
 }
 
 pub mod test_utils {
 
+    use num_format::ToFormattedString;
+
     use crate::{
         database::{database::Database, request_manager::TaskStatementResponse},
         model::statement::{Statement, StatementResult},
     };
-    use std::thread::{self, JoinHandle};
+    use std::{
+        fmt::Debug,
+        thread::{self, JoinHandle},
+        time::{Duration, Instant},
+    };
+
+    #[derive(Debug)]
+    pub enum Mode {
+        Single,
+        Task,
+    }
+
+    pub struct TestMetrics {
+        pub test_duration: Duration,
+        pub statements: u32,
+        pub mode: Mode,
+    }
+
+    impl TestMetrics {
+        pub fn new(mode: Mode, test_duration: Duration, statements: u32) -> Self {
+            Self {
+                mode,
+                test_duration,
+                statements,
+            }
+        }
+    }
+
+    impl Debug for TestMetrics {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let duration_ms = format!(
+                "{}ms",
+                self.test_duration
+                    .as_millis()
+                    .to_formatted_string(&num_format::Locale::en)
+            );
+
+            let statements_per_second =
+                ((self.statements as f64 / self.test_duration.as_secs_f64()) as u32)
+                    .to_formatted_string(&num_format::Locale::en);
+
+            f.debug_struct("TestMetrics")
+                .field("mode", &self.mode)
+                .field("test_duration", &duration_ms)
+                .field(
+                    "actions",
+                    &self.statements.to_formatted_string(&num_format::Locale::en),
+                )
+                .field("statements/s", &statements_per_second)
+                .finish()
+        }
+    }
 
     pub fn database_test(
         worker_threads: u32,
         database_threads: u32,
         actions: u32,
         action_generator: fn(u32, u32) -> Statement,
-    ) {
+        setup_generator: Option<fn(u32) -> Statement>,
+    ) -> TestMetrics {
         let rm = Database::new_test().run(database_threads);
 
+        // All setup is performed in the same thread, is synchronous, and is not included in the timer
+        if let Some(setup) = setup_generator {
+            for thread_id in 0..worker_threads {
+                let rm = rm.clone();
+
+                let statement = setup(thread_id);
+
+                let action_result = rm
+                    .send_single_statement(statement)
+                    .expect("Should not timeout");
+
+                match action_result {
+                    StatementResult::Single(_)
+                    | StatementResult::GetSingle(_)
+                    | StatementResult::List(_) => {}
+                    _ => panic!("Unexpected response type"),
+                }
+            }
+        }
+
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
+
+        let now = Instant::now();
 
         for thread_id in 0..worker_threads {
             let rm = rm.clone();
@@ -697,6 +833,8 @@ pub mod test_utils {
             thread.join().unwrap();
         }
 
+        let metrics = TestMetrics::new(Mode::Single, now.elapsed(), actions);
+
         // Allows database thread to successfully exit
         let shutdown_response = rm
             .clone()
@@ -707,6 +845,8 @@ pub mod test_utils {
             shutdown_response,
             "Successfully shutdown database".to_string()
         );
+
+        metrics
     }
 
     /// Sends N items into the channel and then awaits them all at the end. In theory this test
@@ -719,10 +859,33 @@ pub mod test_utils {
         database_threads: u32,
         actions: u32,
         action_generator: fn(u32, u32) -> Statement,
-    ) {
+        setup_generator: Option<fn(u32) -> Statement>,
+    ) -> TestMetrics {
         let rm = Database::new_test().run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
+
+        // All setup is performed in the same thread, is synchronous, and is not included in the timer
+        if let Some(setup) = setup_generator {
+            for thread_id in 0..worker_threads {
+                let rm = rm.clone();
+
+                let statement = setup(thread_id);
+
+                let action_result = rm
+                    .send_single_statement(statement)
+                    .expect("Should not timeout");
+
+                match action_result {
+                    StatementResult::Single(_)
+                    | StatementResult::GetSingle(_)
+                    | StatementResult::List(_) => {}
+                    _ => panic!("Unexpected response type"),
+                }
+            }
+        }
+
+        let now = Instant::now();
 
         for thread_id in 0..worker_threads {
             let rm = rm.clone();
@@ -750,6 +913,8 @@ pub mod test_utils {
             thread.join().unwrap();
         }
 
+        let metrics = TestMetrics::new(Mode::Task, now.elapsed(), actions);
+
         // Allows database thread to successfully exit
         let shutdown_response = rm
             .clone()
@@ -760,5 +925,7 @@ pub mod test_utils {
             shutdown_response,
             "Successfully shutdown database".to_string()
         );
+
+        metrics
     }
 }
