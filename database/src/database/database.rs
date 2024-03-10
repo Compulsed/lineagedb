@@ -9,10 +9,7 @@ use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
-    database::{
-        commands::{Control, DatabaseCommand, DatabaseCommandResponse},
-        snapshot,
-    },
+    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
     model::statement::{Statement, StatementResult},
 };
 
@@ -26,12 +23,18 @@ use super::{
 
 pub struct DatabaseOptions {
     data_directory: PathBuf,
+    restore: bool,
 }
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
     pub fn set_data_directory(mut self, data_directory: PathBuf) -> Self {
         self.data_directory = data_directory;
+        self
+    }
+
+    pub fn set_restore(mut self, restore: bool) -> Self {
+        self.restore = restore;
         self
     }
 }
@@ -41,6 +44,7 @@ impl Default for DatabaseOptions {
         // Defaults to $CDW/data
         Self {
             data_directory: PathBuf::from("data"),
+            restore: true,
         }
     }
 }
@@ -73,7 +77,9 @@ impl Database {
             .iter()
             .collect();
 
-        let options = DatabaseOptions::default().set_data_directory(database_dir);
+        let options = DatabaseOptions::default()
+            .set_data_directory(database_dir)
+            .set_restore(false);
 
         Self {
             person_table: PersonTable::new(),
@@ -145,12 +151,12 @@ impl Database {
                                 .get_current_transaction_id()
                                 .clone();
 
-                            let table = &mut database.person_table;
-
-                            let snapshot_manager = &mut database.snapshot_manager;
+                            let table = &database.person_table;
 
                             // Persist current state to disk
-                            // snapshot_manager.create_snapshot(table, transaction_id); -- TODO: Cannot mut borrow here
+                            database
+                                .snapshot_manager
+                                .create_snapshot(table, transaction_id);
 
                             let flush_transactions = database.transaction_wal.flush_transactions();
 
@@ -197,10 +203,9 @@ impl Database {
             transaction_log_location.display()
         );
 
-        let now = Instant::now();
+        if self.database_options.restore {
+            let now = Instant::now();
 
-        if false {
-            // Restore from snapshots
             // Call chain -> snapshot_manager -> person_table
             let (snapshot_count, metadata) = self
                 .snapshot_manager
@@ -221,7 +226,7 @@ impl Database {
                     apply_transaction_result
                 {
                     panic!(
-                        "All committed transactions should be replayable on startup: {}",
+                        "All committed transactions should be replay-able on startup: {}",
                         rollback_message
                     );
                 }
