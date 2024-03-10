@@ -13,6 +13,9 @@ use database::{
 use uuid::Uuid;
 
 const WORKER_THREADS: u32 = 2;
+
+/// There appears to be a weird issue where benchmarking with multiple threads kills performance
+/// by 100x 800us -> 80ms. Do not increase the thread count until this is resolved
 const DATABASE_THREADS: u32 = 1;
 
 /// Actions are split across threads, so this is the total number of actions
