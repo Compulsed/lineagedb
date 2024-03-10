@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use database::{
     consts::consts::EntityId,
     database::{
-        database::test_utils::database_test,
+        database::test_utils::{database_test, database_test_task},
         table::{
             query::{QueryMatch, QueryPersonData},
             row::{UpdatePersonData, UpdateStatement},
@@ -13,6 +13,9 @@ use database::{
 use uuid::Uuid;
 
 const WORKER_THREADS: u32 = 2;
+
+/// There appears to be a weird issue where benchmarking with multiple threads kills performance
+/// by 100x 800us -> 80ms. Do not increase the thread count until this is resolved
 const DATABASE_THREADS: u32 = 1;
 
 /// Actions are split across threads, so this is the total number of actions
@@ -29,7 +32,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 })
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -57,7 +66,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 );
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -79,7 +94,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 return Statement::Get(id);
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -101,7 +122,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 }
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 
@@ -124,7 +151,36 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 }
             };
 
-            database_test(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
+        })
+    });
+
+    c.bench_function("indexed list task", |b| {
+        b.iter(|| {
+            let action_generator = |thread_id: u32, index: u32| {
+                let full_name = format!("Full Name {}-{}", thread_id, index);
+                let email = format!("Email {}-{}", thread_id, index);
+
+                // Perform 5 adds, then the rest will be lists
+                if 1 > index {
+                    return Statement::Add(Person::new(full_name, Some(email)));
+                } else {
+                    // Full name is index, which means it will return 'NoResults' and this is a
+                    //  must faster path
+                    return Statement::List(Some(QueryPersonData {
+                        full_name: QueryMatch::Value("Will never match".to_string()),
+                        email: QueryMatch::Any,
+                    }));
+                }
+            };
+
+            database_test_task(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
         })
     });
 }

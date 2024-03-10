@@ -134,15 +134,36 @@ RUST_BACKTRACE=1 cargo run
 cargo run --package tcp-server --bin lineagedb-tcp-server
 ```
 
+**Performance**
+
+Tested on an M1 Mac.
+
+```
+Read speed ~800k statements/s
+Write speed ~80k statements/s
+```
+
 **Testing / Benchmarking**
 
 ```
+# Quick functional unit tests
 cargo test --all
 
+# Running performance unit tests
+# Notes:
+# 1. Running these tests one after another will yield different results to
+#   running them individually. I suspect this could be because the OS' cleaning up allocated memory.
+# 2. These tests will yield different results based on whether the laptop is charging or not
+cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored
+
 # Benchmarking https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
+# There appears to be an issue with 'benchmark' that spin up multiple
+#   threads in the database. It causes 100x performance lags. 800us to 80ms
+# Seems that the performance unit tests are a more reliable indicator
 cargo bench --all
 cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to another branch
 ```
+
 
 ## Notes
 
