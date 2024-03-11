@@ -12,7 +12,8 @@ Current limitations:
 1. Does not support session based transactions, statements in a transaction must be sent all at once
 1. Transaction durability is not yet resilient to power failures (system does not yet use fsync)
 1. Does not support DDL statements, at the moment the system is limited to a single entity (Person)
-1. There are no concurrent transactions, the database is currently single threaded
+1. Database Multi-threading is limited to a single writer / multiple readers (via a Reader Writer database lock).
+   1. This limits reading whilst writing, once correctly implemented MVCC should allow reads while there are writes
 1. The working dataset must fit entirely within memory, there is no storage pool / disk paging
 1. Does not have an SQL frontend
 1. Has limited querying capabilities, just `AND`, no `OR`, `IN`, etc.
