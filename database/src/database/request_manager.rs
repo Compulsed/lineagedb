@@ -190,7 +190,7 @@ impl RequestManager {
         //  on the response_receiver once it's finished processing it's request
         self.database_sender.send(request).unwrap();
 
-        let response = response_receiver.recv_timeout(Duration::from_secs(10));
+        let response = response_receiver.recv_timeout(Duration::from_secs(30));
 
         map_response(response)
     }
@@ -264,7 +264,7 @@ fn send_request(
 fn get_statement(
     response: &oneshot::Receiver<DatabaseCommandResponse>,
 ) -> Result<Vec<StatementResult>, RequestManagerError> {
-    let response = response.recv_timeout(Duration::from_secs(10));
+    let response = response.recv_timeout(Duration::from_secs(30));
 
     let command_result = map_response(response)?;
 
@@ -290,7 +290,7 @@ impl TaskCommandResponse {
     }
 
     pub fn get(&self) -> Result<DatabaseCommandResponse, RequestManagerError> {
-        let response = self.response.recv_timeout(Duration::from_secs(10));
+        let response = self.response.recv_timeout(Duration::from_secs(30));
 
         map_response(response)
     }
