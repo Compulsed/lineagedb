@@ -180,7 +180,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 }
             };
 
-            database_test_task(WORKER_THREADS, DATABASE_THREADS, ACTIONS, action_generator);
+            database_test_task(
+                WORKER_THREADS,
+                DATABASE_THREADS,
+                ACTIONS,
+                action_generator,
+                None,
+            );
         })
     });
 }
