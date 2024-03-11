@@ -659,14 +659,14 @@ mod tests {
 
             // ~82k s/ps on M1 MBA
             if SYNC_WRITE_ENABLED {
-                let metrics = database_test(5, 1, 200_000, action_generator, Some(setup_generator));
+                let metrics = database_test(5, 1, 500_000, action_generator, Some(setup_generator));
                 println!("[SYNC] Metrics: {:#?}", metrics);
             }
 
             let metrics =
-                database_test_task(4, 1, 200_000, action_generator, Some(setup_generator));
+                database_test_task(4, 1, 500_000, action_generator, Some(setup_generator));
 
-            // ~82k s/ps on M1 MBA
+            // ~150k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
         }
 
@@ -686,13 +686,13 @@ mod tests {
 
             // ~75k s/ps on M1 MBA
             if SYNC_WRITE_ENABLED {
-                let metrics = database_test(5, 1, 200_000, action_generator, None);
+                let metrics = database_test(5, 1, 500_000, action_generator, None);
                 println!("[SYNC] Metrics: {:#?}", metrics);
             }
 
-            let metrics = database_test_task(4, 1, 200_000, action_generator, None);
+            let metrics = database_test_task(4, 1, 500_000, action_generator, None);
 
-            // ~75k s/ps on M1 MBA
+            // ~150k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
         }
 
