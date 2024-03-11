@@ -55,6 +55,14 @@ enum CommitStatus {
     Rollback(String),
 }
 
+/// Transactions can be created from a client submitting a request or from a restore operation
+pub enum ApplyMode {
+    /// Return the result of the transaction to the client
+    Request(oneshot::Sender<DatabaseCommandResponse>),
+    /// Do not return the result of the transaction to the client
+    Restore,
+}
+
 pub struct Database {
     person_table: PersonTable,
     transaction_wal: TransactionWAL,
@@ -177,21 +185,26 @@ impl Database {
                 .iter()
                 .any(|statement| statement.is_mutation());
 
-            let statement_response = match contains_mutation {
-                true => database_rw
-                    .write()
-                    .unwrap()
-                    .apply_transaction(transaction_statements, false),
-                false => database_rw
-                    .read()
-                    .unwrap()
-                    .query_transaction(transaction_statements),
-            };
+            match contains_mutation {
+                true => {
+                    // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
+                    let _ = database_rw
+                        .write()
+                        .unwrap()
+                        .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
+                }
+                false => {
+                    // As there is no WAL, we can just read from the database and send the response
+                    let response = database_rw
+                        .read()
+                        .unwrap()
+                        .query_transaction(transaction_statements);
 
-            // Sends the response data back to the caller of the request (i.e.), the entity on the other end of the channel
-            let _ = resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
-                statement_response,
-            ));
+                    let _ = resolver.send(
+                        DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
+                    );
+                }
+            };
         }
     }
 
@@ -220,13 +233,14 @@ impl Database {
 
             // Then add states from the transaction log
             for transaction in restored_transactions {
-                let apply_transaction_result = self.apply_transaction(transaction.statements, true);
+                let apply_transaction_result =
+                    self.apply_transaction(transaction.statements, ApplyMode::Restore);
 
                 if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
                     apply_transaction_result
                 {
                     panic!(
-                        "All committed transactions should be replay-able on startup: {}",
+                        "All committed transactions should be replayable on startup: {}",
                         rollback_message
                     );
                 }
@@ -292,7 +306,7 @@ impl Database {
     pub fn apply_transaction(
         &mut self,
         statements: Vec<Statement>,
-        restore: bool,
+        mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
         let applying_transaction_id = self
             .transaction_wal
@@ -328,22 +342,28 @@ impl Database {
 
         match status {
             CommitStatus::Commit => {
-                if !restore {
+                if let ApplyMode::Request(_) = &mode {
                     log::info!("✅ Committed: [TX: {}]", &applying_transaction_id);
                 }
-
-                self.transaction_wal
-                    .commit(applying_transaction_id, statements, restore);
 
                 let action_result_stack: Vec<StatementResult> = statement_stack
                     .into_iter()
                     .map(|action_and_result| action_and_result.result)
                     .collect();
 
-                DatabaseCommandTransactionResponse::Commit(action_result_stack)
+                let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
+
+                self.transaction_wal.commit(
+                    applying_transaction_id,
+                    statements,
+                    DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
+                    mode,
+                );
+
+                return response;
             }
             CommitStatus::Rollback(error_status) => {
-                if !restore {
+                if let ApplyMode::Request(_) = &mode {
                     log::info!("⚠️  Rolled back: [TX: {}]", &applying_transaction_id);
                 }
 
@@ -354,6 +374,14 @@ impl Database {
                 } in statement_stack.into_iter().rev()
                 {
                     self.person_table.apply_rollback(statement)
+                }
+
+                // Rollbacks are not committed to the WAL so we can just return the response
+                if let ApplyMode::Request(resolver) = mode {
+                    let _ =
+                        resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                            DatabaseCommandTransactionResponse::Rollback(error_status.clone()),
+                        ));
                 }
 
                 DatabaseCommandTransactionResponse::Rollback(error_status)
@@ -382,6 +410,8 @@ mod tests {
 
     mod add {
 
+        use crate::database::database::ApplyMode;
+
         use super::*;
 
         #[test]
@@ -390,8 +420,8 @@ mod tests {
 
             let person = Person::new_test();
 
-            let transcation_result =
-                database.apply_transaction(vec![Statement::Add(person.clone())], false);
+            let transcation_result = database
+                .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
 
             assert_eq!(
                 transcation_result,
@@ -407,8 +437,8 @@ mod tests {
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
-            let transcation_result_one =
-                database.apply_transaction(vec![Statement::Add(person_one.clone())], false);
+            let transcation_result_one = database
+                .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
 
             assert_eq!(
                 transcation_result_one,
@@ -421,8 +451,8 @@ mod tests {
             let person_two: Person =
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let transcation_result_two =
-                database.apply_transaction(vec![Statement::Add(person_two.clone())], false);
+            let transcation_result_two = database
+                .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
 
             assert_eq!(
                 transcation_result_two,
@@ -445,7 +475,7 @@ mod tests {
                     Statement::Add(person_one.clone()),
                     Statement::Add(person_two.clone()),
                 ],
-                false,
+                ApplyMode::Restore,
             );
 
             assert_eq!(
@@ -476,7 +506,7 @@ mod tests {
                     Statement::Add(person_one.clone()),
                     Statement::Add(person_two.clone()),
                 ],
-                false,
+                ApplyMode::Restore,
             );
 
             let action_error = process_action_result;
@@ -493,7 +523,7 @@ mod tests {
     }
 
     mod transaction_rollback {
-        use crate::consts::consts::TransactionId;
+        use crate::{consts::consts::TransactionId, database::database::ApplyMode};
 
         use super::*;
 
@@ -505,7 +535,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let error_message = database.apply_transaction(rollback_actions, false);
+            let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
             // The transaction log will be empty
             assert_eq!(
@@ -525,7 +555,7 @@ mod tests {
             let rollback_actions = create_rollback_statements();
 
             // When a rollback happens
-            database.apply_transaction(rollback_actions, false);
+            database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
             // Then there should be no items in the transaction log
             assert_eq!(
@@ -543,7 +573,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let _ = database.apply_transaction(rollback_actions, false);
+            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
             // Then the items at the start of the transaction, should be emptied from the index
             assert_eq!(
@@ -561,7 +591,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let _ = database.apply_transaction(rollback_actions, false);
+            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
             // The row that was created for the item is removed
             assert_eq!(
@@ -594,6 +624,15 @@ mod tests {
 
         use super::*;
 
+        // The sync tests work by sending a single statement, waiting for a response and THEN
+        //  sending the next statement. Due to the fact we batch process file system writes, this
+        //  is not a good test for performance. Due to this batch processing the minimum time for
+        //  a single statement is 1-3ms, so the minimum time for 100 statements is 100ms.
+        //
+        // This is not an issue with async tests because we submit all the statements at once and
+        //  then wait for all of them to respond.
+        const SYNC_WRITE_ENABLED: bool = false;
+
         #[test]
         #[ignore]
         fn update() {
@@ -618,16 +657,17 @@ mod tests {
                 );
             };
 
-            let metrics = database_test(5, 1, 200_000, action_generator, Some(setup_generator));
-
             // ~82k s/ps on M1 MBA
-            println!("[Sync] Metrics: {:#?}", metrics);
+            if SYNC_WRITE_ENABLED {
+                let metrics = database_test(5, 1, 200_000, action_generator, Some(setup_generator));
+                println!("[SYNC] Metrics: {:#?}", metrics);
+            }
 
             let metrics =
                 database_test_task(4, 1, 200_000, action_generator, Some(setup_generator));
 
             // ~82k s/ps on M1 MBA
-            println!("[Sync] Metrics: {:#?}", metrics);
+            println!("[ASYNC] Metrics: {:#?}", metrics);
         }
 
         #[test]
@@ -644,15 +684,16 @@ mod tests {
                 })
             };
 
-            let metrics = database_test(5, 1, 200_000, action_generator, None);
-
             // ~75k s/ps on M1 MBA
-            println!("[Sync] Metrics: {:#?}", metrics);
+            if SYNC_WRITE_ENABLED {
+                let metrics = database_test(5, 1, 200_000, action_generator, None);
+                println!("[SYNC] Metrics: {:#?}", metrics);
+            }
 
             let metrics = database_test_task(4, 1, 200_000, action_generator, None);
 
             // ~75k s/ps on M1 MBA
-            println!("[Sync] Metrics: {:#?}", metrics);
+            println!("[ASYNC] Metrics: {:#?}", metrics);
         }
 
         #[test]
@@ -671,16 +712,15 @@ mod tests {
                 return Statement::Get(EntityId(thread_id.to_string()));
             };
 
-            let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
-
             // ~300k-400k s/ps on M1 MBA
-            println!("[Sync] Metrics: {:#?}", metrics);
+            let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
+            println!("[SYNC] Metrics: {:#?}", metrics);
 
             let metrics =
                 database_test_task(4, 4, 3_000_000, action_generator, Some(setup_generator));
 
             // ~600k-~900k s/ps on M1 MBA
-            println!("[Async] Metrics: {:#?}", metrics);
+            println!("[ASYNC] Metrics: {:#?}", metrics);
         }
 
         #[test]
@@ -705,13 +745,13 @@ mod tests {
             let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
 
             // ~300k-400k s/ps on M1 MBA
-            println!("[Sync] Metrics: {:#?}", metrics);
+            println!("[SYNC] Metrics: {:#?}", metrics);
 
             let metrics =
                 database_test_task(3, 3, 3_000_000, action_generator, Some(setup_generator));
 
             // ~600k-~900k s/ps on M1 MBA
-            println!("[Async] Metrics: {:#?}", metrics);
+            println!("[ASYNC] Metrics: {:#?}", metrics);
         }
     }
 }

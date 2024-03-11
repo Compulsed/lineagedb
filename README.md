@@ -1,16 +1,14 @@
 # Lineage DB
 
 Lineage DB is an educational MVCC database and has the following functionality:
-1. Supports ACID transactions (* with an exception to durability, * everything currently runs as serialization)
+1. Supports ACID transactions (* everything currently runs as serialization)
 1. Utilizes a WAL for performant writes / supports trimming the WAL
 1. Time travel; query the database at any given transaction id (* assuming the previous transactions are untrimmed)
 1. For any given item can look at all revisions (* assuming the previous transactions are untrimmed)
 1. Supports index based queries
 
-
 Current limitations:
 1. Does not support session based transactions, statements in a transaction must be sent all at once
-1. Transaction durability is not yet resilient to power failures (system does not yet use fsync)
 1. Does not support DDL statements, at the moment the system is limited to a single entity (Person)
 1. Database Multi-threading is limited to a single writer / multiple readers (via a Reader Writer database lock).
    1. This limits reading whilst writing, once correctly implemented MVCC should allow reads while there are writes
@@ -155,7 +153,7 @@ cargo test --all
 # 1. Running these tests one after another will yield different results to
 #   running them individually. I suspect this could be because the OS' cleaning up allocated memory.
 # 2. These tests will yield different results based on whether the laptop is charging or not
-cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored
+cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
 
 # Benchmarking https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
 # There appears to be an issue with 'benchmark' that spin up multiple
