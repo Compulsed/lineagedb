@@ -45,7 +45,7 @@ struct TransactionCommitData {
 
 fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
     // Defaults to $CWD/data/transaction_log.json, but $CWD/data can be overridden via the CLI
-    data_directory.join("transaction_log.json")
+    data_directory.join("transaction_log.dat")
 }
 
 impl TransactionWAL {
@@ -82,17 +82,16 @@ impl TransactionWAL {
                         resolver,
                     } = transaction_data;
 
-                    let transaction_json_line = format!(
-                        "{}\n",
-                        serde_json::to_string(&Transaction {
-                            id: applied_transaction_id.clone(),
-                            statements: statements,
-                            status: TransactionStatus::Committed,
-                        })
-                        .unwrap()
-                    );
+                    let mut serialized: Vec<u8> = serde_bare::to_vec(&Transaction {
+                        id: applied_transaction_id.clone(),
+                        statements: statements,
+                        status: TransactionStatus::Committed,
+                    })
+                    .unwrap();
 
-                    file.write_all(transaction_json_line.as_bytes()).unwrap();
+                    serialized.push(b'\n');
+
+                    file.write(&serialized).expect("Cannot write to file");
 
                     batch.push((resolver, response));
                 }
@@ -181,20 +180,18 @@ impl TransactionWAL {
             Err(_) => return vec![],
         };
 
-        let mut contents = String::new();
+        let mut slice: Vec<u8> = Vec::new();
 
-        file.read_to_string(&mut contents).unwrap();
+        file.read_to_end(&mut slice).unwrap();
 
         let mut transactions: Vec<Transaction> = vec![];
 
-        for transaction_string in contents.split('\n') {
-            if transaction_string.is_empty() {
-                continue;
+        for data in slice.split(|&x| x == b'\n') {
+            if !data.is_empty() {
+                let transaction: Transaction = serde_bare::from_slice(&data).unwrap();
+
+                transactions.push(transaction);
             }
-
-            let transaction: Transaction = serde_json::from_str(transaction_string).unwrap();
-
-            transactions.push(transaction);
         }
 
         transactions

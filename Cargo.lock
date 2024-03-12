@@ -797,6 +797,7 @@ dependencies = [
  "oneshot",
  "rstest",
  "serde",
+ "serde_bare",
  "serde_json",
  "thiserror",
  "uuid 1.7.0",
@@ -1951,6 +1952,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63261df402c67811e9ac6def069e4786148c4563f4b50fd4bf30aa370d626b02"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bare"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51c55386eed0f1ae957b091dc2ca8122f287b60c79c774cbe3d5f2b69fded660"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
