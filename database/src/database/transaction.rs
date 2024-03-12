@@ -45,7 +45,7 @@ struct TransactionCommitData {
 
 fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
     // Defaults to $CWD/data/transaction_log.json, but $CWD/data can be overridden via the CLI
-    data_directory.join("transaction_log.dat")
+    data_directory.join("transaction_log.data")
 }
 
 impl TransactionWAL {

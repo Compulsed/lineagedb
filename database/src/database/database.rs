@@ -66,7 +66,7 @@ pub enum ApplyMode {
 pub struct Database {
     person_table: PersonTable,
     transaction_wal: TransactionWAL,
-    database_options: DatabaseOptions,
+    pub database_options: DatabaseOptions,
     snapshot_manager: SnapshotManager,
 }
 
@@ -906,7 +906,14 @@ pub mod test_utils {
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
     ) -> TestMetrics {
-        let rm = Database::new_test().run(database_threads);
+        let database = Database::new_test();
+
+        println!(
+            "\nDatabase output location: {}",
+            database.database_options.data_directory.display()
+        );
+
+        let rm = database.run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
