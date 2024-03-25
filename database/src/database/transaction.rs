@@ -73,7 +73,7 @@ impl TransactionWAL {
                     vec![];
 
                 for transaction_data in receiver.try_iter() {
-                    let mut file = worker_log_file.lock().unwrap();
+                    // let mut file = worker_log_file.lock().unwrap();
 
                     let TransactionCommitData {
                         applied_transaction_id,
@@ -82,17 +82,17 @@ impl TransactionWAL {
                         resolver,
                     } = transaction_data;
 
-                    let transaction_json_line = format!(
-                        "{}\n",
-                        serde_json::to_string(&Transaction {
-                            id: applied_transaction_id.clone(),
-                            statements: statements,
-                            status: TransactionStatus::Committed,
-                        })
-                        .unwrap()
-                    );
+                    // let transaction_json_line = format!(
+                    //     "{}\n",
+                    //     serde_json::to_string(&Transaction {
+                    //         id: applied_transaction_id.clone(),
+                    //         statements: statements,
+                    //         status: TransactionStatus::Committed,
+                    //     })
+                    //     .unwrap()
+                    // );
 
-                    file.write_all(transaction_json_line.as_bytes()).unwrap();
+                    // file.write_all(transaction_json_line.as_bytes()).unwrap();
 
                     batch.push((resolver, response));
                 }
@@ -106,7 +106,7 @@ impl TransactionWAL {
                 //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
                 //
                 // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
-                let _ = file.sync_all().unwrap();
+                // let _ = file.sync_all().unwrap();
 
                 for (resolver, response) in batch {
                     let _ = resolver.send(response);

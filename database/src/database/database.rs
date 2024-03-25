@@ -66,7 +66,7 @@ pub enum ApplyMode {
 pub struct Database {
     person_table: PersonTable,
     transaction_wal: TransactionWAL,
-    database_options: DatabaseOptions,
+    pub database_options: DatabaseOptions,
     snapshot_manager: SnapshotManager,
 }
 
@@ -619,6 +619,31 @@ mod tests {
         }
     }
 
+    mod test_utils {
+        use uuid::Uuid;
+
+        use crate::{
+            consts::consts::EntityId,
+            database::database::test_utils::DatabaseTest,
+            model::{person::Person, statement::Statement},
+        };
+
+        #[test]
+        fn decouple_set_up_from_run() {
+            let action_generator = |_, _| {
+                Statement::Add(Person {
+                    id: EntityId::new(),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                })
+            };
+
+            let db_test = DatabaseTest::new(5, 2, 100, action_generator, None);
+
+            db_test.start();
+        }
+    }
+
     mod bulk {
         use crate::database::table::query::{QueryMatch, QueryPersonData};
 
@@ -676,21 +701,21 @@ mod tests {
             // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
             // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
             //  We are not technically flushing the WAL to disk, hence why
-            let action_generator = |_, _| {
+            let action_generator = |thread, i| {
                 Statement::Add(person::Person {
                     id: EntityId::new(),
                     full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
+                    email: Some(format!("Email-{}{}", thread, i)),
                 })
             };
 
             // ~75k s/ps on M1 MBA
             if SYNC_WRITE_ENABLED {
-                let metrics = database_test(5, 1, 500_000, action_generator, None);
+                let metrics = database_test(5, 1, 1_000_000, action_generator, None);
                 println!("[SYNC] Metrics: {:#?}", metrics);
             }
 
-            let metrics = database_test_task(4, 1, 500_000, action_generator, None);
+            let metrics = database_test_task(4, 1, 1_000_000, action_generator, None);
 
             // ~150k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
@@ -761,11 +786,18 @@ pub mod test_utils {
     use num_format::ToFormattedString;
 
     use crate::{
-        database::{database::Database, request_manager::TaskStatementResponse},
+        database::{
+            database::Database,
+            request_manager::{RequestManager, TaskStatementResponse},
+        },
         model::statement::{Statement, StatementResult},
     };
     use std::{
         fmt::Debug,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
@@ -814,6 +846,70 @@ pub mod test_utils {
                 )
                 .field("statements/s", &statements_per_second)
                 .finish()
+        }
+    }
+
+    pub struct DatabaseTest {
+        request_manager: RequestManager,
+        worker_threads: u32,
+    }
+
+    impl DatabaseTest {
+        pub fn new(worker_threads: u32, database_threads: u32) -> Self {
+            let rm = Database::new_test().run(database_threads);
+
+            Self {
+                request_manager: rm,
+                worker_threads,
+            }
+        }
+
+        pub fn set_up_thread_pool(
+            &self,
+            actions: u32,
+            action_generator: fn(u32, u32) -> Statement,
+        ) {
+            for thread_id in 0..self.worker_threads {
+                let rm = self.request_manager.clone();
+
+                thread::spawn(move || loop {
+                    for index in 0..actions {
+                        let statement = action_generator(thread_id, index);
+
+                        let action_result = rm
+                            .send_single_statement(statement)
+                            .expect("Should not timeout");
+
+                        match action_result {
+                            StatementResult::Single(_)
+                            | StatementResult::GetSingle(_)
+                            | StatementResult::List(_) => {}
+                            _ => panic!("Unexpected response type"),
+                        }
+                    }
+                });
+            }
+        }
+
+        pub fn set_up_data(&self, setup_generator: fn(u32) -> Statement) {
+            // We require worker threads to be specified upfront, this helps
+            //  to partition data into worker specific identifiers (e.g. worker-<id>-<iteration>@gmail.com)
+            for thread_id in 0..self.worker_threads {
+                let rm = self.request_manager.clone();
+
+                let statement = setup_generator(thread_id);
+
+                let action_result = rm
+                    .send_single_statement(statement)
+                    .expect("Should not timeout");
+
+                match action_result {
+                    StatementResult::Single(_)
+                    | StatementResult::GetSingle(_)
+                    | StatementResult::List(_) => {}
+                    _ => panic!("Unexpected response type"),
+                }
+            }
         }
     }
 
@@ -906,7 +1002,14 @@ pub mod test_utils {
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
     ) -> TestMetrics {
-        let rm = Database::new_test().run(database_threads);
+        let database = Database::new_test();
+
+        println!(
+            "\nDatabase output location: {}",
+            database.database_options.data_directory.display()
+        );
+
+        let rm = database.run(database_threads);
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 

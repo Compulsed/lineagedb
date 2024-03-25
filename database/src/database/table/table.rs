@@ -58,8 +58,8 @@ pub struct PersonTable {
 impl PersonTable {
     pub fn new() -> Self {
         Self {
-            person_rows: HashMap::<EntityId, PersonRow>::new(),
-            unique_email_index: HashMap::<String, EntityId>::new(),
+            person_rows: HashMap::<EntityId, PersonRow>::with_capacity(1_000_000),
+            unique_email_index: HashMap::<String, EntityId>::with_capacity(1_000_000),
             full_name_index: FullNameIndex::new(),
         }
     }

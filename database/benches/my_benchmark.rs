@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use database::{
     consts::consts::EntityId,
     database::{
-        database::test_utils::{database_test, database_test_task},
+        database::test_utils::{database_test, database_test_task, DatabaseTest},
         table::{
             query::{QueryMatch, QueryPersonData},
             row::{UpdatePersonData, UpdateStatement},
@@ -23,22 +23,29 @@ const ACTIONS: u32 = 100;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("add", |b| {
-        b.iter(|| {
-            let action_generator = |_, _| {
-                Statement::Add(Person {
-                    id: EntityId::new(),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
-            };
+        let db_test = DatabaseTest::new(WORKER_THREADS, DATABASE_THREADS);
 
-            database_test(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
+        // Add a person for each thread
+        db_test.set_up_data(|thread_id: u32| {
+            Statement::Add(Person {
+                id: EntityId(thread_id.to_string()),
+                full_name: "Test".to_string(),
+                email: Some(format!("Email-{}", thread_id)),
+            })
+        });
+
+        // Set up the thread-pool
+
+        b.iter(|| {
+            // let action_generator = ;
+
+            // database_test(
+            //     WORKER_THREADS,
+            //     DATABASE_THREADS,
+            //     ACTIONS,
+            //     action_generator,
+            //     None,
+            // );
         })
     });
 

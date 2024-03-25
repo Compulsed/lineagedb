@@ -23,7 +23,7 @@ impl Default for FullNameIndex {
 impl FullNameIndex {
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: HashMap::with_capacity(1_000_000),
         }
     }
 
