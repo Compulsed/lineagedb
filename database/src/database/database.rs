@@ -796,7 +796,8 @@ pub mod test_utils {
         fmt::Debug,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            mpsc::{self, channel, Receiver, Sender},
+            Arc, Barrier,
         },
         thread::{self, JoinHandle},
         time::{Duration, Instant},
@@ -849,6 +850,12 @@ pub mod test_utils {
         }
     }
 
+    pub struct ActionGenerator {
+        pub actions: u32,
+        pub action_generator: fn(u32, u32) -> Statement,
+        pub sender: oneshot::Sender<()>,
+    }
+
     pub struct DatabaseTest {
         request_manager: RequestManager,
         worker_threads: u32,
@@ -864,31 +871,74 @@ pub mod test_utils {
             }
         }
 
-        pub fn set_up_thread_pool(
-            &self,
-            actions: u32,
-            action_generator: fn(u32, u32) -> Statement,
-        ) {
+        pub fn set_up_thread_pool(&self) -> Sender<ActionGenerator> {
+            let (action_generator_sender, action_generator_receiver) =
+                mpsc::channel::<ActionGenerator>();
+
+            struct WorkerAction {
+                actions: u32,
+                action_generator: fn(u32, u32) -> Statement,
+                sender: oneshot::Sender<()>,
+            }
+
+            let (worker_action_sender, worker_action_receiver) = flume::unbounded::<WorkerAction>();
+
+            let worker_threads = self.worker_threads.clone();
+
+            thread::spawn(move || loop {
+                // Loop over incoming work from the test functions
+                for action_generator in action_generator_receiver.iter() {
+                    // Split the work into tasks for the worker threads
+                    for _ in 0..worker_threads {
+                        let (sender, receiver) = oneshot::channel::<()>();
+
+                        // Send the tasks to the worker threads
+                        worker_action_sender
+                            .send(WorkerAction {
+                                actions: action_generator.actions / worker_threads,
+                                action_generator: action_generator.action_generator,
+                                sender,
+                            })
+                            .unwrap();
+
+                        // Wait for their completion
+                        receiver.recv().expect("Should not fail");
+                    }
+
+                    // Notify the test function that all work has been completed
+                    action_generator.sender.send(()).expect("Should not fail");
+                }
+            });
+
+            // Spin up the worker threads
             for thread_id in 0..self.worker_threads {
                 let rm = self.request_manager.clone();
+                let worker_action_receiver = worker_action_receiver.clone();
 
                 thread::spawn(move || loop {
-                    for index in 0..actions {
-                        let statement = action_generator(thread_id, index);
+                    // Wait for work to be assigned
+                    for worker_action in worker_action_receiver.iter() {
+                        let mut task_statement_response: Vec<TaskStatementResponse> = vec![];
 
-                        let action_result = rm
-                            .send_single_statement(statement)
-                            .expect("Should not timeout");
+                        for index in 0..(worker_action.actions / worker_threads) {
+                            let statement = (worker_action.action_generator)(thread_id, index);
 
-                        match action_result {
-                            StatementResult::Single(_)
-                            | StatementResult::GetSingle(_)
-                            | StatementResult::List(_) => {}
-                            _ => panic!("Unexpected response type"),
+                            let action_result = rm.send_transaction_task(vec![statement]);
+
+                            task_statement_response.push(action_result);
                         }
+
+                        for statement_response in task_statement_response {
+                            statement_response.get().expect("Should not timeout");
+                        }
+
+                        // Once work has been completed, notify the coordinator
+                        worker_action.sender.send(()).expect("Should not fail");
                     }
                 });
             }
+
+            action_generator_sender
         }
 
         pub fn set_up_data(&self, setup_generator: fn(u32) -> Statement) {

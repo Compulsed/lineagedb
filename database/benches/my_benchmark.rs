@@ -1,8 +1,10 @@
+use std::sync::mpsc;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use database::{
     consts::consts::EntityId,
     database::{
-        database::test_utils::{database_test, database_test_task, DatabaseTest},
+        database::test_utils::{database_test, database_test_task, ActionGenerator, DatabaseTest},
         table::{
             query::{QueryMatch, QueryPersonData},
             row::{UpdatePersonData, UpdateStatement},
@@ -10,19 +12,18 @@ use database::{
     },
     model::{person::Person, statement::Statement},
 };
-use uuid::Uuid;
 
 const WORKER_THREADS: u32 = 2;
 
 /// There appears to be a weird issue where benchmarking with multiple threads kills performance
 /// by 100x 800us -> 80ms. Do not increase the thread count until this is resolved
-const DATABASE_THREADS: u32 = 1;
+const DATABASE_THREADS: u32 = 2;
 
 /// Actions are split across threads, so this is the total number of actions
 const ACTIONS: u32 = 100;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("add", |b| {
+    c.bench_function("add-gen", |b| {
         let db_test = DatabaseTest::new(WORKER_THREADS, DATABASE_THREADS);
 
         // Add a person for each thread
@@ -34,18 +35,22 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             })
         });
 
-        // Set up the thread-pool
+        let thread_pool_sender = db_test.set_up_thread_pool();
 
         b.iter(|| {
-            // let action_generator = ;
+            let (test_sender, test_receiver) = oneshot::channel::<()>();
 
-            // database_test(
-            //     WORKER_THREADS,
-            //     DATABASE_THREADS,
-            //     ACTIONS,
-            //     action_generator,
-            //     None,
-            // );
+            let generator = ActionGenerator {
+                action_generator: |thread_id: u32, index: u32| {
+                    return Statement::Get(EntityId(thread_id.to_string()));
+                },
+                actions: ACTIONS,
+                sender: test_sender,
+            };
+
+            thread_pool_sender.send(generator).unwrap();
+
+            test_receiver.recv().unwrap();
         })
     });
 
