@@ -264,6 +264,12 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
 - Try a faster / binary serialization format. JSON might be slow
 - Versions are full clones of the data, if we use RC we would be be able to save on clones
 
+## Resource
+- https://www.youtube.com/watch?v=s19G6n0UjsM (explains epoch, lock free data structures)
+- https://docs.rs/evmap/latest/evmap/
+- https://github.com/penberg/tihku (MVCC database implemented w/ rust)
+- https://github.com/crossbeam-rs/crossbeam/tree/master/crossbeam-skiplist
+
 ## My learnings
 
 **To read**
@@ -279,7 +285,7 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
   1. Results for issues with the network, supports propagation via ? and error type mapping
   1. Panics for logical errors / bugs in the code
 5. Prefer infallable logic, e.g. try not to create methods that hide unwraps 
-6. Can use Rc instead of clone (unlike ARC RC is likely 0 cost)
+6. Lifetimes > (A)Rc > Clone
 7. Rust the ternary if / else can be very clean
 
 

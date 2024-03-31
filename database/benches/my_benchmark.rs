@@ -16,6 +16,11 @@ use uuid::Uuid;
 // Due to the RW lock, additional write threads do not improve performance (contention will cause slow down),
 // does improve performance for read operations
 const DATABASE_THREADS_WRITE: u32 = 1;
+
+// There is an upper bound limit on RW lock read concurrency, this is because as a part of the RW lock implementing
+//  you must get exclusive access to the lock to increment the read count. This means that reader lock performance
+//  with threads is not linear, but rather has a cap. This is okay if there is a long critical section, but if the
+//  critical section is short then the overhead of the RW lock will dominate the performance.
 const DATABASE_THREADS_READ: u32 = 2;
 
 const SAMPLE_SIZE: [u64; 3] = [100, 1000, 10_000];
