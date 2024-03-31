@@ -21,20 +21,32 @@ use super::{
     transaction::TransactionWAL,
 };
 
+#[derive(Debug, Clone)]
 pub struct DatabaseOptions {
-    data_directory: PathBuf,
-    restore: bool,
+    pub data_directory: PathBuf,
+    pub restore: bool,
+    pub sync_file_write: bool,
 }
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
+    /// Defines the directory where the database will store its data
     pub fn set_data_directory(mut self, data_directory: PathBuf) -> Self {
         self.data_directory = data_directory;
         self
     }
 
+    /// Defines whether we should attempt to restore the database from a snapshot and transaction log
+    /// on startup
     pub fn set_restore(mut self, restore: bool) -> Self {
         self.restore = restore;
+        self
+    }
+
+    /// Defines whether we should sync the file write to disk before marking the
+    /// transaction as committed. This is useful for durability but can be slow ~3ms per sync
+    pub fn set_sync_file_write(mut self, sync_file_write: bool) -> Self {
+        self.sync_file_write = sync_file_write;
         self
     }
 }
@@ -44,6 +56,7 @@ impl Default for DatabaseOptions {
         // Defaults to $CDW/data
         Self {
             data_directory: PathBuf::from("data"),
+            sync_file_write: true,
             restore: true,
         }
     }
@@ -74,8 +87,8 @@ impl Database {
     pub fn new(options: DatabaseOptions) -> Self {
         Self {
             person_table: PersonTable::new(),
-            transaction_wal: TransactionWAL::new(options.data_directory.clone()),
-            snapshot_manager: SnapshotManager::new(options.data_directory.clone()),
+            transaction_wal: TransactionWAL::new(options.clone()),
+            snapshot_manager: SnapshotManager::new(options.clone()),
             database_options: options,
         }
     }
@@ -87,12 +100,13 @@ impl Database {
 
         let options = DatabaseOptions::default()
             .set_data_directory(database_dir)
-            .set_restore(false);
+            .set_restore(false)
+            .set_sync_file_write(false);
 
         Self {
             person_table: PersonTable::new(),
-            transaction_wal: TransactionWAL::new(options.data_directory.clone()),
-            snapshot_manager: SnapshotManager::new(options.data_directory.clone()),
+            transaction_wal: TransactionWAL::new(options.clone()),
+            snapshot_manager: SnapshotManager::new(options.clone()),
             database_options: options,
         }
     }
@@ -105,8 +119,8 @@ impl Database {
 
         // Reset the database to a clean state
         self.person_table = PersonTable::new();
-        self.transaction_wal = TransactionWAL::new(self.database_options.data_directory.clone());
-        self.snapshot_manager = SnapshotManager::new(self.database_options.data_directory.clone());
+        self.transaction_wal = TransactionWAL::new(self.database_options.clone());
+        self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
 
         row_count
     }
@@ -761,7 +775,10 @@ pub mod test_utils {
     use num_format::ToFormattedString;
 
     use crate::{
-        database::{database::Database, request_manager::TaskStatementResponse},
+        database::{
+            database::Database,
+            request_manager::{RequestManager, TaskStatementResponse},
+        },
         model::statement::{Statement, StatementResult},
     };
     use std::{
@@ -814,6 +831,24 @@ pub mod test_utils {
                 )
                 .field("statements/s", &statements_per_second)
                 .finish()
+        }
+    }
+
+    pub fn run_action(
+        rm: RequestManager,
+        actions: usize,
+        action_generator: fn(usize) -> Statement,
+    ) {
+        let mut task_statement_response: Vec<TaskStatementResponse> = Vec::with_capacity(actions);
+
+        for index in 0..actions {
+            let statement = action_generator(index);
+
+            task_statement_response.push(rm.send_transaction_task(vec![statement]));
+        }
+
+        for statement_response in task_statement_response {
+            statement_response.get().expect("Should not timeout");
         }
     }
 

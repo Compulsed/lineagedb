@@ -1,8 +1,8 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use database::{
     consts::consts::EntityId,
     database::{
-        database::test_utils::{database_test, database_test_task},
+        database::{test_utils::run_action, Database},
         table::{
             query::{QueryMatch, QueryPersonData},
             row::{UpdatePersonData, UpdateStatement},
@@ -10,186 +10,136 @@ use database::{
     },
     model::{person::Person, statement::Statement},
 };
-use uuid::Uuid;
 
-const WORKER_THREADS: u32 = 2;
-
-/// There appears to be a weird issue where benchmarking with multiple threads kills performance
-/// by 100x 800us -> 80ms. Do not increase the thread count until this is resolved
+// Number of threads to use for the database
+// Due to the RW lock, additional write threads do not improve performance (contention will cause slow down),
+// does improve performance for read operations
 const DATABASE_THREADS: u32 = 1;
 
-/// Actions are split across threads, so this is the total number of actions
-const ACTIONS: u32 = 100;
+const SAMPLE_SIZE: [u64; 3] = [100, 1_000, 10_000];
 
-pub fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("add", |b| {
-        b.iter(|| {
-            let action_generator = |_, _| {
-                Statement::Add(Person {
-                    id: EntityId::new(),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
-            };
+pub fn add_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("add_group");
 
-            database_test(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
-        })
-    });
+    for size in SAMPLE_SIZE.iter() {
+        let rm_add = Database::new_test().run(DATABASE_THREADS);
 
-    c.bench_function("update 100", |b| {
-        b.iter(|| {
-            let action_generator = |thread: u32, index: u32| {
-                let id = EntityId(thread.to_string());
-                let full_name = format!("Full Name {}-{}", thread, index);
-                let email = format!("Email {}-{}", thread, index);
+        group.throughput(Throughput::Elements(*size));
 
-                if index == 0 {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter(|| {
+                run_action(rm_add.clone(), size.try_into().unwrap(), |index| {
                     return Statement::Add(Person {
-                        id,
-                        full_name,
-                        email: Some(email),
+                        id: EntityId::new(),
+                        full_name: index.to_string(),
+                        email: None,
                     });
-                }
+                });
+            });
+        });
+    }
 
-                return Statement::Update(
-                    id,
-                    UpdatePersonData {
-                        full_name: UpdateStatement::Set(full_name),
-                        email: UpdateStatement::Set(email),
-                    },
-                );
-            };
-
-            database_test(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
-        })
-    });
-
-    c.bench_function("get", |b| {
-        b.iter(|| {
-            let action_generator = |thread_id: u32, index: u32| {
-                let id = EntityId(thread_id.to_string());
-                let full_name = format!("Full Name {}-{}", thread_id, index);
-                let email = format!("Email {}-{}", thread_id, index);
-
-                if index == 0 {
-                    return Statement::Add(Person {
-                        id,
-                        full_name,
-                        email: Some(email),
-                    });
-                }
-
-                return Statement::Get(id);
-            };
-
-            database_test(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
-        })
-    });
-
-    c.bench_function("non-indexed list", |b| {
-        b.iter(|| {
-            let action_generator = |thread_id: u32, index: u32| {
-                let full_name = format!("Full Name {}-{}", thread_id, index);
-                let email = format!("Email {}-{}", thread_id, index);
-
-                // Perform 5 adds, then the rest will be lists
-                if 5 > index {
-                    return Statement::Add(Person::new(full_name, Some(email)));
-                } else {
-                    // Email is not indexed
-                    return Statement::List(Some(QueryPersonData {
-                        full_name: QueryMatch::Any,
-                        email: QueryMatch::Value("Will never match".to_string()),
-                    }));
-                }
-            };
-
-            database_test(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
-        })
-    });
-
-    c.bench_function("indexed list", |b| {
-        b.iter(|| {
-            let action_generator = |thread_id: u32, index: u32| {
-                let full_name = format!("Full Name {}-{}", thread_id, index);
-                let email = format!("Email {}-{}", thread_id, index);
-
-                // Perform 5 adds, then the rest will be lists
-                if 5 > index {
-                    return Statement::Add(Person::new(full_name, Some(email)));
-                } else {
-                    // Full name is index, which means it will return 'NoResults' and this is a
-                    //  must faster path
-                    return Statement::List(Some(QueryPersonData {
-                        full_name: QueryMatch::Value("Will never match".to_string()),
-                        email: QueryMatch::Any,
-                    }));
-                }
-            };
-
-            database_test(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
-        })
-    });
-
-    c.bench_function("indexed list task", |b| {
-        b.iter(|| {
-            let action_generator = |thread_id: u32, index: u32| {
-                let full_name = format!("Full Name {}-{}", thread_id, index);
-                let email = format!("Email {}-{}", thread_id, index);
-
-                // Perform 5 adds, then the rest will be lists
-                if 1 > index {
-                    return Statement::Add(Person::new(full_name, Some(email)));
-                } else {
-                    // Full name is index, which means it will return 'NoResults' and this is a
-                    //  must faster path
-                    return Statement::List(Some(QueryPersonData {
-                        full_name: QueryMatch::Value("Will never match".to_string()),
-                        email: QueryMatch::Any,
-                    }));
-                }
-            };
-
-            database_test_task(
-                WORKER_THREADS,
-                DATABASE_THREADS,
-                ACTIONS,
-                action_generator,
-                None,
-            );
-        })
-    });
+    group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+pub fn update_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("update_group");
+
+    for size in SAMPLE_SIZE.iter() {
+        let rm_update = Database::new_test().run(DATABASE_THREADS);
+
+        let person = Person {
+            id: EntityId("update".to_string()),
+            full_name: "Test".to_string(),
+            email: None,
+        };
+
+        rm_update
+            .send_single_statement(Statement::Add(person.clone()))
+            .expect("Should not timeout");
+
+        group.throughput(Throughput::Elements(*size));
+
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter(|| {
+                run_action(rm_update.clone(), size.try_into().unwrap(), |index| {
+                    return Statement::Update(
+                        EntityId("update".to_string()),
+                        UpdatePersonData {
+                            full_name: UpdateStatement::Set(index.to_string()),
+                            email: UpdateStatement::NoChanges,
+                        },
+                    );
+                });
+            });
+        });
+    }
+
+    group.finish();
+}
+
+pub fn get_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("get_group");
+
+    for size in SAMPLE_SIZE.iter() {
+        let rm_get = Database::new_test().run(DATABASE_THREADS);
+
+        let person = Person {
+            id: EntityId("get".to_string()),
+            full_name: "Test".to_string(),
+            email: None,
+        };
+
+        rm_get
+            .send_single_statement(Statement::Add(person.clone()))
+            .expect("Should not timeout");
+        group.throughput(Throughput::Elements(*size));
+
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter(|| {
+                run_action(rm_get.clone(), size.try_into().unwrap(), |_| {
+                    Statement::Get(EntityId("get".to_string()))
+                });
+            });
+        });
+    }
+
+    group.finish();
+}
+
+pub fn list_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list_group");
+
+    for size in SAMPLE_SIZE.iter() {
+        let rm_list = Database::new_test().run(DATABASE_THREADS);
+
+        rm_list
+            .send_single_statement(Statement::Add(Person::new("list".to_string(), None)))
+            .expect("Should not timeout");
+
+        group.throughput(Throughput::Elements(*size));
+
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter(|| {
+                run_action(rm_list.clone(), size.try_into().unwrap(), |_| {
+                    Statement::List(Some(QueryPersonData {
+                        full_name: QueryMatch::Value("list".to_string()),
+                        email: QueryMatch::Any,
+                    }))
+                });
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    add_benchmark,
+    update_benchmark,
+    get_benchmark,
+    list_benchmark
+);
+
 criterion_main!(benches);

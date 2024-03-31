@@ -10,7 +10,7 @@ use crate::consts::consts::TransactionId;
 use crate::model::statement::Statement;
 
 use super::commands::DatabaseCommandResponse;
-use super::database::ApplyMode;
+use super::database::{ApplyMode, DatabaseOptions};
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -30,7 +30,7 @@ pub struct Transaction {
 #[derive(Debug)]
 pub struct TransactionWAL {
     log_file: Arc<Mutex<File>>,
-    data_directory: PathBuf,
+    database_options: DatabaseOptions,
     current_transaction_id: TransactionId,
     size: usize,
     commit_sender: mpsc::Sender<TransactionCommitData>,
@@ -49,14 +49,16 @@ fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
 }
 
 impl TransactionWAL {
-    pub fn new(data_directory: PathBuf) -> Self {
-        fs::create_dir_all(&data_directory)
+    pub fn new(database_options: DatabaseOptions) -> Self {
+        fs::create_dir_all(&database_options.data_directory)
             .expect("Should always be able to create a path at data/");
 
         let raw_log_file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open(get_transaction_log_location(data_directory.clone()))
+            .open(get_transaction_log_location(
+                database_options.data_directory.clone(),
+            ))
             .expect("Cannot open file");
 
         let log_file = Arc::new(Mutex::new(raw_log_file));
@@ -64,6 +66,7 @@ impl TransactionWAL {
         let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
 
         let thread_log_file = log_file.clone();
+        let sync_file_write = database_options.sync_file_write;
 
         thread::spawn(move || {
             let worker_log_file = thread_log_file;
@@ -106,7 +109,9 @@ impl TransactionWAL {
                 //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
                 //
                 // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
-                let _ = file.sync_all().unwrap();
+                if sync_file_write {
+                    file.sync_all().unwrap();
+                }
 
                 for (resolver, response) in batch {
                     let _ = resolver.send(response);
@@ -116,7 +121,7 @@ impl TransactionWAL {
 
         Self {
             log_file,
-            data_directory: data_directory,
+            database_options: database_options,
             commit_sender: sender,
             current_transaction_id: TransactionId::new_first_transaction(),
             size: 0,
@@ -124,7 +129,7 @@ impl TransactionWAL {
     }
 
     pub fn flush_transactions(&mut self) -> usize {
-        let path = get_transaction_log_location(self.data_directory.clone());
+        let path = get_transaction_log_location(self.database_options.data_directory.clone());
         let flushed_size = self.size;
 
         self.size = 0;
