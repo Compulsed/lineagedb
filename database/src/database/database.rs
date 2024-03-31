@@ -18,14 +18,14 @@ use super::{
     request_manager::RequestManager,
     snapshot::SnapshotManager,
     table::table::PersonTable,
-    transaction::TransactionWAL,
+    transaction::{TransactionFileWriteMode, TransactionWAL, TransactionWriteMode},
 };
 
 #[derive(Debug, Clone)]
 pub struct DatabaseOptions {
     pub data_directory: PathBuf,
     pub restore: bool,
-    pub sync_file_write: bool,
+    pub write_mode: TransactionWriteMode,
 }
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
@@ -45,8 +45,8 @@ impl DatabaseOptions {
 
     /// Defines whether we should sync the file write to disk before marking the
     /// transaction as committed. This is useful for durability but can be slow ~3ms per sync
-    pub fn set_sync_file_write(mut self, sync_file_write: bool) -> Self {
-        self.sync_file_write = sync_file_write;
+    pub fn set_sync_file_write(mut self, write_mode: TransactionWriteMode) -> Self {
+        self.write_mode = write_mode;
         self
     }
 }
@@ -56,7 +56,7 @@ impl Default for DatabaseOptions {
         // Defaults to $CDW/data
         Self {
             data_directory: PathBuf::from("data"),
-            sync_file_write: true,
+            write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
             restore: true,
         }
     }
@@ -101,7 +101,7 @@ impl Database {
         let options = DatabaseOptions::default()
             .set_data_directory(database_dir)
             .set_restore(false)
-            .set_sync_file_write(false);
+            .set_sync_file_write(TransactionWriteMode::Off);
 
         Self {
             person_table: PersonTable::new(),
@@ -837,19 +837,25 @@ pub mod test_utils {
     pub fn run_action(
         rm: RequestManager,
         actions: usize,
-        action_generator: fn(usize) -> Statement,
-    ) {
+        test_identifier: u64,
+        action_generator: fn(u64, usize) -> Statement,
+    ) -> Vec<Vec<StatementResult>> {
         let mut task_statement_response: Vec<TaskStatementResponse> = Vec::with_capacity(actions);
 
         for index in 0..actions {
-            let statement = action_generator(index);
+            let statement = action_generator(test_identifier, index);
 
             task_statement_response.push(rm.send_transaction_task(vec![statement]));
         }
 
+        let mut statement_result: Vec<Vec<StatementResult>> = Vec::with_capacity(actions);
+
         for statement_response in task_statement_response {
-            statement_response.get().expect("Should not timeout");
+            statement_result.push(statement_response.get().expect("Should not timeout"));
         }
+
+        // Return the statement results so the drop can be calculated outside of the test function
+        return statement_result;
     }
 
     pub fn database_test(
