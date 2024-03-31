@@ -10,7 +10,7 @@ use crate::consts::consts::TransactionId;
 use crate::model::statement::Statement;
 
 use super::commands::DatabaseCommandResponse;
-use super::database::ApplyMode;
+use super::database::{ApplyMode, DatabaseOptions};
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -18,6 +18,22 @@ use super::database::ApplyMode;
 #[derive(Serialize, Deserialize, Debug)]
 pub enum TransactionStatus {
     Committed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransactionFileWriteMode {
+    /// Writes the file to disk and performs a batched fsync
+    Sync,
+    /// Writes the file to disk, lets the OS buffer the writes
+    OSBuffered,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransactionWriteMode {
+    /// Writes the WAL to disk
+    File(TransactionFileWriteMode),
+    /// Used for testing purposes. Skips writing the file to disk
+    Off,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -30,7 +46,7 @@ pub struct Transaction {
 #[derive(Debug)]
 pub struct TransactionWAL {
     log_file: Arc<Mutex<File>>,
-    data_directory: PathBuf,
+    database_options: DatabaseOptions,
     current_transaction_id: TransactionId,
     size: usize,
     commit_sender: mpsc::Sender<TransactionCommitData>,
@@ -49,14 +65,16 @@ fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
 }
 
 impl TransactionWAL {
-    pub fn new(data_directory: PathBuf) -> Self {
-        fs::create_dir_all(&data_directory)
+    pub fn new(database_options: DatabaseOptions) -> Self {
+        fs::create_dir_all(&database_options.data_directory)
             .expect("Should always be able to create a path at data/");
 
         let raw_log_file = OpenOptions::new()
             .append(true)
             .create(true)
-            .open(get_transaction_log_location(data_directory.clone()))
+            .open(get_transaction_log_location(
+                database_options.data_directory.clone(),
+            ))
             .expect("Cannot open file");
 
         let log_file = Arc::new(Mutex::new(raw_log_file));
@@ -64,6 +82,7 @@ impl TransactionWAL {
         let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
 
         let thread_log_file = log_file.clone();
+        let sync_file_write = database_options.write_mode.clone();
 
         thread::spawn(move || {
             let worker_log_file = thread_log_file;
@@ -82,22 +101,23 @@ impl TransactionWAL {
                         resolver,
                     } = transaction_data;
 
-                    let transaction_json_line = format!(
-                        "{}\n",
-                        serde_json::to_string(&Transaction {
-                            id: applied_transaction_id.clone(),
-                            statements: statements,
-                            status: TransactionStatus::Committed,
-                        })
-                        .unwrap()
-                    );
+                    if matches!(sync_file_write, TransactionWriteMode::File(_)) {
+                        let transaction_json_line = format!(
+                            "{}\n",
+                            serde_json::to_string(&Transaction {
+                                id: applied_transaction_id,
+                                statements: statements,
+                                status: TransactionStatus::Committed,
+                            })
+                            .unwrap()
+                        );
 
-                    file.write_all(transaction_json_line.as_bytes()).unwrap();
+                        // Buffered OS write, is not 'durable' without the fsync
+                        file.write_all(transaction_json_line.as_bytes()).unwrap();
+                    }
 
                     batch.push((resolver, response));
                 }
-
-                let file = worker_log_file.lock().unwrap();
 
                 // Performs an fsync on the transaction log, ensuring that the transaction is durable
                 // https://www.postgresql.org/docs/current/wal-reliability.html
@@ -106,7 +126,13 @@ impl TransactionWAL {
                 //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
                 //
                 // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
-                let _ = file.sync_all().unwrap();
+                if let TransactionWriteMode::File(m) = &sync_file_write {
+                    if m == &TransactionFileWriteMode::Sync {
+                        let file = worker_log_file.lock().unwrap();
+
+                        file.sync_all().unwrap();
+                    }
+                }
 
                 for (resolver, response) in batch {
                     let _ = resolver.send(response);
@@ -116,7 +142,7 @@ impl TransactionWAL {
 
         Self {
             log_file,
-            data_directory: data_directory,
+            database_options: database_options,
             commit_sender: sender,
             current_transaction_id: TransactionId::new_first_transaction(),
             size: 0,
@@ -124,7 +150,7 @@ impl TransactionWAL {
     }
 
     pub fn flush_transactions(&mut self) -> usize {
-        let path = get_transaction_log_location(self.data_directory.clone());
+        let path = get_transaction_log_location(self.database_options.data_directory.clone());
         let flushed_size = self.size;
 
         self.size = 0;

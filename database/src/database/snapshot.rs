@@ -12,7 +12,10 @@ use crate::{
     model::statement::Statement,
 };
 
-use super::table::{index::FullNameIndex, row::PersonVersion, table::PersonTable};
+use super::{
+    database::DatabaseOptions,
+    table::{index::FullNameIndex, row::PersonVersion, table::PersonTable},
+};
 
 enum FileType {
     Metadata,
@@ -96,7 +99,7 @@ impl Default for Metadata {
 }
 
 pub struct SnapshotManager {
-    data_directory: PathBuf,
+    database_options: DatabaseOptions,
     snapshot_file: PersistanceManager<Vec<PersonVersion>>,
     metadata_file: PersistanceManager<Metadata>,
     full_name_index_file: PersistanceManager<FullNameIndex>,
@@ -104,22 +107,28 @@ pub struct SnapshotManager {
 }
 
 impl SnapshotManager {
-    pub fn new(data_directory: PathBuf) -> Self {
-        fs::create_dir_all(&data_directory)
+    pub fn new(database_options: DatabaseOptions) -> Self {
+        fs::create_dir_all(&database_options.data_directory)
             .expect("Should always be able to create a path at data/");
 
         Self {
-            snapshot_file: PersistanceManager::new(&data_directory, FileType::Snapshot),
-            metadata_file: PersistanceManager::new(&data_directory, FileType::Metadata),
+            snapshot_file: PersistanceManager::new(
+                &database_options.data_directory,
+                FileType::Snapshot,
+            ),
+            metadata_file: PersistanceManager::new(
+                &database_options.data_directory,
+                FileType::Metadata,
+            ),
             full_name_index_file: PersistanceManager::new(
-                &data_directory,
+                &database_options.data_directory,
                 FileType::SecondaryIndexFullName,
             ),
             unique_email_index_file: PersistanceManager::new(
-                &data_directory,
+                &database_options.data_directory,
                 FileType::SecondaryIndexUniqueEmail,
             ),
-            data_directory,
+            database_options,
         }
     }
 
@@ -164,7 +173,7 @@ impl SnapshotManager {
     }
 
     pub fn delete_snapshot(&self) {
-        fs::remove_dir_all(&self.data_directory)
+        fs::remove_dir_all(&self.database_options.data_directory)
             .expect("Should always exist, folder is created on init");
     }
 }
