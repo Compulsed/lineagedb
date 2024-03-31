@@ -190,7 +190,8 @@ impl RequestManager {
         //  on the response_receiver once it's finished processing it's request
         self.database_sender.send(request).unwrap();
 
-        let response = response_receiver.recv_timeout(Duration::from_secs(30));
+        // If the database is large it can take > 30 seconds to reset
+        let response = response_receiver.recv_timeout(Duration::from_secs(60));
 
         map_response(response)
     }

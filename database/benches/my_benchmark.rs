@@ -1,3 +1,5 @@
+use std::{thread, time::Duration};
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use database::{
     consts::consts::EntityId,
@@ -16,11 +18,11 @@ use uuid::Uuid;
 // Due to the RW lock, additional write threads do not improve performance (contention will cause slow down),
 // does improve performance for read operations
 const DATABASE_THREADS_WRITE: u32 = 1;
-const DATABASE_THREADS_READ: u32 = 3;
+const DATABASE_THREADS_READ: u32 = 2;
 
-const SAMPLE_SIZE: [u64; 3] = [100, 1_000, 10_000];
+const SAMPLE_SIZE: [u64; 3] = [100, 1000, 10_000];
 
-const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::SmallInput;
+const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::LargeInput;
 
 /*
     How this bench is configured:
@@ -30,21 +32,38 @@ const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::SmallInput;
     4. Each database has N + 1 threads
         - N for the database
         - 1 is used as the background file writer
+    5. After each SAMPLE we reset the database, this is to avoid the database from growing too large / eating up all the memory
+        - After a test with a low sample size the database cleanup can take > 30 seconds
+
+    Possible test improvements:
+    1. For read tests it could be possible that the 'run_action's single thread might not be fast enough. It could be possible
+        to add a thread pool, though starting the pool in the test would affect the benchmark (starting threads is slow)
+    2. Test setup requires new uuid / to string, which could be a slow heap operation
+    3. Unsure if we can / what it means to shutdown the database after the test
+    4. Unsure what is the right INPUT_SIZE for the benchmark
+
+    Notes:
+    1. Looks like the system monitor is accurate (max 220% CPU usage), this is expected because there are three threads
+        - Database, background file writer, and the benchmark thread
+    2. Impacts of database shutdown
+        - Dropping *might* be done async, takes a little while for the activity monitor to report the changes in memory.
+           this cleanup may might take some time in the kernel and thus affect subsequent tests
+        - I suspect we are leaking the WAL thread. TODO: look into this
 */
 
 pub fn add_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("add_group");
 
     for size in SAMPLE_SIZE.iter() {
-        let rm_add = Database::new_test().run(DATABASE_THREADS_WRITE);
+        let rm = Database::new_test().run(DATABASE_THREADS_WRITE);
 
         group.throughput(Throughput::Elements(*size));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
-                || rm_add.clone(),
-                |rm_add| {
-                    run_action(rm_add, size.try_into().unwrap(), size, |_, index| {
+                || rm.clone(),
+                |rm| {
+                    run_action(rm, size.try_into().unwrap(), size, |_, index| {
                         return Statement::Add(Person {
                             id: EntityId(Uuid::new_v4().to_string()),
                             full_name: index.to_string(),
@@ -55,6 +74,8 @@ pub fn add_benchmark(c: &mut Criterion) {
                 INPUT_SIZE,
             )
         });
+
+        rm.send_shutdown_request().expect("Should not timeout");
     }
 
     group.finish();
@@ -64,7 +85,7 @@ pub fn update_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("update_group");
 
     for size in SAMPLE_SIZE.iter() {
-        let rm_update = Database::new_test().run(DATABASE_THREADS_WRITE);
+        let rm = Database::new_test().run(DATABASE_THREADS_WRITE);
 
         let person = Person {
             id: EntityId("update".to_string()),
@@ -72,17 +93,16 @@ pub fn update_benchmark(c: &mut Criterion) {
             email: None,
         };
 
-        rm_update
-            .send_single_statement(Statement::Add(person.clone()))
+        rm.send_single_statement(Statement::Add(person.clone()))
             .expect("Should not timeout");
 
         group.throughput(Throughput::Elements(*size));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
-                || rm_update.clone(),
-                |rm_add| {
-                    run_action(rm_add, size.try_into().unwrap(), size, |_, _| {
+                || rm.clone(),
+                |rm| {
+                    run_action(rm, size.try_into().unwrap(), size, |_, _| {
                         return Statement::Update(
                             EntityId("update".to_string()),
                             UpdatePersonData {
@@ -95,6 +115,8 @@ pub fn update_benchmark(c: &mut Criterion) {
                 INPUT_SIZE,
             )
         });
+
+        rm.send_shutdown_request().expect("Should not timeout");
     }
 
     group.finish();
@@ -104,7 +126,7 @@ pub fn get_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("get_group");
 
     for size in SAMPLE_SIZE.iter() {
-        let rm_get = Database::new_test().run(DATABASE_THREADS_READ);
+        let rm = Database::new_test().run(DATABASE_THREADS_READ);
 
         let person = Person {
             id: EntityId("get".to_string()),
@@ -112,23 +134,24 @@ pub fn get_benchmark(c: &mut Criterion) {
             email: None,
         };
 
-        rm_get
-            .send_single_statement(Statement::Add(person.clone()))
+        rm.send_single_statement(Statement::Add(person.clone()))
             .expect("Should not timeout");
 
         group.throughput(Throughput::Elements(*size));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
-                || rm_get.clone(),
-                |rm_get| {
-                    run_action(rm_get, size.try_into().unwrap(), size, |_, _| {
+                || rm.clone(),
+                |rm| {
+                    run_action(rm, size.try_into().unwrap(), size, |_, _| {
                         Statement::Get(EntityId("get".to_string()))
                     });
                 },
                 INPUT_SIZE,
             )
         });
+
+        rm.send_shutdown_request().expect("Should not timeout");
     }
 
     group.finish();
@@ -138,17 +161,16 @@ pub fn list_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("list_group");
 
     for size in SAMPLE_SIZE.iter() {
-        let rm_list = Database::new_test().run(DATABASE_THREADS_READ);
+        let rm = Database::new_test().run(DATABASE_THREADS_READ);
 
-        rm_list
-            .send_single_statement(Statement::Add(Person::new("list".to_string(), None)))
+        rm.send_single_statement(Statement::Add(Person::new("list".to_string(), None)))
             .expect("Should not timeout");
 
         group.throughput(Throughput::Elements(*size));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter_batched(
-                || rm_list.clone(),
+                || rm.clone(),
                 |rm_list| {
                     run_action(rm_list, size.try_into().unwrap(), size, |_, _| {
                         Statement::List(Some(QueryPersonData {
@@ -160,6 +182,8 @@ pub fn list_benchmark(c: &mut Criterion) {
                 INPUT_SIZE,
             )
         });
+
+        rm.send_shutdown_request().expect("Should not timeout");
     }
 
     group.finish();
