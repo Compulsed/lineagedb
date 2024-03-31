@@ -417,7 +417,7 @@ mod tests {
         },
     };
 
-    use super::test_utils::{database_test, database_test_task};
+    use super::test_utils::database_test_task;
     use crate::database::commands::DatabaseCommandTransactionResponse;
     use crate::database::database::Database;
     use crate::model::statement::StatementResult;
@@ -633,26 +633,26 @@ mod tests {
         }
     }
 
+    /// Running these tests: cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
     mod bulk {
+        use super::*;
         use crate::database::table::query::{QueryMatch, QueryPersonData};
 
-        use super::*;
+        const CLIENT_THREADS: u32 = 2;
 
-        // The sync tests work by sending a single statement, waiting for a response and THEN
-        //  sending the next statement. Due to the fact we batch process file system writes, this
-        //  is not a good test for performance. Due to this batch processing the minimum time for
-        //  a single statement is 1-3ms, so the minimum time for 100 statements is 100ms.
-        //
-        // This is not an issue with async tests because we submit all the statements at once and
-        //  then wait for all of them to respond.
-        const SYNC_WRITE_ENABLED: bool = false;
+        // Seems that three threads is the sweet spot for the M1 MBA
+        const READ_THREADS: u32 = 4;
+        const READ_SAMPLE_SIZE: u32 = 3_000_000;
+
+        // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
+        // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
+        //  We are not technically flushing the WAL to disk, hence why
+        const WRITE_THREADS: u32 = 1;
+        const WRITE_SAMPLE_SIZE: u32 = 500_000;
 
         #[test]
         #[ignore]
         fn update() {
-            // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
-            // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
-            //  We are not technically flushing the WAL to disk, hence why
             let setup_generator = |thread_id: u32| {
                 Statement::Add(person::Person {
                     id: EntityId(thread_id.to_string()),
@@ -671,14 +671,13 @@ mod tests {
                 );
             };
 
-            // ~82k s/ps on M1 MBA
-            if SYNC_WRITE_ENABLED {
-                let metrics = database_test(5, 1, 500_000, action_generator, Some(setup_generator));
-                println!("[SYNC] Metrics: {:#?}", metrics);
-            }
-
-            let metrics =
-                database_test_task(4, 1, 500_000, action_generator, Some(setup_generator));
+            let metrics = database_test_task(
+                CLIENT_THREADS,
+                WRITE_THREADS,
+                WRITE_SAMPLE_SIZE,
+                action_generator,
+                Some(setup_generator),
+            );
 
             // ~150k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
@@ -698,13 +697,13 @@ mod tests {
                 })
             };
 
-            // ~75k s/ps on M1 MBA
-            if SYNC_WRITE_ENABLED {
-                let metrics = database_test(5, 1, 500_000, action_generator, None);
-                println!("[SYNC] Metrics: {:#?}", metrics);
-            }
-
-            let metrics = database_test_task(4, 1, 500_000, action_generator, None);
+            let metrics = database_test_task(
+                CLIENT_THREADS,
+                WRITE_THREADS,
+                WRITE_SAMPLE_SIZE,
+                action_generator,
+                None,
+            );
 
             // ~150k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
@@ -726,12 +725,13 @@ mod tests {
                 return Statement::Get(EntityId(thread_id.to_string()));
             };
 
-            // ~300k-400k s/ps on M1 MBA
-            let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
-            println!("[SYNC] Metrics: {:#?}", metrics);
-
-            let metrics =
-                database_test_task(4, 4, 3_000_000, action_generator, Some(setup_generator));
+            let metrics = database_test_task(
+                CLIENT_THREADS,
+                READ_THREADS,
+                READ_SAMPLE_SIZE,
+                action_generator,
+                Some(setup_generator),
+            );
 
             // ~600k-~900k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
@@ -756,13 +756,13 @@ mod tests {
                 }));
             };
 
-            let metrics = database_test(5, 3, 3_000_000, action_generator, Some(setup_generator));
-
-            // ~300k-400k s/ps on M1 MBA
-            println!("[SYNC] Metrics: {:#?}", metrics);
-
-            let metrics =
-                database_test_task(3, 3, 3_000_000, action_generator, Some(setup_generator));
+            let metrics = database_test_task(
+                CLIENT_THREADS,
+                READ_THREADS,
+                READ_SAMPLE_SIZE,
+                action_generator,
+                Some(setup_generator),
+            );
 
             // ~600k-~900k s/ps on M1 MBA
             println!("[ASYNC] Metrics: {:#?}", metrics);
@@ -858,83 +858,6 @@ pub mod test_utils {
         return statement_result;
     }
 
-    pub fn database_test(
-        worker_threads: u32,
-        database_threads: u32,
-        actions: u32,
-        action_generator: fn(u32, u32) -> Statement,
-        setup_generator: Option<fn(u32) -> Statement>,
-    ) -> TestMetrics {
-        let rm = Database::new_test().run(database_threads);
-
-        // All setup is performed in the same thread, is synchronous, and is not included in the timer
-        if let Some(setup) = setup_generator {
-            for thread_id in 0..worker_threads {
-                let rm = rm.clone();
-
-                let statement = setup(thread_id);
-
-                let action_result = rm
-                    .send_single_statement(statement)
-                    .expect("Should not timeout");
-
-                match action_result {
-                    StatementResult::Single(_)
-                    | StatementResult::GetSingle(_)
-                    | StatementResult::List(_) => {}
-                    _ => panic!("Unexpected response type"),
-                }
-            }
-        }
-
-        let mut sender_threads: Vec<JoinHandle<()>> = vec![];
-
-        let now = Instant::now();
-
-        for thread_id in 0..worker_threads {
-            let rm = rm.clone();
-
-            let sender_thread = thread::spawn(move || {
-                for index in 0..(actions / worker_threads) {
-                    let statement = action_generator(thread_id, index);
-
-                    let action_result = rm
-                        .send_single_statement(statement)
-                        .expect("Should not timeout");
-
-                    // Single will panic if this fails
-                    match action_result {
-                        StatementResult::Single(_)
-                        | StatementResult::GetSingle(_)
-                        | StatementResult::List(_) => {}
-                        _ => panic!("Unexpected response type"),
-                    }
-                }
-            });
-
-            sender_threads.push(sender_thread);
-        }
-
-        for thread in sender_threads {
-            thread.join().unwrap();
-        }
-
-        let metrics = TestMetrics::new(Mode::Single, now.elapsed(), actions);
-
-        // Allows database thread to successfully exit
-        let shutdown_response = rm
-            .clone()
-            .send_shutdown_request()
-            .expect("Should not timeout");
-
-        assert_eq!(
-            shutdown_response,
-            "Successfully shutdown database".to_string()
-        );
-
-        metrics
-    }
-
     /// Sends N items into the channel and then awaits them all at the end. In theory this test
     /// should be faster because it avoids all the 'ping-pong' of sending and receiving
     ///
@@ -979,6 +902,7 @@ pub mod test_utils {
             let sender_thread = thread::spawn(move || {
                 let mut task_statement_response: Vec<TaskStatementResponse> = vec![];
 
+                // Use the task based API, this prevents the need to sync wait for a response before sending another request
                 for index in 0..(actions / worker_threads) {
                     let statement = action_generator(thread_id, index);
 

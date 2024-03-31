@@ -10,6 +10,7 @@ use database::{
     },
     model::{person::Person, statement::Statement},
 };
+use uuid::Uuid;
 
 // Number of threads to use for the database
 // Due to the RW lock, additional write threads do not improve performance (contention will cause slow down),
@@ -18,6 +19,8 @@ const DATABASE_THREADS_WRITE: u32 = 1;
 const DATABASE_THREADS_READ: u32 = 3;
 
 const SAMPLE_SIZE: [u64; 3] = [100, 1_000, 10_000];
+
+const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::SmallInput;
 
 /*
     How this bench is configured:
@@ -41,15 +44,15 @@ pub fn add_benchmark(c: &mut Criterion) {
             b.iter_batched(
                 || rm_add.clone(),
                 |rm_add| {
-                    run_action(rm_add, size.try_into().unwrap(), size, |id, index| {
+                    run_action(rm_add, size.try_into().unwrap(), size, |_, index| {
                         return Statement::Add(Person {
-                            id: EntityId(format!("{}{}", id, index)),
+                            id: EntityId(Uuid::new_v4().to_string()),
                             full_name: index.to_string(),
                             email: None,
                         });
                     });
                 },
-                criterion::BatchSize::SmallInput,
+                INPUT_SIZE,
             )
         });
     }
@@ -89,7 +92,7 @@ pub fn update_benchmark(c: &mut Criterion) {
                         );
                     });
                 },
-                criterion::BatchSize::SmallInput,
+                INPUT_SIZE,
             )
         });
     }
@@ -123,7 +126,7 @@ pub fn get_benchmark(c: &mut Criterion) {
                         Statement::Get(EntityId("get".to_string()))
                     });
                 },
-                criterion::BatchSize::SmallInput,
+                INPUT_SIZE,
             )
         });
     }
@@ -154,7 +157,7 @@ pub fn list_benchmark(c: &mut Criterion) {
                         }))
                     });
                 },
-                criterion::BatchSize::SmallInput,
+                INPUT_SIZE,
             )
         });
     }
