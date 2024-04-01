@@ -16,7 +16,7 @@ use uuid::Uuid;
 // Number of threads to use for the database
 // Due to the RW lock, additional write threads do not improve performance (contention will cause slow down),
 // does improve performance for read operations
-const DATABASE_THREADS_WRITE: u32 = 2;
+const DATABASE_THREADS_WRITE: u32 = 4;
 
 // There is an upper bound limit on RW lock read concurrency, this is because as a part of the RW lock implementing
 //  you must get exclusive access to the lock to increment the read count. This means that reader lock performance
