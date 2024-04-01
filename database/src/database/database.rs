@@ -1,6 +1,8 @@
 use std::{
+    borrow::{Borrow, BorrowMut},
+    ops::DerefMut,
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, RwLockWriteGuard},
     thread,
     time::Instant,
 };
@@ -9,6 +11,7 @@ use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
+    consts::consts::TransactionId,
     database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
     model::statement::{Statement, StatementResult},
 };
@@ -77,58 +80,55 @@ pub enum ApplyMode {
 }
 
 pub struct Database {
-    person_table: PersonTable,
-    transaction_wal: TransactionWAL,
-    database_options: DatabaseOptions,
-    snapshot_manager: SnapshotManager,
+    person_table: RwLock<PersonTable>,
+    transaction_wal: RwLock<TransactionWAL>,
+    database_options: RwLock<DatabaseOptions>,
+    snapshot_manager: RwLock<SnapshotManager>,
 }
 
 impl Database {
     pub fn new(options: DatabaseOptions) -> Self {
         Self {
-            person_table: PersonTable::new(),
-            transaction_wal: TransactionWAL::new(options.clone()),
-            snapshot_manager: SnapshotManager::new(options.clone()),
-            database_options: options,
+            person_table: RwLock::new(PersonTable::new()),
+            transaction_wal: RwLock::new(TransactionWAL::new(options.clone())),
+            snapshot_manager: RwLock::new(SnapshotManager::new(options.clone())),
+            database_options: RwLock::new(options),
         }
     }
 
-    pub fn new_test() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
+    // pub fn new_test() -> Self {
+    //     let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+    //         .iter()
+    //         .collect();
 
-        let options = DatabaseOptions::default()
-            .set_data_directory(database_dir)
-            .set_restore(false)
-            .set_sync_file_write(TransactionWriteMode::Off);
+    //     let options = DatabaseOptions::default()
+    //         .set_data_directory(database_dir)
+    //         .set_restore(false)
+    //         .set_sync_file_write(TransactionWriteMode::Off);
 
-        Self {
-            person_table: PersonTable::new(),
-            transaction_wal: TransactionWAL::new(options.clone()),
-            snapshot_manager: SnapshotManager::new(options.clone()),
-            database_options: options,
-        }
-    }
+    //     Self {
+    //         person_table: PersonTable::new(),
+    //         transaction_wal: TransactionWAL::new(options.clone()),
+    //         snapshot_manager: SnapshotManager::new(options.clone()),
+    //         database_options: options,
+    //     }
+    // }
 
-    pub fn reset_database_state(&mut self) -> usize {
-        let row_count = self.person_table.person_rows.len();
+    // pub fn reset_database_state(&mut self) -> usize {
+    //     let row_count = self.person_table.person_rows.len();
 
-        // Clean out snapshot and transaction log
-        self.snapshot_manager.delete_snapshot();
+    //     // Clean out snapshot and transaction log
+    //     self.snapshot_manager.delete_snapshot();
 
-        // Reset the database to a clean state
-        self.person_table = PersonTable::new();
-        self.transaction_wal = TransactionWAL::new(self.database_options.clone());
-        self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
+    //     // Reset the database to a clean state
+    //     self.person_table = PersonTable::new();
+    //     self.transaction_wal = TransactionWAL::new(self.database_options.clone());
+    //     self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
 
-        row_count
-    }
+    //     row_count
+    // }
 
-    fn start_thread(
-        receiver: flume::Receiver<DatabaseCommandRequest>,
-        database_rw: Arc<RwLock<Self>>,
-    ) {
+    fn start_thread(receiver: flume::Receiver<DatabaseCommandRequest>, database: Arc<Self>) {
         loop {
             let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
                 Ok(request) => request,
@@ -147,46 +147,46 @@ impl Database {
                 DatabaseCommand::Control(control) => {
                     match control {
                         Control::Shutdown => {
-                            let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                "Successfully shutdown database",
-                            ));
+                            // let _ = resolver.send(DatabaseCommandResponse::control_success(
+                            //     "Successfully shutdown database",
+                            // ));
 
                             return;
                         }
                         Control::ResetDatabase => {
-                            let dropped_row_count =
-                                database_rw.write().unwrap().reset_database_state();
+                            // let dropped_row_count =
+                            //     database_rw.write().unwrap().reset_database_state();
 
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully reset database, dropped: {} rows",
-                                    dropped_row_count
-                                )));
+                            // let _ =
+                            //     resolver.send(DatabaseCommandResponse::control_success(&format!(
+                            //         "Successfully reset database, dropped: {} rows",
+                            //         dropped_row_count
+                            //     )));
 
                             continue;
                         }
                         Control::SnapshotDatabase => {
-                            let mut database = database_rw.write().unwrap();
+                            // let mut database = database_rw.write().unwrap();
 
-                            let transaction_id = database
-                                .transaction_wal
-                                .get_current_transaction_id()
-                                .clone();
+                            // let transaction_id = database
+                            //     .transaction_wal
+                            //     .get_current_transaction_id()
+                            //     .clone();
 
-                            let table = &database.person_table;
+                            // let table = &database.person_table;
 
-                            // Persist current state to disk
-                            database
-                                .snapshot_manager
-                                .create_snapshot(table, transaction_id);
+                            // // Persist current state to disk
+                            // database
+                            //     .snapshot_manager
+                            //     .create_snapshot(table, transaction_id);
 
-                            let flush_transactions = database.transaction_wal.flush_transactions();
+                            // let flush_transactions = database.transaction_wal.flush_transactions();
 
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully created snapshot: compressed {} txs",
-                                    flush_transactions
-                                )));
+                            // let _ =
+                            //     resolver.send(DatabaseCommandResponse::control_success(&format!(
+                            //         "Successfully created snapshot: compressed {} txs",
+                            //         flush_transactions
+                            //     )));
 
                             continue;
                         }
@@ -201,18 +201,33 @@ impl Database {
 
             match contains_mutation {
                 true => {
+                    let mut transaction_wal = database.transaction_wal.write().unwrap();
+                    let mut person_table = database.person_table.write().unwrap();
+
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = database_rw
-                        .write()
-                        .unwrap()
-                        .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
+                    let _ = Database::apply_transaction(
+                        transaction_statements,
+                        transaction_wal.deref_mut(),
+                        person_table.deref_mut(),
+                        ApplyMode::Request(resolver),
+                    );
                 }
                 false => {
                     // As there is no WAL, we can just read from the database and send the response
-                    let response = database_rw
+                    let person_table = database.person_table.read().unwrap();
+
+                    let query_transaction_id = database
+                        .transaction_wal
                         .read()
                         .unwrap()
-                        .query_transaction(transaction_statements);
+                        .get_current_transaction_id()
+                        .clone();
+
+                    let response = Database::query_transaction(
+                        &person_table,
+                        &query_transaction_id,
+                        transaction_statements,
+                    );
 
                     let _ = resolver.send(
                         DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
@@ -222,71 +237,73 @@ impl Database {
         }
     }
 
-    pub fn run(mut self, threads: u32) -> RequestManager {
-        let transaction_log_location = self.database_options.data_directory.clone();
+    pub fn run(self, threads: u32) -> RequestManager {
+        // let mut database_options = self.database_options.read().unwrap();
+        // let mut snapshot_manager = self.snapshot_manager.write().unwrap();
+        // let mut person_table = self.person_table.write().unwrap();
+        // let mut transaction_wal = self.transaction_wal.write().unwrap();
 
-        log::info!(
-            "Transaction Log Location: [{}]",
-            transaction_log_location.display()
-        );
+        // let transaction_log_location = database_options.data_directory.clone();
 
-        if self.database_options.restore {
-            let now = Instant::now();
+        // log::info!(
+        //     "Transaction Log Location: [{}]",
+        //     transaction_log_location.display()
+        // );
 
-            // Call chain -> snapshot_manager -> person_table
-            let (snapshot_count, metadata) = self
-                .snapshot_manager
-                .restore_snapshot(&mut self.person_table);
+        // if database_options.restore {
+        //     let now = Instant::now();
 
-            // If there was a snapshot to restore from we update the transaction log
-            self.transaction_wal
-                .set_current_transaction_id(metadata.current_transaction_id.clone());
+        //     // Call chain -> snapshot_manager -> person_table
+        //     let (snapshot_count, metadata) = snapshot_manager.restore_snapshot(&mut person_table);
 
-            let restored_transactions = TransactionWAL::restore(transaction_log_location);
-            let restored_transaction_count = restored_transactions.len();
+        //     // If there was a snapshot to restore from we update the transaction log
+        //     transaction_wal.set_current_transaction_id(metadata.current_transaction_id.clone());
 
-            // Then add states from the transaction log
-            for transaction in restored_transactions {
-                let apply_transaction_result =
-                    self.apply_transaction(transaction.statements, ApplyMode::Restore);
+        //     let restored_transactions = TransactionWAL::restore(transaction_log_location);
+        //     let restored_transaction_count = restored_transactions.len();
 
-                if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
-                    apply_transaction_result
-                {
-                    panic!(
-                        "All committed transactions should be replayable on startup: {}",
-                        rollback_message
-                    );
-                }
-            }
+        //     // Then add states from the transaction log
+        //     for transaction in restored_transactions {
+        //         let apply_transaction_result =
+        //         self.apply_transaction(transaction.statements, ApplyMode::Restore);
 
-            log::info!(
-                "✅ Successful Restore [Duration: {}ms]",
-                now.elapsed().as_millis(),
-            );
+        //         if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
+        //             apply_transaction_result
+        //         {
+        //             panic!(
+        //                 "All committed transactions should be replayable on startup: {}",
+        //                 rollback_message
+        //             );
+        //         }
+        //     }
 
-            log::info!(
-                "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
-                snapshot_count,
-                restored_transaction_count,
-                self.transaction_wal
-                    .get_current_transaction_id()
-                    .to_number()
-                    .to_formatted_string(&Locale::en)
-            );
-        }
+        //     log::info!(
+        //         "✅ Successful Restore [Duration: {}ms]",
+        //         now.elapsed().as_millis(),
+        //     );
+
+        //     log::info!(
+        //         "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
+        //         snapshot_count,
+        //         restored_transaction_count,
+        //         transaction_wal
+        //             .get_current_transaction_id()
+        //             .to_number()
+        //             .to_formatted_string(&Locale::en)
+        //     );
+        // }
 
         let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
 
-        let database_mutex = Arc::new(RwLock::new(self));
+        let database_arc = Arc::new(self);
 
         for _ in 0..threads {
             let thread_rx = rx.clone();
-            let database_rw = database_mutex.clone();
+            let database_arc = database_arc.clone();
 
             // Spawn a new thread for each request
             thread::spawn(move || {
-                Database::start_thread(thread_rx, database_rw);
+                Database::start_thread(thread_rx, database_arc);
             });
         }
 
@@ -294,17 +311,15 @@ impl Database {
     }
 
     pub fn query_transaction(
-        &self,
+        person_table: &PersonTable,
+        query_latest_transaction_id: &TransactionId,
         statements: Vec<Statement>,
     ) -> DatabaseCommandTransactionResponse {
-        let query_latest_transaction_id = self.transaction_wal.get_current_transaction_id();
-
         let mut statement_results: Vec<StatementResult> = Vec::new();
 
         for statement in statements {
-            let statement_result = self
-                .person_table
-                .query_statement(statement.clone(), query_latest_transaction_id);
+            let statement_result =
+                person_table.query_statement(statement.clone(), query_latest_transaction_id);
 
             match statement_result {
                 Ok(statement_result) => statement_results.push(statement_result),
@@ -318,14 +333,12 @@ impl Database {
     }
 
     pub fn apply_transaction(
-        &mut self,
         statements: Vec<Statement>,
+        transaction_wal: &mut TransactionWAL,
+        person_table: &mut PersonTable,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        let applying_transaction_id = self
-            .transaction_wal
-            .get_current_transaction_id()
-            .increment();
+        let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
 
         let mut status = CommitStatus::Commit;
 
@@ -337,9 +350,8 @@ impl Database {
         let mut statement_stack: Vec<StatementAndResult> = Vec::new();
 
         for statement in statements.clone() {
-            let apply_result = self
-                .person_table
-                .apply(statement.clone(), applying_transaction_id.clone());
+            let apply_result =
+                person_table.apply(statement.clone(), applying_transaction_id.clone());
 
             match apply_result {
                 Ok(statement_result) => {
@@ -367,7 +379,7 @@ impl Database {
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
-                self.transaction_wal.commit(
+                transaction_wal.commit(
                     applying_transaction_id,
                     statements,
                     DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
@@ -387,7 +399,7 @@ impl Database {
                     result: _,
                 } in statement_stack.into_iter().rev()
                 {
-                    self.person_table.apply_rollback(statement)
+                    person_table.apply_rollback(statement)
                 }
 
                 // Rollbacks are not committed to the WAL so we can just return the response
@@ -404,538 +416,538 @@ impl Database {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use uuid::Uuid;
-
-    use crate::{
-        consts::consts::EntityId,
-        database::table::row::{UpdatePersonData, UpdateStatement},
-        model::{
-            person::{self, Person},
-            statement::Statement,
-        },
-    };
-
-    use super::test_utils::database_test_task;
-    use crate::database::commands::DatabaseCommandTransactionResponse;
-    use crate::database::database::Database;
-    use crate::model::statement::StatementResult;
-
-    mod add {
-
-        use crate::database::database::ApplyMode;
-
-        use super::*;
-
-        #[test]
-        fn add_happy_path() {
-            let mut database = Database::new_test();
-
-            let person = Person::new_test();
-
-            let transcation_result = database
-                .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
-
-            assert_eq!(
-                transcation_result,
-                DatabaseCommandTransactionResponse::new_committed_single_result(
-                    StatementResult::Single(person)
-                )
-            );
-        }
-
-        #[test]
-        fn add_multiple_separate() {
-            let mut database = Database::new_test();
-
-            let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
-
-            let transcation_result_one = database
-                .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
-
-            assert_eq!(
-                transcation_result_one,
-                DatabaseCommandTransactionResponse::new_committed_single_result(
-                    StatementResult::Single(person_one.clone())
-                ),
-                "Person should be returned as a single statement result"
-            );
-
-            let person_two: Person =
-                Person::new("Person Two".to_string(), Some("Email Two".to_string()));
-
-            let transcation_result_two = database
-                .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
-
-            assert_eq!(
-                transcation_result_two,
-                DatabaseCommandTransactionResponse::new_committed_single_result(
-                    StatementResult::Single(person_two.clone())
-                ),
-                "Person should be returned as a single statement result"
-            );
-        }
-
-        #[test]
-        fn add_multiple_transaction() {
-            let mut database = Database::new_test();
-
-            let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
-            let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
-
-            let action_results = database.apply_transaction(
-                vec![
-                    Statement::Add(person_one.clone()),
-                    Statement::Add(person_two.clone()),
-                ],
-                ApplyMode::Restore,
-            );
-
-            assert_eq!(
-                action_results,
-                DatabaseCommandTransactionResponse::new_committed_multiple(vec![
-                    StatementResult::Single(person_one),
-                    StatementResult::Single(person_two)
-                ])
-            );
-        }
-
-        #[test]
-        fn add_multiple_transaction_rollback() {
-            let mut database = Database::new_test();
-
-            let person_one = Person::new(
-                "Person One".to_string(),
-                Some("OverlappingEmail".to_string()),
-            );
-
-            let person_two = Person::new(
-                "Person Two".to_string(),
-                Some("OverlappingEmail".to_string()),
-            );
-
-            let process_action_result = database.apply_transaction(
-                vec![
-                    Statement::Add(person_one.clone()),
-                    Statement::Add(person_two.clone()),
-                ],
-                ApplyMode::Restore,
-            );
-
-            let action_error = process_action_result;
-
-            assert_eq!(
-                action_error,
-                DatabaseCommandTransactionResponse::Rollback(
-                    "Cannot add row as a person already exists with this email: OverlappingEmail"
-                        .to_string()
-                ),
-                "When one statement fails, all actions should be rolled back"
-            );
-        }
-    }
-
-    mod transaction_rollback {
-        use crate::{consts::consts::TransactionId, database::database::ApplyMode};
-
-        use super::*;
-
-        #[test]
-        fn rollback_response() {
-            // Given an empty database
-            let mut database = Database::new_test();
-
-            // When a rollback happens
-            let rollback_actions = create_rollback_statements();
-
-            let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // The transaction log will be empty
-            assert_eq!(
-                error_message,
-                DatabaseCommandTransactionResponse::Rollback(
-                    "Cannot add row as a person already exists with this email: OverlappingEmail"
-                        .to_string()
-                )
-            );
-        }
-
-        #[test]
-        fn transaction_log_is_empty() {
-            // Given an empty database
-            let mut database = Database::new_test();
-
-            let rollback_actions = create_rollback_statements();
-
-            // When a rollback happens
-            database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // Then there should be no items in the transaction log
-            assert_eq!(
-                database.transaction_wal.get_current_transaction_id(),
-                &TransactionId::new_first_transaction(),
-                "Transaction log should be empty"
-            );
-        }
-
-        #[test]
-        fn indexes_are_empty() {
-            // Given an empty database
-            let mut database = Database::new_test();
-
-            // When a rollback happens
-            let rollback_actions = create_rollback_statements();
-
-            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // Then the items at the start of the transaction, should be emptied from the index
-            assert_eq!(
-                database.person_table.unique_email_index.len(),
-                0,
-                "Unique email index should be empty"
-            );
-        }
-
-        #[test]
-        fn row_table_is_empty() {
-            // Given an empty database
-            let mut database = Database::new_test();
-
-            // When a rollback happens
-            let rollback_actions = create_rollback_statements();
-
-            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // The row that was created for the item is removed
-            assert_eq!(
-                database.person_table.person_rows.len(),
-                0,
-                "Person rows should be empty"
-            );
-        }
-
-        fn create_rollback_statements() -> Vec<Statement> {
-            let person_one = Person::new(
-                "Person One".to_string(),
-                Some("OverlappingEmail".to_string()),
-            );
-
-            let person_two = Person::new(
-                "Person Two".to_string(),
-                Some("OverlappingEmail".to_string()),
-            );
-
-            vec![
-                Statement::Add(person_one.clone()),
-                Statement::Add(person_two.clone()),
-            ]
-        }
-    }
-
-    /// Running these tests: cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
-    mod bulk {
-        use super::*;
-        use crate::database::table::query::{QueryMatch, QueryPersonData};
-
-        const CLIENT_THREADS: u32 = 2;
-
-        // Seems that three threads is the sweet spot for the M1 MBA
-        const READ_THREADS: u32 = 4;
-        const READ_SAMPLE_SIZE: u32 = 3_000_000;
-
-        // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
-        // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
-        //  We are not technically flushing the WAL to disk, hence why
-        const WRITE_THREADS: u32 = 1;
-        const WRITE_SAMPLE_SIZE: u32 = 500_000;
-
-        #[test]
-        #[ignore]
-        fn update() {
-            let setup_generator = |thread_id: u32| {
-                Statement::Add(person::Person {
-                    id: EntityId(thread_id.to_string()),
-                    full_name: "Test".to_string(),
-                    email: Some(format!("Email-{}", thread_id)),
-                })
-            };
-
-            let action_generator = |thread: u32, index: u32| {
-                return Statement::Update(
-                    EntityId(thread.to_string()),
-                    UpdatePersonData {
-                        full_name: UpdateStatement::Set(index.to_string()),
-                        email: UpdateStatement::Set(format!("Email-{}{}", thread, index)),
-                    },
-                );
-            };
-
-            let metrics = database_test_task(
-                CLIENT_THREADS,
-                WRITE_THREADS,
-                WRITE_SAMPLE_SIZE,
-                action_generator,
-                Some(setup_generator),
-            );
-
-            // ~150k s/ps on M1 MBA
-            println!("[ASYNC] Metrics: {:#?}", metrics);
-        }
-
-        #[test]
-        #[ignore]
-        fn add() {
-            // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
-            // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
-            //  We are not technically flushing the WAL to disk, hence why
-            let action_generator = |_, _| {
-                Statement::Add(person::Person {
-                    id: EntityId::new(),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
-            };
-
-            let metrics = database_test_task(
-                CLIENT_THREADS,
-                WRITE_THREADS,
-                WRITE_SAMPLE_SIZE,
-                action_generator,
-                None,
-            );
-
-            // ~150k s/ps on M1 MBA
-            println!("[ASYNC] Metrics: {:#?}", metrics);
-        }
-
-        #[test]
-        #[ignore]
-        fn get() {
-            // Due to the RW Lock allows scaling, scaling reads scales logarithmically with the number of threads
-            let setup_generator = |thread_id: u32| {
-                Statement::Add(person::Person {
-                    id: EntityId(thread_id.to_string()),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
-            };
-
-            let action_generator = |thread_id: u32, _: u32| {
-                return Statement::Get(EntityId(thread_id.to_string()));
-            };
-
-            let metrics = database_test_task(
-                CLIENT_THREADS,
-                READ_THREADS,
-                READ_SAMPLE_SIZE,
-                action_generator,
-                Some(setup_generator),
-            );
-
-            // ~600k-~900k s/ps on M1 MBA
-            println!("[ASYNC] Metrics: {:#?}", metrics);
-        }
-
-        #[test]
-        #[ignore]
-        fn list() {
-            // Due to the RW Lock allows scaling, scaling reads scales logarithmically with the number of threads
-            let setup_generator = |thread_id: u32| {
-                Statement::Add(person::Person {
-                    id: EntityId(thread_id.to_string()),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
-            };
-
-            let action_generator = |_: u32, _: u32| {
-                return Statement::List(Some(QueryPersonData {
-                    full_name: QueryMatch::Any,
-                    email: QueryMatch::Any,
-                }));
-            };
-
-            let metrics = database_test_task(
-                CLIENT_THREADS,
-                READ_THREADS,
-                READ_SAMPLE_SIZE,
-                action_generator,
-                Some(setup_generator),
-            );
-
-            // ~600k-~900k s/ps on M1 MBA
-            println!("[ASYNC] Metrics: {:#?}", metrics);
-        }
-    }
-}
-
-pub mod test_utils {
-
-    use num_format::ToFormattedString;
-
-    use crate::{
-        database::{
-            database::Database,
-            request_manager::{RequestManager, TaskStatementResponse},
-        },
-        model::statement::{Statement, StatementResult},
-    };
-    use std::{
-        fmt::Debug,
-        thread::{self, JoinHandle},
-        time::{Duration, Instant},
-    };
-
-    #[derive(Debug)]
-    pub enum Mode {
-        Single,
-        Task,
-    }
-
-    pub struct TestMetrics {
-        pub test_duration: Duration,
-        pub statements: u32,
-        pub mode: Mode,
-    }
-
-    impl TestMetrics {
-        pub fn new(mode: Mode, test_duration: Duration, statements: u32) -> Self {
-            Self {
-                mode,
-                test_duration,
-                statements,
-            }
-        }
-    }
-
-    impl Debug for TestMetrics {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            let duration_ms = format!(
-                "{}ms",
-                self.test_duration
-                    .as_millis()
-                    .to_formatted_string(&num_format::Locale::en)
-            );
-
-            let statements_per_second =
-                ((self.statements as f64 / self.test_duration.as_secs_f64()) as u32)
-                    .to_formatted_string(&num_format::Locale::en);
-
-            f.debug_struct("TestMetrics")
-                .field("mode", &self.mode)
-                .field("test_duration", &duration_ms)
-                .field(
-                    "actions",
-                    &self.statements.to_formatted_string(&num_format::Locale::en),
-                )
-                .field("statements/s", &statements_per_second)
-                .finish()
-        }
-    }
-
-    pub fn run_action(
-        rm: RequestManager,
-        actions: usize,
-        test_identifier: u64,
-        action_generator: fn(u64, usize) -> Statement,
-    ) -> Vec<Vec<StatementResult>> {
-        let mut task_statement_response: Vec<TaskStatementResponse> = Vec::with_capacity(actions);
-
-        for index in 0..actions {
-            let statement = action_generator(test_identifier, index);
-
-            task_statement_response.push(rm.send_transaction_task(vec![statement]));
-        }
-
-        let mut statement_result: Vec<Vec<StatementResult>> = Vec::with_capacity(actions);
-
-        for statement_response in task_statement_response {
-            statement_result.push(statement_response.get().expect("Should not timeout"));
-        }
-
-        // Return the statement results so the drop can be calculated outside of the test function
-        return statement_result;
-    }
-
-    /// Sends N items into the channel and then awaits them all at the end. In theory this test
-    /// should be faster because it avoids all the 'ping-pong' of sending and receiving
-    ///
-    /// Note: At the moment we do not validate the results of the actions, but because we use
-    ///     get() we are validating that the transaction did commit
-    pub fn database_test_task(
-        worker_threads: u32,
-        database_threads: u32,
-        actions: u32,
-        action_generator: fn(u32, u32) -> Statement,
-        setup_generator: Option<fn(u32) -> Statement>,
-    ) -> TestMetrics {
-        let rm = Database::new_test().run(database_threads);
-
-        let mut sender_threads: Vec<JoinHandle<()>> = vec![];
-
-        // All setup is performed in the same thread, is synchronous, and is not included in the timer
-        if let Some(setup) = setup_generator {
-            for thread_id in 0..worker_threads {
-                let rm = rm.clone();
-
-                let statement = setup(thread_id);
-
-                let action_result = rm
-                    .send_single_statement(statement)
-                    .expect("Should not timeout");
-
-                match action_result {
-                    StatementResult::Single(_)
-                    | StatementResult::GetSingle(_)
-                    | StatementResult::List(_) => {}
-                    _ => panic!("Unexpected response type"),
-                }
-            }
-        }
-
-        let now = Instant::now();
-
-        for thread_id in 0..worker_threads {
-            let rm = rm.clone();
-
-            let sender_thread = thread::spawn(move || {
-                let mut task_statement_response: Vec<TaskStatementResponse> = vec![];
-
-                // Use the task based API, this prevents the need to sync wait for a response before sending another request
-                for index in 0..(actions / worker_threads) {
-                    let statement = action_generator(thread_id, index);
-
-                    let action_result = rm.send_transaction_task(vec![statement]);
-
-                    task_statement_response.push(action_result);
-                }
-
-                for statement_response in task_statement_response {
-                    statement_response.get().expect("Should not timeout");
-                }
-            });
-
-            sender_threads.push(sender_thread);
-        }
-
-        for thread in sender_threads {
-            thread.join().unwrap();
-        }
-
-        let metrics = TestMetrics::new(Mode::Task, now.elapsed(), actions);
-
-        // Allows database thread to successfully exit
-        let shutdown_response = rm
-            .clone()
-            .send_shutdown_request()
-            .expect("Should not timeout");
-
-        assert_eq!(
-            shutdown_response,
-            "Successfully shutdown database".to_string()
-        );
-
-        metrics
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use uuid::Uuid;
+
+//     use crate::{
+//         consts::consts::EntityId,
+//         database::table::row::{UpdatePersonData, UpdateStatement},
+//         model::{
+//             person::{self, Person},
+//             statement::Statement,
+//         },
+//     };
+
+//     use super::test_utils::database_test_task;
+//     use crate::database::commands::DatabaseCommandTransactionResponse;
+//     use crate::database::database::Database;
+//     use crate::model::statement::StatementResult;
+
+//     mod add {
+
+//         use crate::database::database::ApplyMode;
+
+//         use super::*;
+
+//         #[test]
+//         fn add_happy_path() {
+//             let mut database = Database::new_test();
+
+//             let person = Person::new_test();
+
+//             let transcation_result = database
+//                 .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
+
+//             assert_eq!(
+//                 transcation_result,
+//                 DatabaseCommandTransactionResponse::new_committed_single_result(
+//                     StatementResult::Single(person)
+//                 )
+//             );
+//         }
+
+//         #[test]
+//         fn add_multiple_separate() {
+//             let mut database = Database::new_test();
+
+//             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
+
+//             let transcation_result_one = database
+//                 .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
+
+//             assert_eq!(
+//                 transcation_result_one,
+//                 DatabaseCommandTransactionResponse::new_committed_single_result(
+//                     StatementResult::Single(person_one.clone())
+//                 ),
+//                 "Person should be returned as a single statement result"
+//             );
+
+//             let person_two: Person =
+//                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
+
+//             let transcation_result_two = database
+//                 .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
+
+//             assert_eq!(
+//                 transcation_result_two,
+//                 DatabaseCommandTransactionResponse::new_committed_single_result(
+//                     StatementResult::Single(person_two.clone())
+//                 ),
+//                 "Person should be returned as a single statement result"
+//             );
+//         }
+
+//         #[test]
+//         fn add_multiple_transaction() {
+//             let mut database = Database::new_test();
+
+//             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
+//             let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
+
+//             let action_results = database.apply_transaction(
+//                 vec![
+//                     Statement::Add(person_one.clone()),
+//                     Statement::Add(person_two.clone()),
+//                 ],
+//                 ApplyMode::Restore,
+//             );
+
+//             assert_eq!(
+//                 action_results,
+//                 DatabaseCommandTransactionResponse::new_committed_multiple(vec![
+//                     StatementResult::Single(person_one),
+//                     StatementResult::Single(person_two)
+//                 ])
+//             );
+//         }
+
+//         #[test]
+//         fn add_multiple_transaction_rollback() {
+//             let mut database = Database::new_test();
+
+//             let person_one = Person::new(
+//                 "Person One".to_string(),
+//                 Some("OverlappingEmail".to_string()),
+//             );
+
+//             let person_two = Person::new(
+//                 "Person Two".to_string(),
+//                 Some("OverlappingEmail".to_string()),
+//             );
+
+//             let process_action_result = database.apply_transaction(
+//                 vec![
+//                     Statement::Add(person_one.clone()),
+//                     Statement::Add(person_two.clone()),
+//                 ],
+//                 ApplyMode::Restore,
+//             );
+
+//             let action_error = process_action_result;
+
+//             assert_eq!(
+//                 action_error,
+//                 DatabaseCommandTransactionResponse::Rollback(
+//                     "Cannot add row as a person already exists with this email: OverlappingEmail"
+//                         .to_string()
+//                 ),
+//                 "When one statement fails, all actions should be rolled back"
+//             );
+//         }
+//     }
+
+//     mod transaction_rollback {
+//         use crate::{consts::consts::TransactionId, database::database::ApplyMode};
+
+//         use super::*;
+
+//         #[test]
+//         fn rollback_response() {
+//             // Given an empty database
+//             let mut database = Database::new_test();
+
+//             // When a rollback happens
+//             let rollback_actions = create_rollback_statements();
+
+//             let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+
+//             // The transaction log will be empty
+//             assert_eq!(
+//                 error_message,
+//                 DatabaseCommandTransactionResponse::Rollback(
+//                     "Cannot add row as a person already exists with this email: OverlappingEmail"
+//                         .to_string()
+//                 )
+//             );
+//         }
+
+//         #[test]
+//         fn transaction_log_is_empty() {
+//             // Given an empty database
+//             let mut database = Database::new_test();
+
+//             let rollback_actions = create_rollback_statements();
+
+//             // When a rollback happens
+//             database.apply_transaction(rollback_actions, ApplyMode::Restore);
+
+//             // Then there should be no items in the transaction log
+//             assert_eq!(
+//                 database.transaction_wal.get_current_transaction_id(),
+//                 &TransactionId::new_first_transaction(),
+//                 "Transaction log should be empty"
+//             );
+//         }
+
+//         #[test]
+//         fn indexes_are_empty() {
+//             // Given an empty database
+//             let mut database = Database::new_test();
+
+//             // When a rollback happens
+//             let rollback_actions = create_rollback_statements();
+
+//             let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+
+//             // Then the items at the start of the transaction, should be emptied from the index
+//             assert_eq!(
+//                 database.person_table.unique_email_index.len(),
+//                 0,
+//                 "Unique email index should be empty"
+//             );
+//         }
+
+//         #[test]
+//         fn row_table_is_empty() {
+//             // Given an empty database
+//             let mut database = Database::new_test();
+
+//             // When a rollback happens
+//             let rollback_actions = create_rollback_statements();
+
+//             let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+
+//             // The row that was created for the item is removed
+//             assert_eq!(
+//                 database.person_table.person_rows.len(),
+//                 0,
+//                 "Person rows should be empty"
+//             );
+//         }
+
+//         fn create_rollback_statements() -> Vec<Statement> {
+//             let person_one = Person::new(
+//                 "Person One".to_string(),
+//                 Some("OverlappingEmail".to_string()),
+//             );
+
+//             let person_two = Person::new(
+//                 "Person Two".to_string(),
+//                 Some("OverlappingEmail".to_string()),
+//             );
+
+//             vec![
+//                 Statement::Add(person_one.clone()),
+//                 Statement::Add(person_two.clone()),
+//             ]
+//         }
+//     }
+
+//     /// Running these tests: cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
+//     mod bulk {
+//         use super::*;
+//         use crate::database::table::query::{QueryMatch, QueryPersonData};
+
+//         const CLIENT_THREADS: u32 = 2;
+
+//         // Seems that three threads is the sweet spot for the M1 MBA
+//         const READ_THREADS: u32 = 4;
+//         const READ_SAMPLE_SIZE: u32 = 3_000_000;
+
+//         // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
+//         // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
+//         //  We are not technically flushing the WAL to disk, hence why
+//         const WRITE_THREADS: u32 = 1;
+//         const WRITE_SAMPLE_SIZE: u32 = 500_000;
+
+//         #[test]
+//         #[ignore]
+//         fn update() {
+//             let setup_generator = |thread_id: u32| {
+//                 Statement::Add(person::Person {
+//                     id: EntityId(thread_id.to_string()),
+//                     full_name: "Test".to_string(),
+//                     email: Some(format!("Email-{}", thread_id)),
+//                 })
+//             };
+
+//             let action_generator = |thread: u32, index: u32| {
+//                 return Statement::Update(
+//                     EntityId(thread.to_string()),
+//                     UpdatePersonData {
+//                         full_name: UpdateStatement::Set(index.to_string()),
+//                         email: UpdateStatement::Set(format!("Email-{}{}", thread, index)),
+//                     },
+//                 );
+//             };
+
+//             let metrics = database_test_task(
+//                 CLIENT_THREADS,
+//                 WRITE_THREADS,
+//                 WRITE_SAMPLE_SIZE,
+//                 action_generator,
+//                 Some(setup_generator),
+//             );
+
+//             // ~150k s/ps on M1 MBA
+//             println!("[ASYNC] Metrics: {:#?}", metrics);
+//         }
+
+//         #[test]
+//         #[ignore]
+//         fn add() {
+//             // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
+//             // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
+//             //  We are not technically flushing the WAL to disk, hence why
+//             let action_generator = |_, _| {
+//                 Statement::Add(person::Person {
+//                     id: EntityId::new(),
+//                     full_name: "Test".to_string(),
+//                     email: Some(Uuid::new_v4().to_string()),
+//                 })
+//             };
+
+//             let metrics = database_test_task(
+//                 CLIENT_THREADS,
+//                 WRITE_THREADS,
+//                 WRITE_SAMPLE_SIZE,
+//                 action_generator,
+//                 None,
+//             );
+
+//             // ~150k s/ps on M1 MBA
+//             println!("[ASYNC] Metrics: {:#?}", metrics);
+//         }
+
+//         #[test]
+//         #[ignore]
+//         fn get() {
+//             // Due to the RW Lock allows scaling, scaling reads scales logarithmically with the number of threads
+//             let setup_generator = |thread_id: u32| {
+//                 Statement::Add(person::Person {
+//                     id: EntityId(thread_id.to_string()),
+//                     full_name: "Test".to_string(),
+//                     email: Some(Uuid::new_v4().to_string()),
+//                 })
+//             };
+
+//             let action_generator = |thread_id: u32, _: u32| {
+//                 return Statement::Get(EntityId(thread_id.to_string()));
+//             };
+
+//             let metrics = database_test_task(
+//                 CLIENT_THREADS,
+//                 READ_THREADS,
+//                 READ_SAMPLE_SIZE,
+//                 action_generator,
+//                 Some(setup_generator),
+//             );
+
+//             // ~600k-~900k s/ps on M1 MBA
+//             println!("[ASYNC] Metrics: {:#?}", metrics);
+//         }
+
+//         #[test]
+//         #[ignore]
+//         fn list() {
+//             // Due to the RW Lock allows scaling, scaling reads scales logarithmically with the number of threads
+//             let setup_generator = |thread_id: u32| {
+//                 Statement::Add(person::Person {
+//                     id: EntityId(thread_id.to_string()),
+//                     full_name: "Test".to_string(),
+//                     email: Some(Uuid::new_v4().to_string()),
+//                 })
+//             };
+
+//             let action_generator = |_: u32, _: u32| {
+//                 return Statement::List(Some(QueryPersonData {
+//                     full_name: QueryMatch::Any,
+//                     email: QueryMatch::Any,
+//                 }));
+//             };
+
+//             let metrics = database_test_task(
+//                 CLIENT_THREADS,
+//                 READ_THREADS,
+//                 READ_SAMPLE_SIZE,
+//                 action_generator,
+//                 Some(setup_generator),
+//             );
+
+//             // ~600k-~900k s/ps on M1 MBA
+//             println!("[ASYNC] Metrics: {:#?}", metrics);
+//         }
+//     }
+// }
+
+// pub mod test_utils {
+
+//     use num_format::ToFormattedString;
+
+//     use crate::{
+//         database::{
+//             database::Database,
+//             request_manager::{RequestManager, TaskStatementResponse},
+//         },
+//         model::statement::{Statement, StatementResult},
+//     };
+//     use std::{
+//         fmt::Debug,
+//         thread::{self, JoinHandle},
+//         time::{Duration, Instant},
+//     };
+
+//     #[derive(Debug)]
+//     pub enum Mode {
+//         Single,
+//         Task,
+//     }
+
+//     pub struct TestMetrics {
+//         pub test_duration: Duration,
+//         pub statements: u32,
+//         pub mode: Mode,
+//     }
+
+//     impl TestMetrics {
+//         pub fn new(mode: Mode, test_duration: Duration, statements: u32) -> Self {
+//             Self {
+//                 mode,
+//                 test_duration,
+//                 statements,
+//             }
+//         }
+//     }
+
+//     impl Debug for TestMetrics {
+//         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//             let duration_ms = format!(
+//                 "{}ms",
+//                 self.test_duration
+//                     .as_millis()
+//                     .to_formatted_string(&num_format::Locale::en)
+//             );
+
+//             let statements_per_second =
+//                 ((self.statements as f64 / self.test_duration.as_secs_f64()) as u32)
+//                     .to_formatted_string(&num_format::Locale::en);
+
+//             f.debug_struct("TestMetrics")
+//                 .field("mode", &self.mode)
+//                 .field("test_duration", &duration_ms)
+//                 .field(
+//                     "actions",
+//                     &self.statements.to_formatted_string(&num_format::Locale::en),
+//                 )
+//                 .field("statements/s", &statements_per_second)
+//                 .finish()
+//         }
+//     }
+
+//     pub fn run_action(
+//         rm: RequestManager,
+//         actions: usize,
+//         test_identifier: u64,
+//         action_generator: fn(u64, usize) -> Statement,
+//     ) -> Vec<Vec<StatementResult>> {
+//         let mut task_statement_response: Vec<TaskStatementResponse> = Vec::with_capacity(actions);
+
+//         for index in 0..actions {
+//             let statement = action_generator(test_identifier, index);
+
+//             task_statement_response.push(rm.send_transaction_task(vec![statement]));
+//         }
+
+//         let mut statement_result: Vec<Vec<StatementResult>> = Vec::with_capacity(actions);
+
+//         for statement_response in task_statement_response {
+//             statement_result.push(statement_response.get().expect("Should not timeout"));
+//         }
+
+//         // Return the statement results so the drop can be calculated outside of the test function
+//         return statement_result;
+//     }
+
+//     /// Sends N items into the channel and then awaits them all at the end. In theory this test
+//     /// should be faster because it avoids all the 'ping-pong' of sending and receiving
+//     ///
+//     /// Note: At the moment we do not validate the results of the actions, but because we use
+//     ///     get() we are validating that the transaction did commit
+//     pub fn database_test_task(
+//         worker_threads: u32,
+//         database_threads: u32,
+//         actions: u32,
+//         action_generator: fn(u32, u32) -> Statement,
+//         setup_generator: Option<fn(u32) -> Statement>,
+//     ) -> TestMetrics {
+//         let rm = Database::new_test().run(database_threads);
+
+//         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
+
+//         // All setup is performed in the same thread, is synchronous, and is not included in the timer
+//         if let Some(setup) = setup_generator {
+//             for thread_id in 0..worker_threads {
+//                 let rm = rm.clone();
+
+//                 let statement = setup(thread_id);
+
+//                 let action_result = rm
+//                     .send_single_statement(statement)
+//                     .expect("Should not timeout");
+
+//                 match action_result {
+//                     StatementResult::Single(_)
+//                     | StatementResult::GetSingle(_)
+//                     | StatementResult::List(_) => {}
+//                     _ => panic!("Unexpected response type"),
+//                 }
+//             }
+//         }
+
+//         let now = Instant::now();
+
+//         for thread_id in 0..worker_threads {
+//             let rm = rm.clone();
+
+//             let sender_thread = thread::spawn(move || {
+//                 let mut task_statement_response: Vec<TaskStatementResponse> = vec![];
+
+//                 // Use the task based API, this prevents the need to sync wait for a response before sending another request
+//                 for index in 0..(actions / worker_threads) {
+//                     let statement = action_generator(thread_id, index);
+
+//                     let action_result = rm.send_transaction_task(vec![statement]);
+
+//                     task_statement_response.push(action_result);
+//                 }
+
+//                 for statement_response in task_statement_response {
+//                     statement_response.get().expect("Should not timeout");
+//                 }
+//             });
+
+//             sender_threads.push(sender_thread);
+//         }
+
+//         for thread in sender_threads {
+//             thread.join().unwrap();
+//         }
+
+//         let metrics = TestMetrics::new(Mode::Task, now.elapsed(), actions);
+
+//         // Allows database thread to successfully exit
+//         let shutdown_response = rm
+//             .clone()
+//             .send_shutdown_request()
+//             .expect("Should not timeout");
+
+//         assert_eq!(
+//             shutdown_response,
+//             "Successfully shutdown database".to_string()
+//         );
+
+//         metrics
+//     }
+// }

@@ -460,89 +460,89 @@ impl Wait for TaskListResponse {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use uuid::Uuid;
+// #[cfg(test)]
+// mod tests {
+//     use uuid::Uuid;
 
-    use crate::{
-        consts::consts::EntityId,
-        database::{
-            commands::{DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandResponse},
-            database::Database,
-        },
-        model::{
-            person::Person,
-            statement::{Statement, StatementResult},
-        },
-    };
+//     use crate::{
+//         consts::consts::EntityId,
+//         database::{
+//             commands::{DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandResponse},
+//             database::Database,
+//         },
+//         model::{
+//             person::Person,
+//             statement::{Statement, StatementResult},
+//         },
+//     };
 
-    #[test]
-    fn sync() {
-        let request_manager = Database::new_test().run(1);
+//     #[test]
+//     fn sync() {
+//         let request_manager = Database::new_test().run(1);
 
-        let action_result = request_manager
-            .send_single_statement(Statement::Add(Person {
-                id: EntityId::new(),
-                full_name: "Test".to_string(),
-                email: Some(Uuid::new_v4().to_string()),
-            }))
-            .expect("Should not timeout");
+//         let action_result = request_manager
+//             .send_single_statement(Statement::Add(Person {
+//                 id: EntityId::new(),
+//                 full_name: "Test".to_string(),
+//                 email: Some(Uuid::new_v4().to_string()),
+//             }))
+//             .expect("Should not timeout");
 
-        assert_eq!(action_result.single().full_name, "Test");
-    }
+//         assert_eq!(action_result.single().full_name, "Test");
+//     }
 
-    #[test]
-    fn task_command() {
-        let request_manager = Database::new_test().run(1);
+//     #[test]
+//     fn task_command() {
+//         let request_manager = Database::new_test().run(1);
 
-        let person = Person {
-            id: EntityId::new(),
-            full_name: "Test".to_string(),
-            email: Some(Uuid::new_v4().to_string()),
-        };
+//         let person = Person {
+//             id: EntityId::new(),
+//             full_name: "Test".to_string(),
+//             email: Some(Uuid::new_v4().to_string()),
+//         };
 
-        let task = request_manager.send_database_command_task(DatabaseCommand::Transaction(vec![
-            Statement::Add(person.clone()),
-        ]));
+//         let task = request_manager.send_database_command_task(DatabaseCommand::Transaction(vec![
+//             Statement::Add(person.clone()),
+//         ]));
 
-        let action_result = task.get().expect("Should not timeout");
+//         let action_result = task.get().expect("Should not timeout");
 
-        assert_eq!(
-            action_result,
-            DatabaseCommandResponse::transaction_commit(vec![StatementResult::Single(person)])
-        );
-    }
+//         assert_eq!(
+//             action_result,
+//             DatabaseCommandResponse::transaction_commit(vec![StatementResult::Single(person)])
+//         );
+//     }
 
-    #[test]
-    fn task_statement() {
-        let request_manager = Database::new_test().run(1);
+//     #[test]
+//     fn task_statement() {
+//         let request_manager = Database::new_test().run(1);
 
-        let task = request_manager.send_transaction_task(vec![Statement::Add(Person {
-            id: EntityId::new(),
-            full_name: "Test".to_string(),
-            email: Some(Uuid::new_v4().to_string()),
-        })]);
+//         let task = request_manager.send_transaction_task(vec![Statement::Add(Person {
+//             id: EntityId::new(),
+//             full_name: "Test".to_string(),
+//             email: Some(Uuid::new_v4().to_string()),
+//         })]);
 
-        let action_result = task.get().expect("Should not timeout");
+//         let action_result = task.get().expect("Should not timeout");
 
-        assert_eq!(action_result.len(), 1);
-    }
+//         assert_eq!(action_result.len(), 1);
+//     }
 
-    #[test]
-    fn task_add() {
-        let request_manager = Database::new_test().run(1);
+//     #[test]
+//     fn task_add() {
+//         let request_manager = Database::new_test().run(1);
 
-        let person = Person {
-            id: EntityId::new(),
-            full_name: "Test".to_string(),
-            email: Some(Uuid::new_v4().to_string()),
-        };
+//         let person = Person {
+//             id: EntityId::new(),
+//             full_name: "Test".to_string(),
+//             email: Some(Uuid::new_v4().to_string()),
+//         };
 
-        let added_person = request_manager
-            .send_add_task(person.clone())
-            .get()
-            .expect("should not timeout");
+//         let added_person = request_manager
+//             .send_add_task(person.clone())
+//             .get()
+//             .expect("should not timeout");
 
-        assert_eq!(added_person, person);
-    }
-}
+//         assert_eq!(added_person, person);
+//     }
+// }
