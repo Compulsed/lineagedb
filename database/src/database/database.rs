@@ -201,12 +201,12 @@ impl Database {
 
             match contains_mutation {
                 true => {
-                    let mut transaction_wal = database.transaction_wal.write().unwrap();
+                    // let mut transaction_wal = database.transaction_wal.write().unwrap();
 
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
                     let _ = Database::apply_transaction(
                         transaction_statements,
-                        transaction_wal.deref_mut(),
+                        // transaction_wal.deref_mut(),
                         &database.person_table,
                         ApplyMode::Request(resolver),
                     );
@@ -336,11 +336,13 @@ impl Database {
 
     pub fn apply_transaction(
         statements: Vec<Statement>,
-        transaction_wal: &mut TransactionWAL,
+        // transaction_wal: &mut TransactionWAL,
         person_table: &PersonTable,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
+        // let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
+
+        let applying_transaction_id = TransactionId(10_000);
 
         let mut status = CommitStatus::Commit;
 
@@ -381,12 +383,19 @@ impl Database {
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
-                transaction_wal.commit(
-                    applying_transaction_id,
-                    statements,
-                    DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
-                    mode,
-                );
+                if let ApplyMode::Request(resolver) = mode {
+                    let _ =
+                        resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                            response.clone(),
+                        ));
+                }
+
+                // transaction_wal.commit(
+                //     applying_transaction_id,
+                //     statements,
+                //     DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
+                //     mode,
+                // );
 
                 return response;
             }
