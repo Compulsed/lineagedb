@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     database::DatabaseOptions,
-    table::{index::FullNameIndex, row::PersonVersion, table::PersonTable},
+    table::{row::PersonVersion, table::PersonTable},
 };
 
 enum FileType {
@@ -102,7 +102,7 @@ pub struct SnapshotManager {
     database_options: DatabaseOptions,
     snapshot_file: PersistanceManager<Vec<PersonVersion>>,
     metadata_file: PersistanceManager<Metadata>,
-    full_name_index_file: PersistanceManager<FullNameIndex>,
+    // full_name_index_file: PersistanceManager<FullNameIndex>,
     unique_email_index_file: PersistanceManager<HashMap<String, EntityId>>,
 }
 
@@ -120,10 +120,10 @@ impl SnapshotManager {
                 &database_options.data_directory,
                 FileType::Metadata,
             ),
-            full_name_index_file: PersistanceManager::new(
-                &database_options.data_directory,
-                FileType::SecondaryIndexFullName,
-            ),
+            // full_name_index_file: PersistanceManager::new(
+            //     &database_options.data_directory,
+            //     FileType::SecondaryIndexFullName,
+            // ),
             unique_email_index_file: PersistanceManager::new(
                 &database_options.data_directory,
                 FileType::SecondaryIndexUniqueEmail,
@@ -139,12 +139,12 @@ impl SnapshotManager {
         let snapeshot_count = version_snapshots.len();
 
         // -- Indexes
-        let full_name_index: FullNameIndex = self.full_name_index_file.read();
+        // let full_name_index: FullNameIndex = self.full_name_index_file.read();
 
         let unique_email_index: HashMap<String, EntityId> = self.unique_email_index_file.read();
 
         // -- Perform the restore
-        table.from_restore(version_snapshots, unique_email_index, full_name_index);
+        // table.from_restore(version_snapshots, unique_email_index, full_name_index);
 
         let metadata_data: Metadata = self.metadata_file.read();
 
@@ -166,10 +166,10 @@ impl SnapshotManager {
         });
 
         // -- Indexes
-        self.full_name_index_file.write(&table.full_name_index);
+        // self.full_name_index_file.write(&table.full_name_index);
 
-        self.unique_email_index_file
-            .write(&table.unique_email_index);
+        // self.unique_email_index_file
+        //     .write(&table.unique_email_index);
     }
 
     pub fn delete_snapshot(&self) {

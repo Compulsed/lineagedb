@@ -33,19 +33,21 @@ fn determine_search_method(
     table: &PersonTable,
     query_person_data: &QueryPersonData,
 ) -> SearchMethod {
-    match &query_person_data.full_name {
-        QueryMatch::Value(v) => match table.full_name_index.get_from_index(&Some(v.clone())) {
-            Some(set) => SearchMethod::Index(set.clone()),
-            None => SearchMethod::NoResults,
-        },
-        QueryMatch::Null => match table.full_name_index.get_from_index(&None) {
-            Some(set) => SearchMethod::Index(set.clone()),
-            None => SearchMethod::NoResults,
-        },
-        // TODO: We could use the index here, but it would require a full scan of the index
-        QueryMatch::NotNull => SearchMethod::RequiresFullScan,
-        QueryMatch::Any => SearchMethod::RequiresFullScan,
-    }
+    // match &query_person_data.full_name {
+    //     QueryMatch::Value(v) => match table.full_name_index.get_from_index(&Some(v.clone())) {
+    //         Some(set) => SearchMethod::Index(set.clone()),
+    //         None => SearchMethod::NoResults,
+    //     },
+    //     QueryMatch::Null => match table.full_name_index.get_from_index(&None) {
+    //         Some(set) => SearchMethod::Index(set.clone()),
+    //         None => SearchMethod::NoResults,
+    //     },
+    //     // TODO: We could use the index here, but it would require a full scan of the index
+    //     QueryMatch::NotNull => SearchMethod::RequiresFullScan,
+    //     QueryMatch::Any => SearchMethod::RequiresFullScan,
+    // }
+
+    SearchMethod::RequiresFullScan
 }
 
 pub fn query(
@@ -63,12 +65,18 @@ pub fn query(
         SearchMethod::Index(set) => set
             .into_iter()
             .filter_map(|id| table.person_rows.get(&id))
-            .filter_map(|value| value.at_transaction_id(&transaction_id))
+            .filter_map(|value| {
+                value
+                    .value()
+                    .read()
+                    .unwrap()
+                    .at_transaction_id(&transaction_id)
+            })
             .collect(),
         SearchMethod::RequiresFullScan => table
             .person_rows
             .iter()
-            .filter_map(|(_, value)| value.at_transaction_id(&transaction_id))
+            .filter_map(|v| v.value().read().unwrap().at_transaction_id(&transaction_id))
             .collect(),
         SearchMethod::NoResults => {
             return vec![];
