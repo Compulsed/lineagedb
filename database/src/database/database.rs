@@ -295,13 +295,16 @@ impl Database {
         //     );
         // }
 
-        let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
-
+        let mut tx_channels = vec![];
         let database_arc = Arc::new(self);
 
         for _ in 0..threads {
+            let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
             let thread_rx = rx.clone();
             let database_arc = database_arc.clone();
+
+            // Each thread has their own channel to the database
+            tx_channels.push(tx);
 
             // Spawn a new thread for each request
             thread::spawn(move || {
@@ -309,7 +312,7 @@ impl Database {
             });
         }
 
-        return RequestManager::new(tx);
+        return RequestManager::new(tx_channels);
     }
 
     pub fn query_transaction(

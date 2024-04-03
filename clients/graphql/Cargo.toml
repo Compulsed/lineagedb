@@ -22,3 +22,4 @@ clap = { version = "4.0", features = ["derive"] }
 ctrlc = "3.4.2"
 flume = "0.11.0"
 rand = "0.8.5"
+threadpool = "1.8.1"
