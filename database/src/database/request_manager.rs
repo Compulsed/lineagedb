@@ -1,4 +1,5 @@
 use core::panic;
+use rand::{seq::SliceRandom, thread_rng};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -18,11 +19,6 @@ use super::{
     table::{query::QueryPersonData, row::UpdatePersonData},
 };
 
-#[derive(Clone)]
-pub struct RequestManager {
-    database_sender: flume::Sender<DatabaseCommandRequest>,
-}
-
 /// Converts the database command hierarchy into a simple string, this is an easy interface to work with
 #[derive(Error, Debug)]
 pub enum RequestManagerError {
@@ -37,6 +33,11 @@ pub enum RequestManagerError {
     /// From control commands
     #[error("Database Error Status: {0}")]
     DatabaseErrorStatus(String),
+}
+
+#[derive(Clone)]
+pub struct RequestManager {
+    database_sender: Vec<flume::Sender<DatabaseCommandRequest>>,
 }
 
 /// Goal of the request manager is to provide a simple interface for interacting with the database
@@ -54,8 +55,18 @@ pub enum RequestManagerError {
 /// - Statement, allows sending a single statement or a transaction to the database
 /// - Command, allows sending control commands to the database, e.g. shutdown, reset, snapshot
 impl RequestManager {
-    pub fn new(database_sender: flume::Sender<DatabaseCommandRequest>) -> Self {
+    pub fn new(database_sender: Vec<flume::Sender<DatabaseCommandRequest>>) -> Self {
         Self { database_sender }
+    }
+
+    fn get_sender(&self) -> &flume::Sender<DatabaseCommandRequest> {
+        let mut rng = thread_rng();
+
+        // return &self.database_sender[0];
+
+        self.database_sender
+            .choose(&mut rng)
+            .expect("Should have at least one sender")
     }
 
     // -- Entity Methods: Async Task --
@@ -190,7 +201,7 @@ impl RequestManager {
 
         // Sends the request to the database worker, database will response
         //  on the response_receiver once it's finished processing it's request
-        self.database_sender.send(request).unwrap();
+        self.get_sender().send(request).unwrap();
 
         // If the database is large it can take > 30 seconds to reset
         let response = response_receiver.recv_timeout(Duration::from_secs(60));
@@ -206,7 +217,7 @@ impl RequestManager {
             command: database_request,
         };
 
-        self.database_sender.send(request).unwrap();
+        self.get_sender().send(request).unwrap();
 
         TaskCommandResponse::send(response_receiver)
     }
@@ -259,7 +270,7 @@ fn send_request(
         command: DatabaseCommand::Transaction(statement),
     };
 
-    request_manager.database_sender.send(request).unwrap();
+    request_manager.get_sender().send(request).unwrap();
 
     response_receiver
 }
