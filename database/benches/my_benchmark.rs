@@ -32,7 +32,7 @@ const DATABASE_THREADS_READ: u32 = 8;
 
 const POOL_SIZE: usize = 8;
 
-const SAMPLE_SIZE: [u64; 3] = [100, 1000, 10_000];
+const SAMPLE_SIZE: [u64; 1] = [100_000];
 
 const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::LargeInput;
 
@@ -169,7 +169,7 @@ pub fn get_benchmark(c: &mut Criterion) {
     for size in SAMPLE_SIZE.iter() {
         let rm = Database::new_test().run(DATABASE_THREADS_READ);
 
-        for i in 0..10_000 {
+        for i in 0..*size {
             let person = Person {
                 id: EntityId(i.to_string()),
                 full_name: "Test".to_string(),

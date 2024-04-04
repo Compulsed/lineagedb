@@ -324,7 +324,7 @@ impl Database {
 
         for statement in statements {
             let statement_result =
-                person_table.query_statement(statement.clone(), query_latest_transaction_id);
+                person_table.query_statement(statement, query_latest_transaction_id);
 
             match statement_result {
                 Ok(statement_result) => statement_results.push(statement_result),
