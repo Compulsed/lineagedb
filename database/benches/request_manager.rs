@@ -3,13 +3,7 @@ use std::sync::mpsc::channel;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use database::{
     consts::consts::EntityId,
-    database::{
-        database::{test_utils::run_action, Database},
-        table::{
-            query::{QueryMatch, QueryPersonData},
-            row::{UpdatePersonData, UpdateStatement},
-        },
-    },
+    database::database::{test_utils::run_action, Database},
     model::{
         person::Person,
         statement::{Statement, StatementResult},
@@ -18,20 +12,12 @@ use database::{
 use threadpool::ThreadPool;
 use uuid::Uuid;
 
-// Number of threads to use for the database
-// Due to the RW lock, additional write threads do not improve performance (contention will cause slow down),
 // does improve performance for read operations
-const DATABASE_THREADS_WRITE: u32 = 8;
+const DATABASE_THREADS_WRITE: [usize; 4] = [1, 2, 3, 4];
+const DATABASE_THREADS_READ: [usize; 4] = [1, 2, 3, 4];
+const POOL_SIZE: usize = 4;
 
-// There is an upper bound limit on RW lock read concurrency, this is because as a part of the RW lock implementing
-//  you must get exclusive access to the lock to increment the read count. This means that reader lock performance
-//  with threads is not linear, but rather has a cap. This is okay if there is a long critical section, but if the
-//  critical section is short then the overhead of the RW lock will dominate the performance.
-const DATABASE_THREADS_READ: u32 = 8;
-
-const POOL_SIZE: usize = 8;
-
-const SAMPLE_SIZE: [u64; 1] = [100_000];
+const SAMPLE_SIZE: u64 = 100_000;
 
 const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::LargeInput;
 
@@ -61,57 +47,60 @@ const INPUT_SIZE: criterion::BatchSize = criterion::BatchSize::LargeInput;
            this cleanup may might take some time in the kernel and thus affect subsequent tests
         - I suspect we are leaking the WAL thread. TODO: look into this
 */
-pub fn add_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("add_group");
+pub fn rm_add_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rm_add_group");
 
     let pool = ThreadPool::new(POOL_SIZE);
 
-    for size in SAMPLE_SIZE.iter() {
-        let rm = Database::new_test().run(DATABASE_THREADS_WRITE);
+    for database_write_threads in DATABASE_THREADS_WRITE.iter() {
+        let rm = Database::new_test().run(*database_write_threads);
 
-        group.throughput(Throughput::Elements(*size));
+        group.throughput(Throughput::Elements(SAMPLE_SIZE));
 
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.iter_batched(
-                || rm.clone(),
-                |rm| {
-                    let test_rm = rm.clone();
+        group.bench_with_input(
+            BenchmarkId::from_parameter(database_write_threads),
+            database_write_threads,
+            |b, &database_write_threads| {
+                b.iter_batched(
+                    || rm.clone(),
+                    |rm| {
+                        let test_rm = rm.clone();
 
-                    let (test_tx, test_rx) = channel::<i32>();
+                        let (test_tx, test_rx) = channel::<i32>();
 
-                    // TODO: Note, might be a little slower because the drop will happen at the end of the test
-                    for _ in 0..POOL_SIZE {
-                        let local_rm = test_rm.clone();
-                        let local_tx = test_tx.clone();
+                        for _ in 0..POOL_SIZE {
+                            let local_rm = test_rm.clone();
+                            let local_tx = test_tx.clone();
 
-                        pool.execute(move || {
-                            let local_actions = size / POOL_SIZE as u64;
+                            pool.execute(move || {
+                                let local_actions = SAMPLE_SIZE / POOL_SIZE as u64;
 
-                            run_action(
-                                local_rm.clone(),
-                                local_actions.try_into().unwrap(),
-                                size,
-                                |_, index| {
-                                    return Statement::Add(Person {
-                                        id: EntityId(Uuid::new_v4().to_string()),
-                                        full_name: index.to_string(),
-                                        email: None,
-                                    });
-                                },
-                            );
+                                run_action(
+                                    local_rm.clone(),
+                                    local_actions.try_into().unwrap(),
+                                    database_write_threads.try_into().unwrap(),
+                                    |_, index| {
+                                        return Statement::Add(Person {
+                                            id: EntityId(Uuid::new_v4().to_string()),
+                                            full_name: index.to_string(),
+                                            email: None,
+                                        });
+                                    },
+                                );
 
-                            local_tx.send(1).expect("Should not timeout");
-                        });
-                    }
+                                local_tx.send(1).expect("Should not timeout");
+                            });
+                        }
 
-                    test_rx
-                        .iter()
-                        .take(POOL_SIZE)
-                        .fold(0, |a: i32, b: i32| a + b);
-                },
-                INPUT_SIZE,
-            )
-        });
+                        test_rx
+                            .iter()
+                            .take(POOL_SIZE)
+                            .fold(0, |a: i32, b: i32| a + b);
+                    },
+                    INPUT_SIZE,
+                )
+            },
+        );
 
         // rm.send_shutdown_request().expect("Should not timeout");
     }
@@ -119,56 +108,15 @@ pub fn add_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-pub fn update_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("update_group");
-
-    for size in SAMPLE_SIZE.iter() {
-        let rm = Database::new_test().run(DATABASE_THREADS_WRITE);
-
-        let person = Person {
-            id: EntityId("update".to_string()),
-            full_name: "Test".to_string(),
-            email: None,
-        };
-
-        rm.send_single_statement(Statement::Add(person.clone()))
-            .expect("Should not timeout");
-
-        group.throughput(Throughput::Elements(*size));
-
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.iter_batched(
-                || rm.clone(),
-                |rm| {
-                    run_action(rm, size.try_into().unwrap(), size, |_, _| {
-                        return Statement::Update(
-                            EntityId("update".to_string()),
-                            UpdatePersonData {
-                                full_name: UpdateStatement::Set("Test".to_string()),
-                                email: UpdateStatement::NoChanges,
-                            },
-                        );
-                    });
-                },
-                INPUT_SIZE,
-            )
-        });
-
-        // rm.send_shutdown_request().expect("Should not timeout");
-    }
-
-    group.finish();
-}
-
-pub fn get_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("get_group");
+pub fn rm_get_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rm_get_group");
 
     let pool = ThreadPool::new(POOL_SIZE);
 
-    for size in SAMPLE_SIZE.iter() {
-        let rm = Database::new_test().run(DATABASE_THREADS_READ);
+    for database_read_threads in DATABASE_THREADS_READ.iter() {
+        let rm = Database::new_test().run(*database_read_threads);
 
-        for i in 0..*size {
+        for i in 0..SAMPLE_SIZE {
             let person = Person {
                 id: EntityId(i.to_string()),
                 full_name: "Test".to_string(),
@@ -179,75 +127,47 @@ pub fn get_benchmark(c: &mut Criterion) {
                 .expect("Should not timeout");
         }
 
-        group.throughput(Throughput::Elements(*size));
+        group.throughput(Throughput::Elements(SAMPLE_SIZE));
 
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.iter_batched(
-                || rm.clone(),
-                |rm| {
-                    let test_rm = rm.clone();
-                    let (test_tx, test_rx) = channel::<Vec<Vec<StatementResult>>>();
+        group.bench_with_input(
+            BenchmarkId::from_parameter(database_read_threads),
+            database_read_threads,
+            |b, &database_read_threads| {
+                b.iter_batched(
+                    || rm.clone(),
+                    |rm| {
+                        let test_rm = rm.clone();
+                        let (test_tx, test_rx) = channel::<Vec<Vec<StatementResult>>>();
 
-                    for _ in 0..POOL_SIZE {
-                        let local_rm = test_rm.clone();
-                        let local_tx = test_tx.clone();
+                        for _ in 0..POOL_SIZE {
+                            let local_rm = test_rm.clone();
+                            let local_tx = test_tx.clone();
 
-                        pool.execute(move || {
-                            let local_actions = size / POOL_SIZE as u64;
+                            pool.execute(move || {
+                                let local_actions = SAMPLE_SIZE / POOL_SIZE as u64;
 
-                            let stmt_results = run_action(
-                                local_rm.clone(),
-                                local_actions.try_into().unwrap(),
-                                size,
-                                |_, index| Statement::Get(EntityId(index.to_string())),
-                            );
+                                let stmt_results = run_action(
+                                    local_rm.clone(),
+                                    local_actions.try_into().unwrap(),
+                                    database_read_threads.try_into().unwrap(),
+                                    |_, index| Statement::Get(EntityId(index.to_string())),
+                                );
 
-                            local_tx.send(stmt_results).expect("Should not timeout");
-                        });
-                    }
+                                local_tx.send(stmt_results).expect("Should not timeout");
+                            });
+                        }
 
-                    // Collect all the results, and let the test handle the drop
-                    return test_rx
-                        .iter()
-                        .take(POOL_SIZE)
-                        .flatten()
-                        .collect::<Vec<Vec<StatementResult>>>();
-                },
-                INPUT_SIZE,
-            )
-        });
-
-        // rm.send_shutdown_request().expect("Should not timeout");
-    }
-
-    group.finish();
-}
-
-pub fn list_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("list_group");
-
-    for size in SAMPLE_SIZE.iter() {
-        let rm = Database::new_test().run(DATABASE_THREADS_READ);
-
-        rm.send_single_statement(Statement::Add(Person::new("list".to_string(), None)))
-            .expect("Should not timeout");
-
-        group.throughput(Throughput::Elements(*size));
-
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.iter_batched(
-                || rm.clone(),
-                |rm_list| {
-                    run_action(rm_list, size.try_into().unwrap(), size, |_, _| {
-                        Statement::List(Some(QueryPersonData {
-                            full_name: QueryMatch::Value("list".to_string()),
-                            email: QueryMatch::Any,
-                        }))
-                    });
-                },
-                INPUT_SIZE,
-            )
-        });
+                        // Collect all the results, and let the test handle the drop
+                        return test_rx
+                            .iter()
+                            .take(POOL_SIZE)
+                            .flatten()
+                            .collect::<Vec<Vec<StatementResult>>>();
+                    },
+                    INPUT_SIZE,
+                )
+            },
+        );
 
         // rm.send_shutdown_request().expect("Should not timeout");
     }
@@ -255,12 +175,6 @@ pub fn list_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    add_benchmark,
-    update_benchmark,
-    get_benchmark,
-    list_benchmark
-);
+criterion_group!(benches, rm_add_benchmark, rm_get_benchmark);
 
 criterion_main!(benches);
