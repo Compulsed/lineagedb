@@ -15,7 +15,6 @@ use database::{
         statement::{Statement, StatementResult},
     },
 };
-use rand::Rng;
 use threadpool::ThreadPool;
 use uuid::Uuid;
 
@@ -255,8 +254,6 @@ pub fn list_benchmark(c: &mut Criterion) {
 
     group.finish();
 }
-
-pub fn fake_benchmark(c: &mut Criterion) {}
 
 criterion_group!(
     benches,
