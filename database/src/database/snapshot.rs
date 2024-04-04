@@ -132,7 +132,7 @@ impl SnapshotManager {
         }
     }
 
-    pub fn restore_snapshot(&self, table: &mut PersonTable) -> (usize, Metadata) {
+    pub fn restore_snapshot(&self, table: &PersonTable) -> (usize, Metadata) {
         // -- Table
         let version_snapshots: Vec<PersonVersion> = self.snapshot_file.read();
 
