@@ -102,7 +102,7 @@ pub fn rm_add_benchmark(c: &mut Criterion) {
             },
         );
 
-        // rm.send_shutdown_request().expect("Should not timeout");
+        rm.send_shutdown_request().expect("Should not timeout");
     }
 
     group.finish();
@@ -169,7 +169,7 @@ pub fn rm_get_benchmark(c: &mut Criterion) {
             },
         );
 
-        // rm.send_shutdown_request().expect("Should not timeout");
+        rm.send_shutdown_request().expect("Should not timeout");
     }
 
     group.finish();

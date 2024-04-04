@@ -81,7 +81,7 @@ pub enum ApplyMode {
 
 pub struct Database {
     transaction_wal: RwLock<TransactionWAL>,
-    snapshot_manager: RwLock<SnapshotManager>,
+    snapshot_manager: SnapshotManager,
     person_table: PersonTable,
     database_options: DatabaseOptions,
 }
@@ -91,7 +91,7 @@ impl Database {
         Self {
             person_table: PersonTable::new(),
             transaction_wal: RwLock::new(TransactionWAL::new(options.clone())),
-            snapshot_manager: RwLock::new(SnapshotManager::new(options.clone())),
+            snapshot_manager: SnapshotManager::new(options.clone()),
             database_options: options,
         }
     }
@@ -109,24 +109,27 @@ impl Database {
         Self {
             person_table: PersonTable::new(),
             transaction_wal: RwLock::new(TransactionWAL::new(options.clone())),
-            snapshot_manager: RwLock::new(SnapshotManager::new(options.clone())),
+            snapshot_manager: SnapshotManager::new(options.clone()),
             database_options: options,
         }
     }
 
-    // pub fn reset_database_state(&mut self) -> usize {
-    //     let row_count = self.person_table.person_rows.len();
+    pub fn reset_database_state(&self) -> usize {
+        let row_count = self.person_table.person_rows.len();
 
-    //     // Clean out snapshot and transaction log
-    //     self.snapshot_manager.delete_snapshot();
+        // Clean out snapshot and transaction log
+        self.snapshot_manager.delete_snapshot();
 
-    //     // Reset the database to a clean state
-    //     self.person_table = PersonTable::new();
-    //     self.transaction_wal = TransactionWAL::new(self.database_options.clone());
-    //     self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
+        unimplemented!();
 
-    //     row_count
-    // }
+        self.person_table = PersonTable::new();
+        self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
+
+        // TODO: Must figure out what to do here -- use atomic data structures or interior mutability
+        // self.transaction_wal = TransactionWAL::new(self.database_options.clone());
+
+        row_count
+    }
 
     fn start_thread(receiver: flume::Receiver<DatabaseCommandRequest>, database: Arc<Self>) {
         loop {
@@ -147,21 +150,32 @@ impl Database {
                 DatabaseCommand::Control(control) => {
                     match control {
                         Control::Shutdown => {
-                            // let _ = resolver.send(DatabaseCommandResponse::control_success(
-                            //     "Successfully shutdown database",
-                            // ));
+                            // Not sure if this will shutdown all threads, as there is only 1 shutdown command sent
+                            //  THOUGH the channel is cloned for each thread, so that may work
+                            let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                "Successfully shutdown database",
+                            ));
 
                             return;
                         }
                         Control::ResetDatabase => {
-                            // let dropped_row_count =
-                            //     database_rw.write().unwrap().reset_database_state();
+                            /*
+                            Challenges:
+                                - It would be nice to have a 'stop the world' event across threads
+                                w/o a reader writer lock. This stop the world would allow us to
+                                reset the database. This is not possible with the current design
 
-                            // let _ =
-                            //     resolver.send(DatabaseCommandResponse::control_success(&format!(
-                            //         "Successfully reset database, dropped: {} rows",
-                            //         dropped_row_count
-                            //     )));
+                            Solutions:
+                                - Cannot re-assign PersonTable because database is not mutable
+                                - Do not need to re-assign Snapshot manager, just need to re-create the files
+                            */
+                            let dropped_row_count = database.reset_database_state();
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully reset database, dropped: {} rows",
+                                    dropped_row_count
+                                )));
 
                             continue;
                         }
@@ -201,28 +215,24 @@ impl Database {
 
             match contains_mutation {
                 true => {
-                    // let mut transaction_wal = database.transaction_wal.write().unwrap();
+                    let mut transaction_wal = database.transaction_wal.write().unwrap();
 
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
                     let _ = database.apply_transaction(
                         transaction_statements,
-                        // transaction_wal.deref_mut(),
+                        transaction_wal.deref_mut(),
                         ApplyMode::Request(resolver),
                     );
                 }
                 false => {
-                    // As there is no WAL, we can just read from the database and send the response
-                    // let person_table = database.person_table;
-
-                    // let query_transaction_id = database
-                    //     .transaction_wal
-                    //     .read()
-                    //     .unwrap()
-                    //     .get_current_transaction_id()
-                    //     .clone();
-
                     // TODO: Change this, doing this to remove lock contention on the transaction WAL
-                    let query_transaction_id = TransactionId(10_000);
+                    // let query_transaction_id = TransactionId(10_000);
+                    let query_transaction_id = database
+                        .transaction_wal
+                        .read()
+                        .unwrap()
+                        .get_current_transaction_id()
+                        .clone();
 
                     let response =
                         database.query_transaction(&query_transaction_id, transaction_statements);
@@ -236,62 +246,63 @@ impl Database {
     }
 
     pub fn run(self, threads: usize) -> RequestManager {
-        // let mut database_options = self.database_options.read().unwrap();
-        // let mut snapshot_manager = self.snapshot_manager.write().unwrap();
-        // let mut person_table = self.person_table.write().unwrap();
-        // let mut transaction_wal = self.transaction_wal.write().unwrap();
+        if self.database_options.restore {
+            let transaction_log_location = self.database_options.data_directory.clone();
+            let mut transaction_wal = self.transaction_wal.write().unwrap();
 
-        // let transaction_log_location = database_options.data_directory.clone();
+            log::info!(
+                "Transaction Log Location: [{}]",
+                transaction_log_location.display()
+            );
 
-        // log::info!(
-        //     "Transaction Log Location: [{}]",
-        //     transaction_log_location.display()
-        // );
+            let now = Instant::now();
 
-        // if database_options.restore {
-        //     let now = Instant::now();
+            // Call chain -> snapshot_manager -> person_table
+            let (snapshot_count, metadata) =
+                self.snapshot_manager.restore_snapshot(&self.person_table);
 
-        //     // Call chain -> snapshot_manager -> person_table
-        //     let (snapshot_count, metadata) = snapshot_manager.restore_snapshot(&mut person_table);
+            // If there was a snapshot to restore from we update the transaction log
+            transaction_wal.set_current_transaction_id(metadata.current_transaction_id.clone());
 
-        //     // If there was a snapshot to restore from we update the transaction log
-        //     transaction_wal.set_current_transaction_id(metadata.current_transaction_id.clone());
+            let restored_transactions = TransactionWAL::restore(transaction_log_location);
+            let restored_transaction_count = restored_transactions.len();
 
-        //     let restored_transactions = TransactionWAL::restore(transaction_log_location);
-        //     let restored_transaction_count = restored_transactions.len();
+            // Then add states from the transaction log
+            for transaction in restored_transactions {
+                let apply_transaction_result = self.apply_transaction(
+                    transaction.statements,
+                    transaction_wal.deref_mut(),
+                    ApplyMode::Restore,
+                );
 
-        //     // Then add states from the transaction log
-        //     for transaction in restored_transactions {
-        //         let apply_transaction_result =
-        //         self.apply_transaction(transaction.statements, ApplyMode::Restore);
+                if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
+                    apply_transaction_result
+                {
+                    panic!(
+                        "All committed transactions should be replayable on startup: {}",
+                        rollback_message
+                    );
+                }
+            }
 
-        //         if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
-        //             apply_transaction_result
-        //         {
-        //             panic!(
-        //                 "All committed transactions should be replayable on startup: {}",
-        //                 rollback_message
-        //             );
-        //         }
-        //     }
+            log::info!(
+                "✅ Successful Restore [Duration: {}ms]",
+                now.elapsed().as_millis(),
+            );
 
-        //     log::info!(
-        //         "✅ Successful Restore [Duration: {}ms]",
-        //         now.elapsed().as_millis(),
-        //     );
-
-        //     log::info!(
-        //         "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
-        //         snapshot_count,
-        //         restored_transaction_count,
-        //         transaction_wal
-        //             .get_current_transaction_id()
-        //             .to_number()
-        //             .to_formatted_string(&Locale::en)
-        //     );
-        // }
+            log::info!(
+                "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
+                snapshot_count,
+                restored_transaction_count,
+                transaction_wal
+                    .get_current_transaction_id()
+                    .to_number()
+                    .to_formatted_string(&Locale::en)
+            );
+        }
 
         let mut tx_channels = vec![];
+
         let database_arc = Arc::new(self);
 
         for _ in 0..threads {
@@ -337,12 +348,11 @@ impl Database {
     pub fn apply_transaction(
         &self,
         statements: Vec<Statement>,
-        // transaction_wal: &mut TransactionWAL,
+        transaction_wal: &mut TransactionWAL,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        // let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
-
-        let applying_transaction_id = TransactionId(10_000);
+        let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
+        // let applying_transaction_id = TransactionId(10_000);
 
         let mut status = CommitStatus::Commit;
 
@@ -384,19 +394,12 @@ impl Database {
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
-                if let ApplyMode::Request(resolver) = mode {
-                    let _ =
-                        resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
-                            response.clone(),
-                        ));
-                }
-
-                // transaction_wal.commit(
-                //     applying_transaction_id,
-                //     statements,
-                //     DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
-                //     mode,
-                // );
+                transaction_wal.commit(
+                    applying_transaction_id,
+                    statements,
+                    DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
+                    mode,
+                );
 
                 return response;
             }
