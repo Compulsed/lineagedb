@@ -29,7 +29,10 @@ threadpool = "1.8.1"
 criterion = "0.5.1"
 rstest = "0.18.2"
 
+[[bench]]
+name = "request_manager"
+harness = false
 
 [[bench]]
-name = "my_benchmark"
+name = "database"
 harness = false

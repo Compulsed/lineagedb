@@ -204,10 +204,9 @@ impl Database {
                     // let mut transaction_wal = database.transaction_wal.write().unwrap();
 
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = Database::apply_transaction(
+                    let _ = database.apply_transaction(
                         transaction_statements,
                         // transaction_wal.deref_mut(),
-                        &database.person_table,
                         ApplyMode::Request(resolver),
                     );
                 }
@@ -225,11 +224,8 @@ impl Database {
                     // TODO: Change this, doing this to remove lock contention on the transaction WAL
                     let query_transaction_id = TransactionId(10_000);
 
-                    let response = Database::query_transaction(
-                        &database.person_table,
-                        &query_transaction_id,
-                        transaction_statements,
-                    );
+                    let response =
+                        database.query_transaction(&query_transaction_id, transaction_statements);
 
                     let _ = resolver.send(
                         DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
@@ -316,15 +312,16 @@ impl Database {
     }
 
     pub fn query_transaction(
-        person_table: &PersonTable,
+        &self,
         query_latest_transaction_id: &TransactionId,
         statements: Vec<Statement>,
     ) -> DatabaseCommandTransactionResponse {
         let mut statement_results: Vec<StatementResult> = Vec::new();
 
         for statement in statements {
-            let statement_result =
-                person_table.query_statement(statement, query_latest_transaction_id);
+            let statement_result = self
+                .person_table
+                .query_statement(statement, query_latest_transaction_id);
 
             match statement_result {
                 Ok(statement_result) => statement_results.push(statement_result),
@@ -338,9 +335,9 @@ impl Database {
     }
 
     pub fn apply_transaction(
+        &self,
         statements: Vec<Statement>,
         // transaction_wal: &mut TransactionWAL,
-        person_table: &PersonTable,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
         // let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
@@ -357,8 +354,9 @@ impl Database {
         let mut statement_stack: Vec<StatementAndResult> = Vec::new();
 
         for statement in statements.clone() {
-            let apply_result =
-                person_table.apply(statement.clone(), applying_transaction_id.clone());
+            let apply_result = self
+                .person_table
+                .apply(statement.clone(), applying_transaction_id.clone());
 
             match apply_result {
                 Ok(statement_result) => {
@@ -413,7 +411,7 @@ impl Database {
                     result: _,
                 } in statement_stack.into_iter().rev()
                 {
-                    person_table.apply_rollback(statement)
+                    self.person_table.apply_rollback(statement)
                 }
 
                 // Rollbacks are not committed to the WAL so we can just return the response
