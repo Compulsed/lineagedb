@@ -235,7 +235,7 @@ impl Database {
         }
     }
 
-    pub fn run(self, threads: u32) -> RequestManager {
+    pub fn run(self, threads: usize) -> RequestManager {
         // let mut database_options = self.database_options.read().unwrap();
         // let mut snapshot_manager = self.snapshot_manager.write().unwrap();
         // let mut person_table = self.person_table.write().unwrap();
@@ -665,13 +665,13 @@ mod tests {
         const CLIENT_THREADS: u32 = 2;
 
         // Seems that three threads is the sweet spot for the M1 MBA
-        const READ_THREADS: u32 = 4;
+        const READ_THREADS: usize = 4;
         const READ_SAMPLE_SIZE: u32 = 3_000_000;
 
         // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
         // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
         //  We are not technically flushing the WAL to disk, hence why
-        const WRITE_THREADS: u32 = 1;
+        const WRITE_THREADS: usize = 1;
         const WRITE_SAMPLE_SIZE: u32 = 500_000;
 
         #[test]
@@ -889,7 +889,7 @@ pub mod test_utils {
     ///     get() we are validating that the transaction did commit
     pub fn database_test_task(
         worker_threads: u32,
-        database_threads: u32,
+        database_threads: usize,
         actions: u32,
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
