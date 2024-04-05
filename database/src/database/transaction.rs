@@ -162,7 +162,9 @@ impl TransactionWAL {
         // Perhaps this file access is better managed via a channel w/ actions
         let mut state = self.log_file.lock().unwrap();
 
-        fs::remove_file(&path).expect("Unable to remove file");
+        // TODO: When we are doing a dual reset, this could fail. Add
+        //  the unwrap back and think this through
+        let _ = fs::remove_file(&path);
 
         let raw_log_file = OpenOptions::new()
             .create_new(true)

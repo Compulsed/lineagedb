@@ -167,6 +167,13 @@ impl RequestManager {
         return self.send_control(Control::Shutdown(request));
     }
 
+    pub fn send_pause_request(
+        &self,
+        resume: oneshot::Receiver<()>,
+    ) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::PauseDatabase(resume));
+    }
+
     pub fn send_reset_request(&self) -> Result<String, RequestManagerError> {
         return self.send_control(Control::ResetDatabase);
     }
