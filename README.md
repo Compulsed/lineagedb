@@ -134,10 +134,10 @@ cargo run --package tcp-server --bin lineagedb-tcp-server
 
 Tested on an M1 Mac.
 
-```
-Read speed ~800k statements/s
-Write speed ~80k statements/s
-```
+| Threads: | 1    | 2     | 3     | 4     |
+|----------|------|-------|-------|-------|
+| Read     | 640k | 1100k | 1400k | 1700k |
+| Write    | 280k | 400k  | 150k  | 100k  |
 
 **Testing / Benchmarking**
 
@@ -152,10 +152,7 @@ cargo test --all
 # 2. These tests will yield different results based on whether the laptop is charging or not
 cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
 
-# Benchmarking https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
-# There appears to be an issue with 'benchmark' that spin up multiple
-#   threads in the database. It causes 100x performance lags. 800us to 80ms
-# Seems that the performance unit tests are a more reliable indicator
+# Using the benchmarking tool https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
 cargo bench --all
 cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to another branch
 ```
@@ -169,12 +166,6 @@ cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to anoth
 
 
 ## Notes
-
-### Concurrent Read / Write
-
-The database single threaded, this means neither reads or writes can be concurrent. Once they are concurrent we will need to address the following challenges:
-1. Will need to move away from vectors to linked lists (unless we use a RW Lock). Resizing vectors is not thread 'safe'
-1. Must create rust data structures that are both sync + send w/ some internal unsafe operations
 
 ### Session Transactions
 
