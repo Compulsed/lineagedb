@@ -175,5 +175,8 @@ impl SnapshotManager {
     pub fn delete_snapshot(&self) {
         fs::remove_dir_all(&self.database_options.data_directory)
             .expect("Should always exist, folder is created on init");
+
+        fs::create_dir_all(&self.database_options.data_directory)
+            .expect("Should always be able to create a path at data/");
     }
 }

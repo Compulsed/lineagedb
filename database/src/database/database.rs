@@ -122,14 +122,14 @@ impl Database {
     pub fn reset_database_state(&self) -> usize {
         let row_count = self.person_table.person_rows.len();
 
+        // Resets tx id, scrubs wal
+        self.transaction_wal.write().unwrap().flush_transactions();
+
         // Clean out snapshot and transaction log
         self.snapshot_manager.delete_snapshot();
 
         // Resets the in-memory persons table
         self.person_table.reset();
-
-        // Resets tx id, scrubs wal
-        self.transaction_wal.write().unwrap().flush_transactions();
 
         row_count
     }
@@ -140,6 +140,8 @@ impl Database {
         database_request_managers: Vec<RequestManager>,
         database: Arc<Self>,
     ) {
+        let database_request_managers = &database_request_managers;
+
         loop {
             let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
                 Ok(request) => request,
@@ -149,7 +151,11 @@ impl Database {
                 }
             };
 
-            log::info!("Received request: {}", command.log_format());
+            log::info!(
+                "[Thread: {}] Received request: {}",
+                thread_id,
+                command.log_format()
+            );
 
             // TODO: We assume that the send() commands are successful. This is likely okay? because if
             //   if sender is disconnected that should not impact the database
@@ -157,24 +163,18 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
-                        // The DB thread that received the shutdown request is responsible for ensuring
-                        //  all the other threads shutdown.
                         Control::Shutdown(request) => {
+                            // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
                             match request {
                                 ShutdownRequest::Coordinator => {
-                                    log::info!(
-                                        "[Thread - {}] Coordinator shutting down threads",
-                                        thread_id
-                                    );
-
+                                    // Send request to every DB thread, telling them to shutdown / stop working
                                     for rm in database_request_managers {
-                                        let response = rm
+                                        let _ = rm
                                             .send_shutdown_request(ShutdownRequest::Worker)
                                             .expect("Should respond to shutdown request");
-
-                                        log::info!("{}", response);
                                     }
 
+                                    // Once we have successfully shutdown all threads, report success to the caller
                                     let _ = resolver.send(
                                         DatabaseCommandResponse::control_success(&format!(
                                             "[Thread - {}] Successfully shutdown database",
@@ -194,10 +194,33 @@ impl Database {
 
                             return;
                         }
-                        Control::PauseDatabase => {
+                        Control::PauseDatabase(resume) => {
+                            let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                &format!("[Thread - {}] Successfully paused thread", thread_id),
+                            ));
+
+                            // No timeout, should just wait until the caller tells us we are ready to resume processing
+                            let _ = resume.recv();
+
+                            log::info!("[Thread - {}] Successfully resumed thread", thread_id);
+
                             continue;
                         }
                         Control::ResetDatabase => {
+                            let mut resume_txs = vec![];
+
+                            // Send request to every DB thread, telling them to shutdown / stop working
+                            for rm in database_request_managers {
+                                let (resume_tx, resume_rx) = oneshot::channel::<()>();
+
+                                resume_txs.push(resume_tx);
+
+                                let _ = rm
+                                    .send_pause_request(resume_rx)
+                                    .expect("Should respond to pause request");
+                            }
+
+                            // TODO: Improve this by requiring that this method has a special 'database has stopped' guard
                             let dropped_row_count = database.reset_database_state();
 
                             let _ =
@@ -205,6 +228,11 @@ impl Database {
                                     "Successfully reset database, dropped: {} rows",
                                     dropped_row_count
                                 )));
+
+                            // Start the other database threads back up
+                            for resume_tx in resume_txs {
+                                let _ = resume_tx.send(());
+                            }
 
                             continue;
                         }
@@ -272,7 +300,6 @@ impl Database {
     pub fn run(self, threads: usize) -> RequestManager {
         if self.database_options.restore {
             let transaction_log_location = self.database_options.data_directory.clone();
-            let mut transaction_wal = self.transaction_wal.write().unwrap();
 
             log::info!(
                 "Transaction Log Location: [{}]",
@@ -286,7 +313,10 @@ impl Database {
                 self.snapshot_manager.restore_snapshot(&self.person_table);
 
             // If there was a snapshot to restore from we update the transaction log
-            transaction_wal.set_current_transaction_id(metadata.current_transaction_id.clone());
+            self.transaction_wal
+                .write()
+                .unwrap()
+                .set_current_transaction_id(metadata.current_transaction_id.clone());
 
             let restored_transactions = TransactionWAL::restore(transaction_log_location);
             let restored_transaction_count = restored_transactions.len();
@@ -315,7 +345,9 @@ impl Database {
                 "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
                 snapshot_count,
                 restored_transaction_count,
-                transaction_wal
+                self.transaction_wal
+                    .read()
+                    .unwrap()
                     .get_current_transaction_id()
                     .to_number()
                     .to_formatted_string(&Locale::en)
@@ -394,7 +426,6 @@ impl Database {
         let mut transaction_wal = self.transaction_wal.write().unwrap();
 
         let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
-        // let applying_transaction_id = TransactionId(10_000);
 
         let mut status = CommitStatus::Commit;
 
