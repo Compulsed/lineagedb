@@ -3,7 +3,10 @@ use std::sync::mpsc::channel;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use database::{
     consts::consts::EntityId,
-    database::database::{test_utils::run_action, Database},
+    database::{
+        commands::ShutdownRequest,
+        database::{test_utils::run_action, Database},
+    },
     model::{
         person::Person,
         statement::{Statement, StatementResult},
@@ -102,7 +105,8 @@ pub fn rm_add_benchmark(c: &mut Criterion) {
             },
         );
 
-        rm.send_shutdown_request().expect("Should not timeout");
+        rm.send_shutdown_request(ShutdownRequest::Coordinator)
+            .expect("Should not timeout");
     }
 
     group.finish();
@@ -169,7 +173,8 @@ pub fn rm_get_benchmark(c: &mut Criterion) {
             },
         );
 
-        rm.send_shutdown_request().expect("Should not timeout");
+        rm.send_shutdown_request(ShutdownRequest::Coordinator)
+            .expect("Should not timeout");
     }
 
     group.finish();

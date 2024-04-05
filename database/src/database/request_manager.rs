@@ -14,7 +14,7 @@ use crate::{
 use super::{
     commands::{
         Control, DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandRequest,
-        DatabaseCommandResponse, DatabaseCommandTransactionResponse,
+        DatabaseCommandResponse, DatabaseCommandTransactionResponse, ShutdownRequest,
     },
     table::{query::QueryPersonData, row::UpdatePersonData},
 };
@@ -160,10 +160,11 @@ impl RequestManager {
     // -- Control Methods --
 
     /// Sends a shutdown request to the database and returns the database's response
-    pub fn send_shutdown_request(&self) -> Result<String, RequestManagerError> {
-        // TODO: Shutdown may not work if there are multiple database threads.
-        //  will have to send N shutdown requests for each database thread.
-        return self.send_control(Control::Shutdown);
+    pub fn send_shutdown_request(
+        &self,
+        request: ShutdownRequest,
+    ) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::Shutdown(request));
     }
 
     pub fn send_reset_request(&self) -> Result<String, RequestManagerError> {

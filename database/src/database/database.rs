@@ -1,8 +1,6 @@
 use std::{
-    borrow::{Borrow, BorrowMut},
-    ops::DerefMut,
     path::PathBuf,
-    sync::{Arc, RwLock, RwLockWriteGuard},
+    sync::{Arc, RwLock},
     thread,
     time::Instant,
 };
@@ -12,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     consts::consts::TransactionId,
-    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
+    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
     model::statement::{Statement, StatementResult},
 };
 
@@ -136,7 +134,12 @@ impl Database {
         row_count
     }
 
-    fn start_thread(receiver: flume::Receiver<DatabaseCommandRequest>, database: Arc<Self>) {
+    fn start_thread(
+        thread_id: usize,
+        receiver: flume::Receiver<DatabaseCommandRequest>,
+        database_request_managers: Vec<RequestManager>,
+        database: Arc<Self>,
+    ) {
         loop {
             let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
                 Ok(request) => request,
@@ -154,26 +157,38 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
-                        Control::Shutdown => {
-                            // Not sure if this will shutdown all threads, as there is only 1 shutdown command sent
-                            //  THOUGH the channel is cloned for each thread, so that may work
-                            let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                "Successfully shutdown database",
-                            ));
+                        // The DB thread that received the shutdown request is responsible for ensuring
+                        //  all the other threads shutdown.
+                        Control::Shutdown(request) => {
+                            if request == ShutdownRequest::Coordinator {
+                                log::info!(
+                                    "[Thread - {}] Coordinator shutting down threads",
+                                    thread_id
+                                );
+
+                                for rm in database_request_managers {
+                                    rm.send_shutdown_request(ShutdownRequest::Worker)
+                                        .expect("Should respond to shutdown request");
+                                }
+
+                                log::info!(
+                                    "[Thread - {}] Coordinator successfully shut down all threads",
+                                    thread_id
+                                );
+
+                                let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                    "Successfully shutdown database",
+                                ));
+                            }
+
+                            log::info!("[Thread - {}] Thread shutting down thread", thread_id);
 
                             return;
                         }
+                        Control::PauseDatabase => {
+                            continue;
+                        }
                         Control::ResetDatabase => {
-                            /*
-                            Challenges:
-                                - It would be nice to have a 'stop the world' event across threads
-                                w/o a reader writer lock. This stop the world would allow us to
-                                reset the database. This is not possible with the current design
-
-                            Solutions:
-                                - Cannot re-assign PersonTable because database is not mutable
-                                - Do not need to re-assign Snapshot manager, just need to re-create the files
-                            */
                             let dropped_row_count = database.reset_database_state();
 
                             let _ =
@@ -298,21 +313,41 @@ impl Database {
             );
         }
 
+        /*
+           Channel strategy:
+           - We create a channel per database thread, this acts as sort of thread work queue
+           - The request manager will get _all_ of the database channels and will load balance requests across them
+           - Database get their own channels AND the channels of all other threads. This will be used for cross
+               thread communication (servicing, stop the world, etc)
+        */
         let mut tx_channels = vec![];
-
-        let database_arc = Arc::new(self);
+        let mut rx_channels = vec![];
 
         for _ in 0..threads {
             let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
-            let thread_rx = rx.clone();
+
+            tx_channels.push(tx);
+            rx_channels.push(rx);
+        }
+
+        let database_arc = Arc::new(self);
+
+        for (index, database_rx_channel) in rx_channels.into_iter().enumerate() {
             let database_arc = database_arc.clone();
 
-            // Each thread has their own channel to the database
-            tx_channels.push(tx);
+            // TODO: We do this per thread, likely could do this once and then clone for each thread
+            let mut request_managers = tx_channels
+                .clone()
+                .into_iter()
+                .map(|tx| RequestManager::new(vec![tx]))
+                .collect::<Vec<RequestManager>>();
+
+            // Remove our own request manager, as we will not need to call ourselves
+            request_managers.remove(index);
 
             // Spawn a new thread for each request
             thread::spawn(move || {
-                Database::start_thread(thread_rx, database_arc);
+                Database::start_thread(index, database_rx_channel, request_managers, database_arc);
             });
         }
 
