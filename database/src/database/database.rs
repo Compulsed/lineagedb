@@ -424,9 +424,14 @@ impl Database {
         statements: Vec<Statement>,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        let mut transaction_wal = self.transaction_wal.write().unwrap();
+        // let mut transaction_wal = self.transaction_wal.write().unwrap();
 
-        let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
+        let applying_transaction_id = self
+            .transaction_wal
+            .read()
+            .unwrap()
+            .get_current_transaction_id()
+            .increment();
 
         let mut status = CommitStatus::Commit;
 
@@ -468,7 +473,8 @@ impl Database {
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
-                transaction_wal.commit(
+                // Send the TX off, and increment the transaction id -- Refactor this out
+                self.transaction_wal.write().unwrap().commit(
                     applying_transaction_id,
                     statements,
                     DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
