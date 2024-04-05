@@ -11,6 +11,7 @@ use crate::model::statement::Statement;
 
 use super::commands::DatabaseCommandResponse;
 use super::database::{ApplyMode, DatabaseOptions};
+use super::orchestrator::DatabasePauseEvent;
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -149,7 +150,7 @@ impl TransactionWAL {
         }
     }
 
-    pub fn flush_transactions(&mut self) -> usize {
+    pub fn flush_transactions(&mut self, _: &DatabasePauseEvent) -> usize {
         let path = get_transaction_log_location(self.database_options.data_directory.clone());
         let flushed_size = self.size;
 

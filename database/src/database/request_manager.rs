@@ -169,7 +169,7 @@ impl RequestManager {
 
     pub fn send_pause_request(
         &self,
-        resume: oneshot::Receiver<()>,
+        resume: flume::Receiver<()>,
     ) -> Result<String, RequestManagerError> {
         return self.send_control(Control::PauseDatabase(resume));
     }

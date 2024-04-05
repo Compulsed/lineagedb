@@ -106,7 +106,7 @@ pub enum Control {
     /// Resets the database to the initial state, removes all data from the database, resets transaction ids, etc
     ResetDatabase,
     /// Pauses the database so that we can perform certain operations
-    PauseDatabase(oneshot::Receiver<()>),
+    PauseDatabase(flume::Receiver<()>),
 }
 
 pub struct DatabaseCommandRequest {

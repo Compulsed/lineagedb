@@ -14,6 +14,7 @@ use crate::{
 
 use super::{
     database::DatabaseOptions,
+    orchestrator::DatabasePauseEvent,
     table::{row::PersonVersion, table::PersonTable},
 };
 
@@ -172,7 +173,7 @@ impl SnapshotManager {
         //     .write(&table.unique_email_index);
     }
 
-    pub fn delete_snapshot(&self) {
+    pub fn delete_snapshot(&self, _: &DatabasePauseEvent) {
         fs::remove_dir_all(&self.database_options.data_directory)
             .expect("Should always exist, folder is created on init");
 

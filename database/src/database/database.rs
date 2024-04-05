@@ -10,7 +10,10 @@ use uuid::Uuid;
 
 use crate::{
     consts::consts::TransactionId,
-    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
+    database::{
+        commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
+        orchestrator::DatabasePauseEvent,
+    },
     model::statement::{Statement, StatementResult},
 };
 
@@ -117,19 +120,20 @@ impl Database {
     /// ⚠️ The caller is responsible for stopping the database or else
     /// it may end up in an inconsistent state. If a reset happens
     /// at the same time as a write it is possible that a part of the write is erased
-    ///
-    /// TODO: Implement the above
-    pub fn reset_database_state(&self) -> usize {
+    pub fn reset_database_state(&self, database_pause: &DatabasePauseEvent) -> usize {
         let row_count = self.person_table.person_rows.len();
 
         // Resets tx id, scrubs wal
-        self.transaction_wal.write().unwrap().flush_transactions();
+        self.transaction_wal
+            .write()
+            .unwrap()
+            .flush_transactions(database_pause);
 
         // Clean out snapshot and transaction log
-        self.snapshot_manager.delete_snapshot();
+        self.snapshot_manager.delete_snapshot(database_pause);
 
         // Resets the in-memory persons table
-        self.person_table.reset();
+        self.person_table.reset(database_pause);
 
         row_count
     }
@@ -207,21 +211,13 @@ impl Database {
                             continue;
                         }
                         Control::ResetDatabase => {
-                            let mut resume_txs = vec![];
+                            // Note, because we have paused the database we should not get ANY deadlocks
+                            //  concurrency issues
+                            let database_reset_guard =
+                                &DatabasePauseEvent::new(&database_request_managers);
 
-                            // Send request to every DB thread, telling them to shutdown / stop working
-                            for rm in database_request_managers {
-                                let (resume_tx, resume_rx) = oneshot::channel::<()>();
-
-                                resume_txs.push(resume_tx);
-
-                                let _ = rm
-                                    .send_pause_request(resume_rx)
-                                    .expect("Should respond to pause request");
-                            }
-
-                            // TODO: Improve this by requiring that this method has a special 'database has stopped' guard
-                            let dropped_row_count = database.reset_database_state();
+                            let dropped_row_count =
+                                database.reset_database_state(database_reset_guard);
 
                             let _ =
                                 resolver.send(DatabaseCommandResponse::control_success(&format!(
@@ -229,35 +225,39 @@ impl Database {
                                     dropped_row_count
                                 )));
 
-                            // Start the other database threads back up
-                            for resume_tx in resume_txs {
-                                let _ = resume_tx.send(());
-                            }
-
                             continue;
                         }
                         Control::SnapshotDatabase => {
-                            // let mut database = database_rw.write().unwrap();
+                            // Note, because we have paused the database we should not get ANY deadlocks
+                            //  concurrency issues
+                            let database_reset_guard =
+                                &DatabasePauseEvent::new(&database_request_managers);
 
-                            // let transaction_id = database
-                            //     .transaction_wal
-                            //     .get_current_transaction_id()
-                            //     .clone();
+                            let transaction_id = database
+                                .transaction_wal
+                                .read()
+                                .unwrap()
+                                .get_current_transaction_id()
+                                .clone();
 
-                            // let table = &database.person_table;
+                            let table = &database.person_table;
 
-                            // // Persist current state to disk
-                            // database
-                            //     .snapshot_manager
-                            //     .create_snapshot(table, transaction_id);
+                            // Persist current state to disk
+                            database
+                                .snapshot_manager
+                                .create_snapshot(table, transaction_id);
 
-                            // let flush_transactions = database.transaction_wal.flush_transactions();
+                            let flush_transactions = database
+                                .transaction_wal
+                                .write()
+                                .unwrap()
+                                .flush_transactions(database_reset_guard);
 
-                            // let _ =
-                            //     resolver.send(DatabaseCommandResponse::control_success(&format!(
-                            //         "Successfully created snapshot: compressed {} txs",
-                            //         flush_transactions
-                            //     )));
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "Successfully created snapshot: compressed {} txs",
+                                    flush_transactions
+                                )));
 
                             continue;
                         }
@@ -278,7 +278,6 @@ impl Database {
                 }
                 false => {
                     // TODO: Change this, doing this to remove lock contention on the transaction WAL
-                    // let query_transaction_id = TransactionId(10_000);
                     let query_transaction_id = database
                         .transaction_wal
                         .read()
