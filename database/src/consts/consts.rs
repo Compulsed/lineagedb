@@ -13,10 +13,6 @@ impl TransactionId {
         self.0
     }
 
-    pub fn increment(&self) -> TransactionId {
-        TransactionId(self.0 + 1)
-    }
-
     // TODO: There is a bug here, we should be able to start at 0
     pub fn new_first_transaction() -> TransactionId {
         TransactionId(1)
