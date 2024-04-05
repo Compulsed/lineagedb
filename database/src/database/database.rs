@@ -1,9 +1,4 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, RwLock},
-    thread,
-    time::Instant,
-};
+use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
 use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
@@ -81,7 +76,7 @@ pub enum ApplyMode {
 }
 
 pub struct Database {
-    transaction_wal: RwLock<TransactionWAL>,
+    transaction_wal: TransactionWAL,
     snapshot_manager: SnapshotManager,
     person_table: PersonTable,
     database_options: DatabaseOptions,
@@ -91,7 +86,7 @@ impl Database {
     pub fn new(options: DatabaseOptions) -> Self {
         Self {
             person_table: PersonTable::new(),
-            transaction_wal: RwLock::new(TransactionWAL::new(options.clone())),
+            transaction_wal: TransactionWAL::new(options.clone()),
             snapshot_manager: SnapshotManager::new(options.clone()),
             database_options: options,
         }
@@ -109,7 +104,7 @@ impl Database {
 
         Self {
             person_table: PersonTable::new(),
-            transaction_wal: RwLock::new(TransactionWAL::new(options.clone())),
+            transaction_wal: TransactionWAL::new(options.clone()),
             snapshot_manager: SnapshotManager::new(options.clone()),
             database_options: options,
         }
@@ -124,10 +119,7 @@ impl Database {
         let row_count = self.person_table.person_rows.len();
 
         // Resets tx id, scrubs wal
-        self.transaction_wal
-            .write()
-            .unwrap()
-            .flush_transactions(database_pause);
+        self.transaction_wal.flush_transactions(database_pause);
 
         // Clean out snapshot and transaction log
         self.snapshot_manager.delete_snapshot(database_pause);
@@ -235,9 +227,7 @@ impl Database {
 
                             let transaction_id = database
                                 .transaction_wal
-                                .read()
-                                .unwrap()
-                                .get_current_transaction_id()
+                                .get_increment_current_transaction_id()
                                 .clone();
 
                             let table = &database.person_table;
@@ -251,8 +241,6 @@ impl Database {
 
                             let flush_transactions = database
                                 .transaction_wal
-                                .write()
-                                .unwrap()
                                 .flush_transactions(database_reset_guard);
 
                             let _ =
@@ -282,9 +270,7 @@ impl Database {
                     // TODO: Change this, doing this to remove lock contention on the transaction WAL
                     let query_transaction_id = database
                         .transaction_wal
-                        .read()
-                        .unwrap()
-                        .get_current_transaction_id()
+                        .get_increment_current_transaction_id()
                         .clone();
 
                     let response =
@@ -314,9 +300,10 @@ impl Database {
                 self.snapshot_manager.restore_snapshot(&self.person_table);
 
             // If there was a snapshot to restore from we update the transaction log
+            // self.transaction_wal
+            // .set_current_transaction_id(metadata.current_transaction_id.clone());
+
             self.transaction_wal
-                .write()
-                .unwrap()
                 .set_current_transaction_id(metadata.current_transaction_id.clone());
 
             let restored_transactions = TransactionWAL::restore(transaction_log_location);
@@ -347,9 +334,7 @@ impl Database {
                 snapshot_count,
                 restored_transaction_count,
                 self.transaction_wal
-                    .read()
-                    .unwrap()
-                    .get_current_transaction_id()
+                    .get_increment_current_transaction_id()
                     .to_number()
                     .to_formatted_string(&Locale::en)
             );
@@ -424,14 +409,8 @@ impl Database {
         statements: Vec<Statement>,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        // let mut transaction_wal = self.transaction_wal.write().unwrap();
-
-        let applying_transaction_id = self
-            .transaction_wal
-            .read()
-            .unwrap()
-            .get_current_transaction_id()
-            .increment();
+        // Getting also increments -- I think this might be the place where we should be incrementing from
+        let applying_transaction_id = self.transaction_wal.get_increment_current_transaction_id();
 
         let mut status = CommitStatus::Commit;
 
@@ -474,7 +453,7 @@ impl Database {
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
                 // Send the TX off, and increment the transaction id -- Refactor this out
-                self.transaction_wal.write().unwrap().commit(
+                self.transaction_wal.commit(
                     applying_transaction_id,
                     statements,
                     DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
@@ -682,10 +661,8 @@ mod tests {
             assert_eq!(
                 database
                     .transaction_wal
-                    .write()
-                    .unwrap()
-                    .get_current_transaction_id(),
-                &TransactionId::new_first_transaction(),
+                    .get_increment_current_transaction_id(),
+                TransactionId::new_first_transaction(),
                 "Transaction log should be empty"
             );
         }
