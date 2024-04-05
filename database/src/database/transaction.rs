@@ -156,12 +156,8 @@ impl TransactionWAL {
         let flushed_size = self.size.load(Ordering::SeqCst);
 
         self.size.store(0, Ordering::SeqCst);
-        self.current_transaction_id.reset();
 
         // When we flush we need to reset the file handle for the WAL
-        // TODO: Could there be a race condition here? Can someone be writing to the file while we are flushing?
-        // Also perhaps we need to lock the file path too
-        // Perhaps this file access is better managed via a channel w/ actions
         let mut state = self.log_file.lock().unwrap();
 
         // TODO: When we are doing a dual reset, this could fail. Add
