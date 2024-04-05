@@ -243,9 +243,11 @@ impl Database {
                             let table = &database.person_table;
 
                             // Persist current state to disk
-                            database
-                                .snapshot_manager
-                                .create_snapshot(table, transaction_id);
+                            database.snapshot_manager.create_snapshot(
+                                database_reset_guard,
+                                table,
+                                transaction_id,
+                            );
 
                             let flush_transactions = database
                                 .transaction_wal
