@@ -108,9 +108,6 @@ pub struct SnapshotManager {
 
 impl SnapshotManager {
     pub fn new(database_options: DatabaseOptions) -> Self {
-        fs::create_dir_all(&database_options.data_directory)
-            .expect("Should always be able to create a path at data/");
-
         Self {
             snapshot_file: PersistanceManager::new(
                 &database_options.data_directory,
@@ -152,6 +149,9 @@ impl SnapshotManager {
     }
 
     pub fn create_snapshot(&self, table: &PersonTable, transaction_id: TransactionId) {
+        fs::create_dir_all(&self.database_options.data_directory)
+            .expect("Should always be able to create a path at data/");
+
         // -- Table
         let result = table
             .query_statement(Statement::ListLatestVersions, &transaction_id.clone())

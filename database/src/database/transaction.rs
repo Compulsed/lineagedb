@@ -154,6 +154,7 @@ impl TransactionWAL {
         let flushed_size = self.size;
 
         self.size = 0;
+        self.current_transaction_id = TransactionId::new_first_transaction();
 
         // When we flush we need to reset the file handle for the WAL
         // TODO: Could there be a race condition here? Can someone be writing to the file while we are flushing?

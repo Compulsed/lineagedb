@@ -61,7 +61,7 @@ impl PersonVersion {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PersonRow {
     /// Earliest versions are at beginning, latest version is last
     versions: Vec<PersonVersion>,
