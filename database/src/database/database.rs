@@ -121,6 +121,12 @@ impl Database {
         // Resets tx id, scrubs wal
         self.transaction_wal.flush_transactions(database_pause);
 
+        // Reset the transaction id counter
+        // TODO: We should make flushing and deleting separate operations
+        //  This was a legacy of us just newing up new WAL when we needed one.
+        self.transaction_wal
+            .set_current_transaction_id(TransactionId::new_first_transaction());
+
         // Clean out snapshot and transaction log
         self.snapshot_manager.delete_snapshot(database_pause);
 
