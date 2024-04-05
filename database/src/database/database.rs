@@ -114,19 +114,24 @@ impl Database {
         }
     }
 
+    /// Resets the filesystem and any in-memory state.
+    ///
+    /// ⚠️ The caller is responsible for stopping the database or else
+    /// it may end up in an inconsistent state. If a reset happens
+    /// at the same time as a write it is possible that a part of the write is erased
+    ///
+    /// TODO: Implement the above
     pub fn reset_database_state(&self) -> usize {
         let row_count = self.person_table.person_rows.len();
 
         // Clean out snapshot and transaction log
         self.snapshot_manager.delete_snapshot();
 
-        unimplemented!();
+        // Resets the in-memory persons table
+        self.person_table.reset();
 
-        self.person_table = PersonTable::new();
-        self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
-
-        // TODO: Must figure out what to do here -- use atomic data structures or interior mutability
-        // self.transaction_wal = TransactionWAL::new(self.database_options.clone());
+        // Resets tx id, scrubs wal
+        self.transaction_wal.write().unwrap().flush_transactions();
 
         row_count
     }
@@ -215,14 +220,9 @@ impl Database {
 
             match contains_mutation {
                 true => {
-                    let mut transaction_wal = database.transaction_wal.write().unwrap();
-
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = database.apply_transaction(
-                        transaction_statements,
-                        transaction_wal.deref_mut(),
-                        ApplyMode::Request(resolver),
-                    );
+                    let _ = database
+                        .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
                 }
                 false => {
                     // TODO: Change this, doing this to remove lock contention on the transaction WAL
@@ -269,11 +269,8 @@ impl Database {
 
             // Then add states from the transaction log
             for transaction in restored_transactions {
-                let apply_transaction_result = self.apply_transaction(
-                    transaction.statements,
-                    transaction_wal.deref_mut(),
-                    ApplyMode::Restore,
-                );
+                let apply_transaction_result =
+                    self.apply_transaction(transaction.statements, ApplyMode::Restore);
 
                 if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
                     apply_transaction_result
@@ -348,9 +345,10 @@ impl Database {
     pub fn apply_transaction(
         &self,
         statements: Vec<Statement>,
-        transaction_wal: &mut TransactionWAL,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
+        let mut transaction_wal = self.transaction_wal.write().unwrap();
+
         let applying_transaction_id = transaction_wal.get_current_transaction_id().increment();
         // let applying_transaction_id = TransactionId(10_000);
 
@@ -449,216 +447,220 @@ mod tests {
     use crate::database::database::Database;
     use crate::model::statement::StatementResult;
 
-    //     mod add {
+    mod add {
 
-    //         use crate::database::database::ApplyMode;
+        use crate::database::database::ApplyMode;
 
-    //         use super::*;
+        use super::*;
 
-    //         #[test]
-    //         fn add_happy_path() {
-    //             let mut database = Database::new_test();
+        #[test]
+        fn add_happy_path() {
+            let mut database = Database::new_test();
 
-    //             let person = Person::new_test();
+            let person = Person::new_test();
 
-    //             let transcation_result = database
-    //                 .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
+            let transcation_result = database
+                .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
 
-    //             assert_eq!(
-    //                 transcation_result,
-    //                 DatabaseCommandTransactionResponse::new_committed_single_result(
-    //                     StatementResult::Single(person)
-    //                 )
-    //             );
-    //         }
+            assert_eq!(
+                transcation_result,
+                DatabaseCommandTransactionResponse::new_committed_single_result(
+                    StatementResult::Single(person)
+                )
+            );
+        }
 
-    //         #[test]
-    //         fn add_multiple_separate() {
-    //             let mut database = Database::new_test();
+        #[test]
+        fn add_multiple_separate() {
+            let mut database = Database::new_test();
 
-    //             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
+            let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
-    //             let transcation_result_one = database
-    //                 .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
+            let transcation_result_one = database
+                .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
 
-    //             assert_eq!(
-    //                 transcation_result_one,
-    //                 DatabaseCommandTransactionResponse::new_committed_single_result(
-    //                     StatementResult::Single(person_one.clone())
-    //                 ),
-    //                 "Person should be returned as a single statement result"
-    //             );
+            assert_eq!(
+                transcation_result_one,
+                DatabaseCommandTransactionResponse::new_committed_single_result(
+                    StatementResult::Single(person_one.clone())
+                ),
+                "Person should be returned as a single statement result"
+            );
 
-    //             let person_two: Person =
-    //                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
+            let person_two: Person =
+                Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-    //             let transcation_result_two = database
-    //                 .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
+            let transcation_result_two = database
+                .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
 
-    //             assert_eq!(
-    //                 transcation_result_two,
-    //                 DatabaseCommandTransactionResponse::new_committed_single_result(
-    //                     StatementResult::Single(person_two.clone())
-    //                 ),
-    //                 "Person should be returned as a single statement result"
-    //             );
-    //         }
+            assert_eq!(
+                transcation_result_two,
+                DatabaseCommandTransactionResponse::new_committed_single_result(
+                    StatementResult::Single(person_two.clone())
+                ),
+                "Person should be returned as a single statement result"
+            );
+        }
 
-    //         #[test]
-    //         fn add_multiple_transaction() {
-    //             let mut database = Database::new_test();
+        #[test]
+        fn add_multiple_transaction() {
+            let mut database = Database::new_test();
 
-    //             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
-    //             let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
+            let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
+            let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-    //             let action_results = database.apply_transaction(
-    //                 vec![
-    //                     Statement::Add(person_one.clone()),
-    //                     Statement::Add(person_two.clone()),
-    //                 ],
-    //                 ApplyMode::Restore,
-    //             );
+            let action_results = database.apply_transaction(
+                vec![
+                    Statement::Add(person_one.clone()),
+                    Statement::Add(person_two.clone()),
+                ],
+                ApplyMode::Restore,
+            );
 
-    //             assert_eq!(
-    //                 action_results,
-    //                 DatabaseCommandTransactionResponse::new_committed_multiple(vec![
-    //                     StatementResult::Single(person_one),
-    //                     StatementResult::Single(person_two)
-    //                 ])
-    //             );
-    //         }
+            assert_eq!(
+                action_results,
+                DatabaseCommandTransactionResponse::new_committed_multiple(vec![
+                    StatementResult::Single(person_one),
+                    StatementResult::Single(person_two)
+                ])
+            );
+        }
 
-    //         #[test]
-    //         fn add_multiple_transaction_rollback() {
-    //             let mut database = Database::new_test();
+        #[test]
+        fn add_multiple_transaction_rollback() {
+            let mut database = Database::new_test();
 
-    //             let person_one = Person::new(
-    //                 "Person One".to_string(),
-    //                 Some("OverlappingEmail".to_string()),
-    //             );
+            let person_one = Person::new(
+                "Person One".to_string(),
+                Some("OverlappingEmail".to_string()),
+            );
 
-    //             let person_two = Person::new(
-    //                 "Person Two".to_string(),
-    //                 Some("OverlappingEmail".to_string()),
-    //             );
+            let person_two = Person::new(
+                "Person Two".to_string(),
+                Some("OverlappingEmail".to_string()),
+            );
 
-    //             let process_action_result = database.apply_transaction(
-    //                 vec![
-    //                     Statement::Add(person_one.clone()),
-    //                     Statement::Add(person_two.clone()),
-    //                 ],
-    //                 ApplyMode::Restore,
-    //             );
+            let process_action_result = database.apply_transaction(
+                vec![
+                    Statement::Add(person_one.clone()),
+                    Statement::Add(person_two.clone()),
+                ],
+                ApplyMode::Restore,
+            );
 
-    //             let action_error = process_action_result;
+            let action_error = process_action_result;
 
-    //             assert_eq!(
-    //                 action_error,
-    //                 DatabaseCommandTransactionResponse::Rollback(
-    //                     "Cannot add row as a person already exists with this email: OverlappingEmail"
-    //                         .to_string()
-    //                 ),
-    //                 "When one statement fails, all actions should be rolled back"
-    //             );
-    //         }
-    //     }
+            assert_eq!(
+                action_error,
+                DatabaseCommandTransactionResponse::Rollback(
+                    "Cannot add row as a person already exists with this email: OverlappingEmail"
+                        .to_string()
+                ),
+                "When one statement fails, all actions should be rolled back"
+            );
+        }
+    }
 
-    //     mod transaction_rollback {
-    //         use crate::{consts::consts::TransactionId, database::database::ApplyMode};
+    mod transaction_rollback {
+        use crate::{consts::consts::TransactionId, database::database::ApplyMode};
 
-    //         use super::*;
+        use super::*;
 
-    //         #[test]
-    //         fn rollback_response() {
-    //             // Given an empty database
-    //             let mut database = Database::new_test();
+        #[test]
+        fn rollback_response() {
+            // Given an empty database
+            let mut database = Database::new_test();
 
-    //             // When a rollback happens
-    //             let rollback_actions = create_rollback_statements();
+            // When a rollback happens
+            let rollback_actions = create_rollback_statements();
 
-    //             let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
-    //             // The transaction log will be empty
-    //             assert_eq!(
-    //                 error_message,
-    //                 DatabaseCommandTransactionResponse::Rollback(
-    //                     "Cannot add row as a person already exists with this email: OverlappingEmail"
-    //                         .to_string()
-    //                 )
-    //             );
-    //         }
+            // The transaction log will be empty
+            assert_eq!(
+                error_message,
+                DatabaseCommandTransactionResponse::Rollback(
+                    "Cannot add row as a person already exists with this email: OverlappingEmail"
+                        .to_string()
+                )
+            );
+        }
 
-    //         #[test]
-    //         fn transaction_log_is_empty() {
-    //             // Given an empty database
-    //             let mut database = Database::new_test();
+        #[test]
+        fn transaction_log_is_empty() {
+            // Given an empty database
+            let mut database = Database::new_test();
 
-    //             let rollback_actions = create_rollback_statements();
+            let rollback_actions = create_rollback_statements();
 
-    //             // When a rollback happens
-    //             database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            // When a rollback happens
+            database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
-    //             // Then there should be no items in the transaction log
-    //             assert_eq!(
-    //                 database.transaction_wal.get_current_transaction_id(),
-    //                 &TransactionId::new_first_transaction(),
-    //                 "Transaction log should be empty"
-    //             );
-    //         }
+            // Then there should be no items in the transaction log
+            assert_eq!(
+                database
+                    .transaction_wal
+                    .write()
+                    .unwrap()
+                    .get_current_transaction_id(),
+                &TransactionId::new_first_transaction(),
+                "Transaction log should be empty"
+            );
+        }
 
-    //         #[test]
-    //         fn indexes_are_empty() {
-    //             // Given an empty database
-    //             let mut database = Database::new_test();
+        #[test]
+        fn indexes_are_empty() {
+            // Given an empty database
+            let mut database = Database::new_test();
 
-    //             // When a rollback happens
-    //             let rollback_actions = create_rollback_statements();
+            // When a rollback happens
+            let rollback_actions = create_rollback_statements();
 
-    //             let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
-    //             // Then the items at the start of the transaction, should be emptied from the index
-    //             assert_eq!(
-    //                 database.person_table.unique_email_index.len(),
-    //                 0,
-    //                 "Unique email index should be empty"
-    //             );
-    //         }
+            // Then the items at the start of the transaction, should be emptied from the index
+            assert_eq!(
+                database.person_table.unique_email_index.len(),
+                0,
+                "Unique email index should be empty"
+            );
+        }
 
-    //         #[test]
-    //         fn row_table_is_empty() {
-    //             // Given an empty database
-    //             let mut database = Database::new_test();
+        #[test]
+        fn row_table_is_empty() {
+            // Given an empty database
+            let mut database = Database::new_test();
 
-    //             // When a rollback happens
-    //             let rollback_actions = create_rollback_statements();
+            // When a rollback happens
+            let rollback_actions = create_rollback_statements();
 
-    //             let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
 
-    //             // The row that was created for the item is removed
-    //             assert_eq!(
-    //                 database.person_table.person_rows.len(),
-    //                 0,
-    //                 "Person rows should be empty"
-    //             );
-    //         }
+            // The row that was created for the item is removed
+            assert_eq!(
+                database.person_table.person_rows.len(),
+                0,
+                "Person rows should be empty"
+            );
+        }
 
-    //         fn create_rollback_statements() -> Vec<Statement> {
-    //             let person_one = Person::new(
-    //                 "Person One".to_string(),
-    //                 Some("OverlappingEmail".to_string()),
-    //             );
+        fn create_rollback_statements() -> Vec<Statement> {
+            let person_one = Person::new(
+                "Person One".to_string(),
+                Some("OverlappingEmail".to_string()),
+            );
 
-    //             let person_two = Person::new(
-    //                 "Person Two".to_string(),
-    //                 Some("OverlappingEmail".to_string()),
-    //             );
+            let person_two = Person::new(
+                "Person Two".to_string(),
+                Some("OverlappingEmail".to_string()),
+            );
 
-    //             vec![
-    //                 Statement::Add(person_one.clone()),
-    //                 Statement::Add(person_two.clone()),
-    //             ]
-    //         }
-    //     }
+            vec![
+                Statement::Add(person_one.clone()),
+                Statement::Add(person_two.clone()),
+            ]
+        }
+    }
 
     /// Running these tests: cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
     mod bulk {
