@@ -1,7 +1,7 @@
 # Lineage DB
 
 Lineage DB is an educational MVCC database and has the following functionality:
-1. Supports ACID transactions (* everything currently runs as serialization)
+1. Supports ACID transactions
 1. Utilizes a WAL for performant writes / supports trimming the WAL
 1. Time travel; query the database at any given transaction id (* assuming the previous transactions are untrimmed)
 1. For any given item can look at all revisions (* assuming the previous transactions are untrimmed)
@@ -10,14 +10,11 @@ Lineage DB is an educational MVCC database and has the following functionality:
 Current limitations:
 1. Does not support session based transactions, statements in a transaction must be sent all at once
 1. Does not support DDL statements, at the moment the system is limited to a single entity (Person)
-1. Database Multi-threading is limited to a single writer / multiple readers (via a Reader Writer database lock).
-   1. This limits reading whilst writing, once correctly implemented MVCC should allow reads while there are writes
 1. The working dataset must fit entirely within memory, there is no storage pool / disk paging
 1. Does not have an SQL frontend
 1. Has limited querying capabilities, just `AND`, no `OR`, `IN`, etc.
 1. Does not clean up older item versions -- should implement this by looking at the oldest transaction and cleaning up items before that TX id
 1. Version compression, for each new version we make a clean copy of all of the previous versions' data
-
 
 ## How to use 
 
