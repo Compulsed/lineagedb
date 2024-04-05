@@ -160,28 +160,37 @@ impl Database {
                         // The DB thread that received the shutdown request is responsible for ensuring
                         //  all the other threads shutdown.
                         Control::Shutdown(request) => {
-                            if request == ShutdownRequest::Coordinator {
-                                log::info!(
-                                    "[Thread - {}] Coordinator shutting down threads",
-                                    thread_id
-                                );
+                            match request {
+                                ShutdownRequest::Coordinator => {
+                                    log::info!(
+                                        "[Thread - {}] Coordinator shutting down threads",
+                                        thread_id
+                                    );
 
-                                for rm in database_request_managers {
-                                    rm.send_shutdown_request(ShutdownRequest::Worker)
-                                        .expect("Should respond to shutdown request");
+                                    for rm in database_request_managers {
+                                        let response = rm
+                                            .send_shutdown_request(ShutdownRequest::Worker)
+                                            .expect("Should respond to shutdown request");
+
+                                        log::info!("{}", response);
+                                    }
+
+                                    let _ = resolver.send(
+                                        DatabaseCommandResponse::control_success(&format!(
+                                            "[Thread - {}] Successfully shutdown database",
+                                            thread_id
+                                        )),
+                                    );
                                 }
-
-                                log::info!(
-                                    "[Thread - {}] Coordinator successfully shut down all threads",
-                                    thread_id
-                                );
-
-                                let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                    "Successfully shutdown database",
-                                ));
+                                ShutdownRequest::Worker => {
+                                    let _ = resolver.send(
+                                        DatabaseCommandResponse::control_success(&format!(
+                                            "[Thread - {}] Successfully shut down",
+                                            thread_id
+                                        )),
+                                    );
+                                }
                             }
-
-                            log::info!("[Thread - {}] Thread shutting down thread", thread_id);
 
                             return;
                         }
