@@ -45,8 +45,7 @@ pub fn database_add_benchmark(c: &mut Criterion) {
 
                                 let statements = vec![Statement::Add(person.clone())];
 
-                                // TODO: Create a dummy WAL...?
-                                // database.apply_transaction(statements, ApplyMode::Restore);
+                                database.apply_transaction(statements, ApplyMode::Restore);
                             }
 
                             test_tx.send(1).expect("Should not timeout");
@@ -82,7 +81,7 @@ pub fn database_get_benchmark(c: &mut Criterion) {
 
             let statements = vec![Statement::Add(person.clone())];
 
-            // let _ = database.apply_transaction(statements, ApplyMode::Restore);
+            let _ = database.apply_transaction(statements, ApplyMode::Restore);
         }
 
         group.throughput(Throughput::Elements(SAMPLE_SIZE));
