@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::{
     consts::consts::{EntityId, TransactionId, VersionId},
+    database::orchestrator::DatabasePauseEvent,
     model::{
         person::Person,
         statement::{Statement, StatementResult},
@@ -67,7 +68,7 @@ impl PersonTable {
         }
     }
 
-    pub fn reset(&self) {
+    pub fn reset(&self, _: &DatabasePauseEvent) {
         for row in &self.person_rows {
             row.remove();
         }
