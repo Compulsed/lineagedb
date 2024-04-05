@@ -1119,7 +1119,6 @@ dependencies = [
  "juniper",
  "log",
  "rand 0.8.5",
- "threadpool",
  "uuid 1.7.0",
 ]
 
