@@ -49,6 +49,8 @@ pub struct Transaction {
 pub struct TransactionWAL {
     log_file: Arc<Mutex<File>>,
     database_options: DatabaseOptions,
+    // TODO: Consider moving this to the database, this will make it easier to test
+    //  because we do not need to mock a Transaction WAL to test the database
     current_transaction_id: LocalClock,
     size: AtomicUsize,
     commit_sender: mpsc::Sender<TransactionCommitData>,

@@ -3,6 +3,9 @@ use crossbeam_skiplist::SkipMap;
 use std::sync::RwLock;
 use thiserror::Error;
 
+#[cfg(test)]
+use std::ops::Deref;
+
 use crate::{
     consts::consts::{EntityId, TransactionId, VersionId},
     database::orchestrator::DatabasePauseEvent,
@@ -671,7 +674,7 @@ mod tests {
         list_statement: Statement,
         compare_to: Vec<Person>,
     ) -> () {
-        let mut table = PersonTable::new();
+        let table = PersonTable::new();
         let mut next_transaction_id = TransactionId::new_first_transaction();
 
         for statement in statements {
@@ -731,13 +734,13 @@ mod versioning {
         #[test]
         fn adding_then_updating_creates_version_v2() {
             // Given an empty table
-            let mut table = PersonTable::new();
+            let table = PersonTable::new();
 
             // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (person, next_transaction_id) = add_test_person_to_empty_database(&table);
 
             // And we update the item
-            let (updated_person, _) = update_test_person(&mut table, &person, next_transaction_id);
+            let (updated_person, _) = update_test_person(&table, &person, next_transaction_id);
 
             // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
             let person_row = table.get_version_row_test(&person.id);
@@ -768,17 +771,17 @@ mod versioning {
         #[test]
         fn adding_then_updating_then_deleting_creates_version_v3() {
             // Given an empty table
-            let mut table = PersonTable::new();
+            let table = PersonTable::new();
 
             // When we add an item
-            let (add_person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (add_person, next_transaction_id) = add_test_person_to_empty_database(&table);
 
             // And we update the item
             let (updated_person, next_transaction_id) =
-                update_test_person(&mut table, &add_person, next_transaction_id);
+                update_test_person(&table, &add_person, next_transaction_id);
 
             // And we delete the item
-            let _ = delete_test_person(&mut table, &updated_person.id, next_transaction_id);
+            let _ = delete_test_person(&table, &updated_person.id, next_transaction_id);
 
             // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
             let person_row = table.get_version_row_test(&updated_person.id);
@@ -823,19 +826,15 @@ mod versioning {
         #[test]
         fn add_then_get_person_at_version() {
             // Given an empty table
-            let mut table = PersonTable::new();
+            let table = PersonTable::new();
 
             // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (person, next_transaction_id) = add_test_person_to_empty_database(&table);
 
             // Then we should be able to get the item at version 1
-            let person_v1 = get_test_person_at_version(
-                &mut table,
-                &person.id,
-                &VersionId(1),
-                next_transaction_id,
-            )
-            .expect("should have person");
+            let person_v1 =
+                get_test_person_at_version(&table, &person.id, &VersionId(1), next_transaction_id)
+                    .expect("should have person");
 
             assert_eq!(&person_v1, &person);
         }
@@ -843,18 +842,18 @@ mod versioning {
         #[test]
         fn add_update_then_get_person_at_version() {
             // Given an empty table
-            let mut table = PersonTable::new();
+            let table = PersonTable::new();
 
             // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (person, next_transaction_id) = add_test_person_to_empty_database(&table);
 
             // And we update the item
             let (updated_person, next_transaction_id) =
-                update_test_person(&mut table, &person, next_transaction_id);
+                update_test_person(&table, &person, next_transaction_id);
 
             // Then we should be able to get the item at version 1
             let person_v1 = get_test_person_at_version(
-                &mut table,
+                &table,
                 &person.id,
                 &VersionId(1),
                 next_transaction_id.clone(),
@@ -865,7 +864,7 @@ mod versioning {
 
             // Then we should be able to get the item at version 2
             let person_v2 = get_test_person_at_version(
-                &mut table,
+                &table,
                 &person.id,
                 &VersionId(2),
                 next_transaction_id.clone(),
@@ -878,22 +877,21 @@ mod versioning {
         #[test]
         fn add_update_delete_then_get_person_at_version() {
             // Given an empty table
-            let mut table = PersonTable::new();
+            let table = PersonTable::new();
 
             // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (person, next_transaction_id) = add_test_person_to_empty_database(&table);
 
             // And we update the item
             let (updated_person, next_transaction_id) =
-                update_test_person(&mut table, &person, next_transaction_id);
+                update_test_person(&table, &person, next_transaction_id);
 
             // And we delete the item
-            let next_transaction_id =
-                delete_test_person(&mut table, &person.id, next_transaction_id);
+            let next_transaction_id = delete_test_person(&table, &person.id, next_transaction_id);
 
             // Then we should be able to get the item at version 1
             let person_v1 = get_test_person_at_version(
-                &mut table,
+                &table,
                 &person.id,
                 &VersionId(1),
                 next_transaction_id.clone(),
@@ -904,7 +902,7 @@ mod versioning {
 
             // Then we should be able to get the item at version 2
             let person_v2 = get_test_person_at_version(
-                &mut table,
+                &table,
                 &person.id,
                 &VersionId(2),
                 next_transaction_id.clone(),
@@ -915,7 +913,7 @@ mod versioning {
 
             // Then we should NOT be able to get the item at version 3
             let person_v3 = get_test_person_at_version(
-                &mut table,
+                &table,
                 &person.id,
                 &VersionId(3),
                 next_transaction_id.clone(),
@@ -931,7 +929,7 @@ mod versioning {
         #[test]
         fn adding_item_with_same_email_as_existing_item_fails() {
             // Given a table with an that has a unique email
-            let mut table = PersonTable::new();
+            let table = PersonTable::new();
 
             let person = Person::new("1".to_string(), Some("email".to_string()));
             let statement = Statement::Add(person);
@@ -1004,13 +1002,13 @@ mod versioning {
         }
     }
 
-    fn add_test_person_to_empty_database(table: &mut PersonTable) -> (Person, TransactionId) {
+    fn add_test_person_to_empty_database(table: &PersonTable) -> (Person, TransactionId) {
         let transaction_id = TransactionId::new_first_transaction();
         add_test_person(table, transaction_id)
     }
 
     fn add_test_person(
-        table: &mut PersonTable,
+        table: &PersonTable,
         next_transaction_id: TransactionId,
     ) -> (Person, TransactionId) {
         let person = Person::new(
@@ -1025,7 +1023,7 @@ mod versioning {
     }
 
     fn update_test_person(
-        table: &mut PersonTable,
+        table: &PersonTable,
         person: &Person,
         next_transaction_id: TransactionId,
     ) -> (Person, TransactionId) {
@@ -1046,7 +1044,7 @@ mod versioning {
     }
 
     fn delete_test_person(
-        table: &mut PersonTable,
+        table: &PersonTable,
         id: &EntityId,
         next_transaction_id: TransactionId,
     ) -> TransactionId {
@@ -1058,7 +1056,7 @@ mod versioning {
     }
 
     fn get_test_person_at_version(
-        table: &mut PersonTable,
+        table: &PersonTable,
         id: &EntityId,
         version: &VersionId,
         next_transaction_id: TransactionId,
