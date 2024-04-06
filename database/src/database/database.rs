@@ -273,7 +273,6 @@ impl Database {
                         .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
                 }
                 false => {
-                    // TODO: Change this, doing this to remove lock contention on the transaction WAL
                     let query_transaction_id = database
                         .transaction_wal
                         .get_increment_current_transaction_id()
@@ -870,6 +869,7 @@ pub mod test_utils {
 
     use crate::{
         database::{
+            commands::ShutdownRequest,
             database::Database,
             request_manager::{RequestManager, TaskStatementResponse},
         },
@@ -1020,15 +1020,15 @@ pub mod test_utils {
         let metrics = TestMetrics::new(Mode::Task, now.elapsed(), actions);
 
         // Allows database thread to successfully exit
-        // let shutdown_response = rm
-        //     .clone()
-        //     .send_shutdown_request()
-        //     .expect("Should not timeout");
+        let shutdown_response = rm
+            .clone()
+            .send_shutdown_request(ShutdownRequest::Coordinator)
+            .expect("Should not timeout");
 
-        // assert_eq!(
-        //     shutdown_response,
-        //     "Successfully shutdown database".to_string()
-        // );
+        assert_eq!(
+            shutdown_response,
+            "Successfully shutdown database".to_string()
+        );
 
         metrics
     }

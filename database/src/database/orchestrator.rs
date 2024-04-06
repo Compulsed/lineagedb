@@ -2,6 +2,22 @@ use flume::Sender;
 
 use super::request_manager::RequestManager;
 
+/// Represents a pause event for the database
+///
+/// Rust's type system works really well when you are have to have mutable exclusive reference.
+/// This is because the borrow checker will not allow you to have multiple mutable references. This
+/// means that it is not possible for multiple threads to have mutable access to the same data.
+///
+/// Lockless data structures get around this problem through interior mutability. This is where you
+/// can pass around a reference and then anything can mutate the data inside. This is what happens
+/// with our database threads & skiplists. Because of this, it means that we now need to manage our
+/// own locking. This is where the `DatabasePauseEvent` comes in.
+///
+/// The DatabasePauseEvent acts like a guard and requires that the database threads are paused. In
+/// order to do this, we send a message to each database thread telling them to pause. Once they are
+/// paused we get this guard. This guard can then be used to ensure that the database threads are
+/// paused. Various methods which need to ensure there is no concurrent access can be marked up
+/// as requiring this guard. This will ensure that the reader knows that there is no concurrent access
 pub struct DatabasePauseEvent {
     resume_txs: Vec<Sender<()>>,
 }
@@ -39,4 +55,14 @@ impl Drop for DatabasePauseEvent {
             let _ = resume_tx.send(());
         }
     }
+}
+
+impl Fake for DatabasePauseEvent {
+    fn stub() -> DatabasePauseEvent {
+        DatabasePauseEvent { resume_txs: vec![] }
+    }
+}
+
+pub trait Fake {
+    fn stub() -> DatabasePauseEvent;
 }

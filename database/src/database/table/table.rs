@@ -1002,9 +1002,48 @@ mod versioning {
         }
     }
 
+    mod reset {
+        use super::*;
+        use crate::database::orchestrator::Fake;
+
+        #[test]
+        fn reset_should_remove_all_data() {
+            // Given a table with data
+            let table = PersonTable::new();
+
+            add_test_person_to_empty_database(&table);
+
+            let people = list_people_current_state(&table);
+
+            assert_eq!(people.len(), 1);
+
+            // When we reset the table
+            table.reset(&DatabasePauseEvent::stub());
+
+            let people = list_people_current_state(&table);
+
+            // Then there should be no data
+            assert_eq!(people.len(), 0);
+        }
+    }
+
     fn add_test_person_to_empty_database(table: &PersonTable) -> (Person, TransactionId) {
         let transaction_id = TransactionId::new_first_transaction();
         add_test_person(table, transaction_id)
+    }
+
+    fn list_people_current_state(table: &PersonTable) -> Vec<Person> {
+        let statement = Statement::List(None);
+        let result = table.apply(statement, TransactionId(10_000)).unwrap();
+
+        match result {
+            StatementResult::List(people) => people,
+            _ => {
+                // Note: Unsure why but cannot panic here, just assert false
+                assert!(false, "should be a list of people");
+                vec![]
+            }
+        }
     }
 
     fn add_test_person(
