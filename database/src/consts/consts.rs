@@ -17,6 +17,10 @@ impl TransactionId {
     pub fn new_first_transaction() -> TransactionId {
         TransactionId(1)
     }
+
+    pub fn increment(&self) -> TransactionId {
+        TransactionId(self.0 + 1)
+    }
 }
 
 impl fmt::Display for TransactionId {
