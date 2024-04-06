@@ -164,6 +164,13 @@ cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to anoth
 ```
 
 
+## Architecture
+
+### Request response flow
+
+![](images/request-responseflow.png?raw=true)
+
+
 ## Notes
 
 ### Concurrent Read / Write
