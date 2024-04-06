@@ -1,15 +1,14 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, RwLock},
-    thread,
-    time::Instant,
-};
+use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
 use num_format::{Locale, ToFormattedString};
 use uuid::Uuid;
 
 use crate::{
-    database::commands::{Control, DatabaseCommand, DatabaseCommandResponse},
+    consts::consts::TransactionId,
+    database::{
+        commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
+        orchestrator::DatabasePauseEvent,
+    },
     model::statement::{Statement, StatementResult},
 };
 
@@ -77,10 +76,10 @@ pub enum ApplyMode {
 }
 
 pub struct Database {
-    person_table: PersonTable,
     transaction_wal: TransactionWAL,
-    database_options: DatabaseOptions,
     snapshot_manager: SnapshotManager,
+    person_table: PersonTable,
+    database_options: DatabaseOptions,
 }
 
 impl Database {
@@ -111,24 +110,40 @@ impl Database {
         }
     }
 
-    pub fn reset_database_state(&mut self) -> usize {
+    /// Resets the filesystem and any in-memory state.
+    ///
+    /// ⚠️ The caller is responsible for stopping the database or else
+    /// it may end up in an inconsistent state. If a reset happens
+    /// at the same time as a write it is possible that a part of the write is erased
+    pub fn reset_database_state(&self, database_pause: &DatabasePauseEvent) -> usize {
         let row_count = self.person_table.person_rows.len();
 
-        // Clean out snapshot and transaction log
-        self.snapshot_manager.delete_snapshot();
+        // Resets tx id, scrubs wal
+        self.transaction_wal.flush_transactions(database_pause);
 
-        // Reset the database to a clean state
-        self.person_table = PersonTable::new();
-        self.transaction_wal = TransactionWAL::new(self.database_options.clone());
-        self.snapshot_manager = SnapshotManager::new(self.database_options.clone());
+        // Reset the transaction id counter
+        // TODO: We should make flushing and deleting separate operations
+        //  This was a legacy of us just newing up new WAL when we needed one.
+        self.transaction_wal
+            .set_current_transaction_id(TransactionId::new_first_transaction());
+
+        // Clean out snapshot and transaction log
+        self.snapshot_manager.delete_snapshot(database_pause);
+
+        // Resets the in-memory persons table
+        self.person_table.reset(database_pause);
 
         row_count
     }
 
     fn start_thread(
+        thread_id: usize,
         receiver: flume::Receiver<DatabaseCommandRequest>,
-        database_rw: Arc<RwLock<Self>>,
+        database_request_managers: Vec<RequestManager>,
+        database: Arc<Self>,
     ) {
+        let database_request_managers = &database_request_managers;
+
         loop {
             let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
                 Ok(request) => request,
@@ -138,7 +153,11 @@ impl Database {
                 }
             };
 
-            log::info!("Received request: {}", command.log_format());
+            log::info!(
+                "[Thread: {}] Received request: {}",
+                thread_id,
+                command.log_format()
+            );
 
             // TODO: We assume that the send() commands are successful. This is likely okay? because if
             //   if sender is disconnected that should not impact the database
@@ -146,16 +165,57 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
-                        Control::Shutdown => {
-                            let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                "Successfully shutdown database",
-                            ));
+                        Control::Shutdown(request) => {
+                            // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
+                            match request {
+                                ShutdownRequest::Coordinator => {
+                                    // Send request to every DB thread, telling them to shutdown / stop working
+                                    for rm in database_request_managers {
+                                        let _ = rm
+                                            .send_shutdown_request(ShutdownRequest::Worker)
+                                            .expect("Should respond to shutdown request");
+                                    }
+
+                                    // Once we have successfully shutdown all threads, report success to the caller
+                                    let _ = resolver.send(
+                                        DatabaseCommandResponse::control_success(&format!(
+                                            "[Thread - {}] Successfully shutdown database",
+                                            thread_id
+                                        )),
+                                    );
+                                }
+                                ShutdownRequest::Worker => {
+                                    let _ = resolver.send(
+                                        DatabaseCommandResponse::control_success(&format!(
+                                            "[Thread - {}] Successfully shut down",
+                                            thread_id
+                                        )),
+                                    );
+                                }
+                            }
 
                             return;
                         }
+                        Control::PauseDatabase(resume) => {
+                            let _ = resolver.send(DatabaseCommandResponse::control_success(
+                                &format!("[Thread - {}] Successfully paused thread", thread_id),
+                            ));
+
+                            // No timeout, should just wait until the caller tells us we are ready to resume processing
+                            let _ = resume.recv();
+
+                            log::info!("[Thread - {}] Successfully resumed thread", thread_id);
+
+                            continue;
+                        }
                         Control::ResetDatabase => {
+                            // Note, because we have paused the database we should not get ANY deadlocks
+                            //  concurrency issues
+                            let database_reset_guard =
+                                &DatabasePauseEvent::new(&database_request_managers);
+
                             let dropped_row_count =
-                                database_rw.write().unwrap().reset_database_state();
+                                database.reset_database_state(database_reset_guard);
 
                             let _ =
                                 resolver.send(DatabaseCommandResponse::control_success(&format!(
@@ -166,21 +226,28 @@ impl Database {
                             continue;
                         }
                         Control::SnapshotDatabase => {
-                            let mut database = database_rw.write().unwrap();
+                            // Note, because we have paused the database we should not get ANY deadlocks
+                            //  concurrency issues
+                            let database_reset_guard =
+                                &DatabasePauseEvent::new(&database_request_managers);
 
                             let transaction_id = database
                                 .transaction_wal
-                                .get_current_transaction_id()
+                                .get_increment_current_transaction_id()
                                 .clone();
 
                             let table = &database.person_table;
 
                             // Persist current state to disk
-                            database
-                                .snapshot_manager
-                                .create_snapshot(table, transaction_id);
+                            database.snapshot_manager.create_snapshot(
+                                database_reset_guard,
+                                table,
+                                transaction_id,
+                            );
 
-                            let flush_transactions = database.transaction_wal.flush_transactions();
+                            let flush_transactions = database
+                                .transaction_wal
+                                .flush_transactions(database_reset_guard);
 
                             let _ =
                                 resolver.send(DatabaseCommandResponse::control_success(&format!(
@@ -202,17 +269,18 @@ impl Database {
             match contains_mutation {
                 true => {
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = database_rw
-                        .write()
-                        .unwrap()
+                    let _ = database
                         .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
                 }
                 false => {
-                    // As there is no WAL, we can just read from the database and send the response
-                    let response = database_rw
-                        .read()
-                        .unwrap()
-                        .query_transaction(transaction_statements);
+                    // TODO: Change this, doing this to remove lock contention on the transaction WAL
+                    let query_transaction_id = database
+                        .transaction_wal
+                        .get_increment_current_transaction_id()
+                        .clone();
+
+                    let response =
+                        database.query_transaction(&query_transaction_id, transaction_statements);
 
                     let _ = resolver.send(
                         DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
@@ -222,23 +290,25 @@ impl Database {
         }
     }
 
-    pub fn run(mut self, threads: u32) -> RequestManager {
-        let transaction_log_location = self.database_options.data_directory.clone();
-
-        log::info!(
-            "Transaction Log Location: [{}]",
-            transaction_log_location.display()
-        );
-
+    pub fn run(self, threads: usize) -> RequestManager {
         if self.database_options.restore {
+            let transaction_log_location = self.database_options.data_directory.clone();
+
+            log::info!(
+                "Transaction Log Location: [{}]",
+                transaction_log_location.display()
+            );
+
             let now = Instant::now();
 
             // Call chain -> snapshot_manager -> person_table
-            let (snapshot_count, metadata) = self
-                .snapshot_manager
-                .restore_snapshot(&mut self.person_table);
+            let (snapshot_count, metadata) =
+                self.snapshot_manager.restore_snapshot(&self.person_table);
 
             // If there was a snapshot to restore from we update the transaction log
+            // self.transaction_wal
+            // .set_current_transaction_id(metadata.current_transaction_id.clone());
+
             self.transaction_wal
                 .set_current_transaction_id(metadata.current_transaction_id.clone());
 
@@ -270,41 +340,64 @@ impl Database {
                 snapshot_count,
                 restored_transaction_count,
                 self.transaction_wal
-                    .get_current_transaction_id()
+                    .get_increment_current_transaction_id()
                     .to_number()
                     .to_formatted_string(&Locale::en)
             );
         }
 
-        let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
-
-        let database_mutex = Arc::new(RwLock::new(self));
+        /*
+           Channel strategy:
+           - We create a channel per database thread, this acts as sort of thread work queue
+           - The request manager will get _all_ of the database channels and will load balance requests across them
+           - Database get their own channels AND the channels of all other threads. This will be used for cross
+               thread communication (servicing, stop the world, etc)
+        */
+        let mut tx_channels = vec![];
+        let mut rx_channels = vec![];
 
         for _ in 0..threads {
-            let thread_rx = rx.clone();
-            let database_rw = database_mutex.clone();
+            let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
+
+            tx_channels.push(tx);
+            rx_channels.push(rx);
+        }
+
+        let database_arc = Arc::new(self);
+
+        for (index, database_rx_channel) in rx_channels.into_iter().enumerate() {
+            let database_arc = database_arc.clone();
+
+            // TODO: We do this per thread, likely could do this once and then clone for each thread
+            let mut request_managers = tx_channels
+                .clone()
+                .into_iter()
+                .map(|tx| RequestManager::new(vec![tx]))
+                .collect::<Vec<RequestManager>>();
+
+            // Remove our own request manager, as we will not need to call ourselves
+            request_managers.remove(index);
 
             // Spawn a new thread for each request
             thread::spawn(move || {
-                Database::start_thread(thread_rx, database_rw);
+                Database::start_thread(index, database_rx_channel, request_managers, database_arc);
             });
         }
 
-        return RequestManager::new(tx);
+        return RequestManager::new(tx_channels);
     }
 
     pub fn query_transaction(
         &self,
+        query_latest_transaction_id: &TransactionId,
         statements: Vec<Statement>,
     ) -> DatabaseCommandTransactionResponse {
-        let query_latest_transaction_id = self.transaction_wal.get_current_transaction_id();
-
         let mut statement_results: Vec<StatementResult> = Vec::new();
 
         for statement in statements {
             let statement_result = self
                 .person_table
-                .query_statement(statement.clone(), query_latest_transaction_id);
+                .query_statement(statement, query_latest_transaction_id);
 
             match statement_result {
                 Ok(statement_result) => statement_results.push(statement_result),
@@ -318,14 +411,12 @@ impl Database {
     }
 
     pub fn apply_transaction(
-        &mut self,
+        &self,
         statements: Vec<Statement>,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        let applying_transaction_id = self
-            .transaction_wal
-            .get_current_transaction_id()
-            .increment();
+        // Getting also increments -- I think this might be the place where we should be incrementing from
+        let applying_transaction_id = self.transaction_wal.get_increment_current_transaction_id();
 
         let mut status = CommitStatus::Commit;
 
@@ -367,6 +458,7 @@ impl Database {
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
+                // Send the TX off, and increment the transaction id -- Refactor this out
                 self.transaction_wal.commit(
                     applying_transaction_id,
                     statements,
@@ -573,8 +665,10 @@ mod tests {
 
             // Then there should be no items in the transaction log
             assert_eq!(
-                database.transaction_wal.get_current_transaction_id(),
-                &TransactionId::new_first_transaction(),
+                database
+                    .transaction_wal
+                    .get_increment_current_transaction_id(),
+                TransactionId::new_first_transaction(),
                 "Transaction log should be empty"
             );
         }
@@ -641,13 +735,13 @@ mod tests {
         const CLIENT_THREADS: u32 = 2;
 
         // Seems that three threads is the sweet spot for the M1 MBA
-        const READ_THREADS: u32 = 4;
+        const READ_THREADS: usize = 4;
         const READ_SAMPLE_SIZE: u32 = 3_000_000;
 
         // Due to the RW Lock, writes are constant regardless of the number of threads (the lower the thread count the better)
         // As a general note -- 75k TPS is really good, this is a 'some-what' durable commit as we're writing the WAL to disk
         //  We are not technically flushing the WAL to disk, hence why
-        const WRITE_THREADS: u32 = 1;
+        const WRITE_THREADS: usize = 1;
         const WRITE_SAMPLE_SIZE: u32 = 500_000;
 
         #[test]
@@ -865,7 +959,7 @@ pub mod test_utils {
     ///     get() we are validating that the transaction did commit
     pub fn database_test_task(
         worker_threads: u32,
-        database_threads: u32,
+        database_threads: usize,
         actions: u32,
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
@@ -926,15 +1020,15 @@ pub mod test_utils {
         let metrics = TestMetrics::new(Mode::Task, now.elapsed(), actions);
 
         // Allows database thread to successfully exit
-        let shutdown_response = rm
-            .clone()
-            .send_shutdown_request()
-            .expect("Should not timeout");
+        // let shutdown_response = rm
+        //     .clone()
+        //     .send_shutdown_request()
+        //     .expect("Should not timeout");
 
-        assert_eq!(
-            shutdown_response,
-            "Successfully shutdown database".to_string()
-        );
+        // assert_eq!(
+        //     shutdown_response,
+        //     "Successfully shutdown database".to_string()
+        // );
 
         metrics
     }

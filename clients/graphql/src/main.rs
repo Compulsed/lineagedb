@@ -9,6 +9,7 @@ use actix_web::{
 use actix_web_lab::respond::Html;
 use clap::Parser;
 use database::database::{
+    commands::ShutdownRequest,
     database::{Database, DatabaseOptions},
     request_manager::RequestManager,
 };
@@ -83,7 +84,7 @@ async fn main() -> io::Result<()> {
     ctrlc::set_handler(move || {
         let shutdown_response = set_handler_database_sender_clone
             .clone()
-            .send_shutdown_request()
+            .send_shutdown_request(ShutdownRequest::Coordinator)
             .expect("Should not timeout");
 
         log::info!("Shutting down server: {}", shutdown_response);

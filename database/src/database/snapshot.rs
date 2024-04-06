@@ -14,7 +14,8 @@ use crate::{
 
 use super::{
     database::DatabaseOptions,
-    table::{index::FullNameIndex, row::PersonVersion, table::PersonTable},
+    orchestrator::DatabasePauseEvent,
+    table::{row::PersonVersion, table::PersonTable},
 };
 
 enum FileType {
@@ -102,15 +103,12 @@ pub struct SnapshotManager {
     database_options: DatabaseOptions,
     snapshot_file: PersistanceManager<Vec<PersonVersion>>,
     metadata_file: PersistanceManager<Metadata>,
-    full_name_index_file: PersistanceManager<FullNameIndex>,
+    // full_name_index_file: PersistanceManager<FullNameIndex>,
     unique_email_index_file: PersistanceManager<HashMap<String, EntityId>>,
 }
 
 impl SnapshotManager {
     pub fn new(database_options: DatabaseOptions) -> Self {
-        fs::create_dir_all(&database_options.data_directory)
-            .expect("Should always be able to create a path at data/");
-
         Self {
             snapshot_file: PersistanceManager::new(
                 &database_options.data_directory,
@@ -120,10 +118,10 @@ impl SnapshotManager {
                 &database_options.data_directory,
                 FileType::Metadata,
             ),
-            full_name_index_file: PersistanceManager::new(
-                &database_options.data_directory,
-                FileType::SecondaryIndexFullName,
-            ),
+            // full_name_index_file: PersistanceManager::new(
+            //     &database_options.data_directory,
+            //     FileType::SecondaryIndexFullName,
+            // ),
             unique_email_index_file: PersistanceManager::new(
                 &database_options.data_directory,
                 FileType::SecondaryIndexUniqueEmail,
@@ -132,26 +130,34 @@ impl SnapshotManager {
         }
     }
 
-    pub fn restore_snapshot(&self, table: &mut PersonTable) -> (usize, Metadata) {
+    pub fn restore_snapshot(&self, table: &PersonTable) -> (usize, Metadata) {
         // -- Table
         let version_snapshots: Vec<PersonVersion> = self.snapshot_file.read();
 
         let snapeshot_count = version_snapshots.len();
 
         // -- Indexes
-        let full_name_index: FullNameIndex = self.full_name_index_file.read();
+        // let full_name_index: FullNameIndex = self.full_name_index_file.read();
 
         let unique_email_index: HashMap<String, EntityId> = self.unique_email_index_file.read();
 
         // -- Perform the restore
-        table.from_restore(version_snapshots, unique_email_index, full_name_index);
+        // table.from_restore(version_snapshots, unique_email_index, full_name_index);
 
         let metadata_data: Metadata = self.metadata_file.read();
 
         return (snapeshot_count, metadata_data);
     }
 
-    pub fn create_snapshot(&self, table: &PersonTable, transaction_id: TransactionId) {
+    pub fn create_snapshot(
+        &self,
+        _: &DatabasePauseEvent,
+        table: &PersonTable,
+        transaction_id: TransactionId,
+    ) {
+        fs::create_dir_all(&self.database_options.data_directory)
+            .expect("Should always be able to create a path at data/");
+
         // -- Table
         let result = table
             .query_statement(Statement::ListLatestVersions, &transaction_id.clone())
@@ -166,14 +172,17 @@ impl SnapshotManager {
         });
 
         // -- Indexes
-        self.full_name_index_file.write(&table.full_name_index);
+        // self.full_name_index_file.write(&table.full_name_index);
 
-        self.unique_email_index_file
-            .write(&table.unique_email_index);
+        // self.unique_email_index_file
+        //     .write(&table.unique_email_index);
     }
 
-    pub fn delete_snapshot(&self) {
+    pub fn delete_snapshot(&self, _: &DatabasePauseEvent) {
         fs::remove_dir_all(&self.database_options.data_directory)
             .expect("Should always exist, folder is created on init");
+
+        fs::create_dir_all(&self.database_options.data_directory)
+            .expect("Should always be able to create a path at data/");
     }
 }

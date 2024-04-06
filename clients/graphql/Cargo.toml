@@ -21,3 +21,4 @@ uuid = { version = "1.5.0", features = ["v4"] }
 clap = { version = "4.0", features = ["derive"] }
 ctrlc = "3.4.2"
 flume = "0.11.0"
+rand = "0.8.5"

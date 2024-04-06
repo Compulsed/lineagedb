@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -11,6 +12,7 @@ use crate::model::statement::Statement;
 
 use super::commands::DatabaseCommandResponse;
 use super::database::{ApplyMode, DatabaseOptions};
+use super::orchestrator::DatabasePauseEvent;
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -47,8 +49,8 @@ pub struct Transaction {
 pub struct TransactionWAL {
     log_file: Arc<Mutex<File>>,
     database_options: DatabaseOptions,
-    current_transaction_id: TransactionId,
-    size: usize,
+    current_transaction_id: LocalClock,
+    size: AtomicUsize,
     commit_sender: mpsc::Sender<TransactionCommitData>,
 }
 
@@ -144,24 +146,23 @@ impl TransactionWAL {
             log_file,
             database_options: database_options,
             commit_sender: sender,
-            current_transaction_id: TransactionId::new_first_transaction(),
-            size: 0,
+            current_transaction_id: LocalClock::new(),
+            size: AtomicUsize::new(0),
         }
     }
 
-    pub fn flush_transactions(&mut self) -> usize {
+    pub fn flush_transactions(&self, _: &DatabasePauseEvent) -> usize {
         let path = get_transaction_log_location(self.database_options.data_directory.clone());
-        let flushed_size = self.size;
+        let flushed_size = self.size.load(Ordering::SeqCst);
 
-        self.size = 0;
+        self.size.store(0, Ordering::SeqCst);
 
         // When we flush we need to reset the file handle for the WAL
-        // TODO: Could there be a race condition here? Can someone be writing to the file while we are flushing?
-        // Also perhaps we need to lock the file path too
-        // Perhaps this file access is better managed via a channel w/ actions
         let mut state = self.log_file.lock().unwrap();
 
-        fs::remove_file(&path).expect("Unable to remove file");
+        // TODO: When we are doing a dual reset, this could fail. Add
+        //  the unwrap back and think this through
+        let _ = fs::remove_file(&path);
 
         let raw_log_file = OpenOptions::new()
             .create_new(true)
@@ -175,12 +176,12 @@ impl TransactionWAL {
         flushed_size
     }
 
-    pub fn get_current_transaction_id(&self) -> &TransactionId {
-        &self.current_transaction_id
+    pub fn get_increment_current_transaction_id(&self) -> TransactionId {
+        self.current_transaction_id.get_timestamp()
     }
 
     pub fn commit(
-        &mut self,
+        &self,
         applied_transaction_id: TransactionId,
         statements: Vec<Statement>,
         response: DatabaseCommandResponse,
@@ -197,8 +198,8 @@ impl TransactionWAL {
             self.commit_sender.send(commit_data).unwrap();
         }
 
-        self.current_transaction_id = applied_transaction_id;
-        self.size += 1;
+        // We have committed a transaction, add it to our counter
+        self.size.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn restore(data_directory: PathBuf) -> Vec<Transaction> {
@@ -226,7 +227,36 @@ impl TransactionWAL {
         transactions
     }
 
-    pub fn set_current_transaction_id(&mut self, transaction_id: TransactionId) {
-        self.current_transaction_id = transaction_id;
+    pub fn set_current_transaction_id(&self, transaction_id: TransactionId) {
+        self.current_transaction_id.set(transaction_id.0)
+    }
+}
+
+// TODO: Usize seems odd, but that's what transaction id uses. Should change to u64
+#[derive(Debug, Default)]
+pub struct LocalClock {
+    ts_sequence: AtomicUsize,
+}
+
+impl LocalClock {
+    pub fn new() -> Self {
+        Self {
+            ts_sequence: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl LocalClock {
+    // It is unlikely we need `SeqCst` Acq / Rel should be sufficient
+    fn get_timestamp(&self) -> TransactionId {
+        TransactionId(self.ts_sequence.fetch_add(1, Ordering::SeqCst))
+    }
+
+    fn reset(&self) {
+        self.ts_sequence.store(0, Ordering::SeqCst);
+    }
+
+    fn set(&self, value: usize) {
+        self.ts_sequence.store(value, Ordering::SeqCst);
     }
 }
