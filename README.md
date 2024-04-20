@@ -295,3 +295,14 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
         SearchMethod::RequiresFullScan
     };
 ```
+
+### Persistence
+
+Snapshot:
+- Get / Set
+
+WAL:
+- bulk / individual write
+
+Questions:
+- Can I implement persistence w/o tokio? -- should I even do this?
