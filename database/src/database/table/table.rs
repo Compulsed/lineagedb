@@ -13,7 +13,6 @@ use crate::{
 };
 
 use super::{
-    // index::FullNameIndex,
     query::{filter, query},
     row::{
         ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion,
@@ -43,26 +42,18 @@ pub enum ApplyErrors {
     #[error("Cannot delete, record does not exist: {0}")]
     CannotDeleteDoesNotExist(EntityId),
 
-    // Constraints
-    #[error("Cannot add row as a person already exists with this email: {0}")]
-    UniqueConstraintViolation(String),
-
     #[error("Cannot set field to null: {0}")]
     NotNullConstraintViolation(String),
 }
 
 pub struct PersonTable {
     pub person_rows: SkipMap<EntityId, RwLock<PersonRow>>,
-    pub unique_email_index: SkipMap<String, RwLock<EntityId>>,
-    // pub full_name_index: FullNameIndex,
 }
 
 impl PersonTable {
     pub fn new() -> Self {
         Self {
             person_rows: SkipMap::<EntityId, RwLock<PersonRow>>::new(),
-            unique_email_index: SkipMap::<String, RwLock<EntityId>>::new(),
-            // full_name_index: FullNameIndex::new(),
         }
     }
 
@@ -70,33 +61,17 @@ impl PersonTable {
         for row in &self.person_rows {
             row.remove();
         }
-
-        for entry in &self.unique_email_index {
-            entry.remove();
-        }
     }
 
-    // TODO: Not sure if this aligns to the rust convention of 'from'
-    // pub fn from_restore(
-    //     &mut self,
-    //     version_snapshots: Vec<PersonVersion>,
-    //     unique_email_index: HashMap<String, EntityId>,
-    //     full_name_index: FullNameIndex,
-    // ) {
-    //     self.unique_email_index = unique_email_index;
-    //     self.full_name_index = full_name_index;
+    pub fn restore_table(&self, version_snapshots: Vec<PersonVersion>) {
+        for version_snapshot in version_snapshots {
+            let id = version_snapshot.id.clone();
 
-    //     for version_snapshot in version_snapshots {
-    //         let id = version_snapshot.id.clone();
+            let person_row = PersonRow::from_restore(version_snapshot);
 
-    //         let person_row = PersonRow::from_restore(version_snapshot);
-
-    //         match self.person_rows.insert(id, person_row) {
-    //             Some(_) => panic!("should not have a row"),
-    //             None => {}
-    //         }
-    //     }
-    // }
+            self.person_rows.insert(id, RwLock::new(person_row));
+        }
+    }
 
     pub fn query_statement(
         &self,
@@ -126,7 +101,7 @@ impl PersonTable {
                 StatementResult::GetSingle(person)
             }
             Statement::List(query_person_data) => {
-                let mut people = query(&self, &transaction_id, &query_person_data, true);
+                let mut people = query(&self, &transaction_id);
 
                 sort_list(&mut people);
 
@@ -160,7 +135,7 @@ impl PersonTable {
     }
 
     // Each mutation statement can be broken up into 3 steps
-    //  - Verifying validity / constraints (uniqueness)
+    //  - Verifying validity
     //  - Applying statement
     //  - Clean up
     pub fn apply(
@@ -172,13 +147,6 @@ impl PersonTable {
             Statement::Add(person) => {
                 let id = person.id.clone();
                 let person_to_persist = person.clone();
-
-                if let Some(email) = &person.email {
-                    // Check if a person with an email already exists
-                    if self.unique_email_index.contains_key(email) {
-                        return Err(ApplyErrors::UniqueConstraintViolation(email.clone()));
-                    }
-                }
 
                 // We need to handle the case where someone can add an item back after it has been deleted
                 //  if it has been deleted there will already be a row.
@@ -198,16 +166,6 @@ impl PersonTable {
                     }
                 }
 
-                // Persist the email so it cannot be added again
-                if let Some(email) = &person.email {
-                    self.unique_email_index
-                        .insert(email.clone(), RwLock::new(person.id.clone()));
-                }
-
-                // Update index
-                // self.full_name_index
-                // .save_to_index(id, Some(person.full_name.clone()));
-
                 StatementResult::Single(person)
             }
             Statement::Update(id, update_person) => {
@@ -215,28 +173,6 @@ impl PersonTable {
                     .person_rows
                     .get(&id)
                     .ok_or(ApplyErrors::CannotUpdateDoesNotExist(id.clone()))?;
-
-                if let UpdateStatement::Set(email_to_update) = &update_person.email {
-                    let mut skip_check = false;
-
-                    // Edge case: If we are updating the email to the same value, we don't need to check the uniqueness constraint
-                    if let PersonVersionState::State(previous_person) =
-                        &person_row.value().read().unwrap().current_version().state
-                    {
-                        if let Some(previous_email) = &previous_person.email {
-                            if previous_email == email_to_update {
-                                skip_check = true;
-                            }
-                        }
-                    }
-
-                    if skip_check == false && self.unique_email_index.contains_key(email_to_update)
-                    {
-                        return Err(ApplyErrors::UniqueConstraintViolation(
-                            email_to_update.clone(),
-                        ));
-                    }
-                }
 
                 let person_update_to_persist = update_person.clone();
 
@@ -246,27 +182,6 @@ impl PersonTable {
                         person_update_to_persist,
                         transaction_id,
                     )?;
-
-                // Persist / remove email from unique constraint index
-                match (&update_person.email, &previous.email) {
-                    (UpdateStatement::Set(email), _) => {
-                        self.unique_email_index
-                            .insert(email.clone(), RwLock::new(id.clone()));
-                    }
-                    (UpdateStatement::Unset, Some(email)) => {
-                        self.unique_email_index.remove(email);
-                    }
-                    _ => {}
-                }
-
-                // Update index
-                // if previous.full_name != current.full_name {
-                //     self.full_name_index.update_index(
-                //         id,
-                //         &Some(previous.full_name),
-                //         Some(current.full_name.clone()),
-                //     );
-                // }
 
                 StatementResult::Single(current)
             }
@@ -281,14 +196,6 @@ impl PersonTable {
                     .write()
                     .unwrap()
                     .apply_delete(&id, transaction_id)?;
-
-                if let Some(email) = &previous.email {
-                    self.unique_email_index.remove(email);
-                }
-
-                // Remove from index
-                // self.full_name_index
-                //     .remove_from_index(&id, &Some(previous.full_name.clone()));
 
                 StatementResult::Single(previous)
             }
@@ -334,30 +241,10 @@ impl PersonTable {
         let (person_version_to_remove, drop_row) =
             person_row.value().write().unwrap().rollback_version();
 
-        match person_version_to_remove.state {
-            PersonVersionState::State(person) => {
-                if let Some(email) = person.email {
-                    self.unique_email_index.remove(&email);
-                }
-
-                // Note: This should only happen when we rollback an add
-                if let DropRow::NoVersionsExist = drop_row {
-                    self.person_rows.remove(&id);
-                }
-            }
-            PersonVersionState::Delete => {
-                let person_row = person_row.value().read().unwrap();
-
-                let current_person = person_row.current_version();
-
-                if let PersonVersionState::State(person) = &current_person.state {
-                    if let Some(email) = &person.email {
-                        self.unique_email_index
-                            .insert(email.clone(), RwLock::new(id.clone()));
-                    }
-                } else {
-                    panic!("delete should always be followed by a state");
-                }
+        if matches!(person_version_to_remove.state, PersonVersionState::State(_)) {
+            // Note: This should only happen when we rollback an add
+            if let DropRow::NoVersionsExist = drop_row {
+                self.person_rows.remove(&id);
             }
         }
     }
@@ -365,6 +252,8 @@ impl PersonTable {
     #[cfg(test)]
     pub fn get_version_row_test(&self, id: &EntityId) -> PersonRow {
         // At the moment this is only available to tests as a convenience method
+        use std::ops::Deref;
+
         let person_row_value = self.person_rows.get(&id).expect("should have a row");
 
         let person_row = person_row_value.value().read().unwrap();
@@ -377,8 +266,6 @@ fn sort_list(people: &mut Vec<Person>) {
     people.sort_by(|a, b| a.id.cmp(&b.id));
 }
 
-// TODO: Tests are missing
-//  - Constraint / index validation, perhaps we should move index operations into their own class?
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,85 +809,6 @@ mod versioning {
             );
 
             assert!(person_v3.is_none());
-        }
-    }
-
-    mod uniqueness_constraint {
-        use super::*;
-
-        #[test]
-        fn adding_item_with_same_email_as_existing_item_fails() {
-            // Given a table with an that has a unique email
-            let mut table = PersonTable::new();
-
-            let person = Person::new("1".to_string(), Some("email".to_string()));
-            let statement = Statement::Add(person);
-
-            table
-                .apply(statement, TransactionId(1))
-                .expect("should not throw an error because there is no data");
-
-            // When we add an item with the same email
-            let person = Person::new("2".to_string(), Some("email".to_string()));
-            let statement = Statement::Add(person);
-
-            let result = table
-                .apply(statement, TransactionId(2))
-                .err()
-                .expect("should error");
-
-            // Then we should hit a uniqueness constraint
-            assert!(matches!(result, ApplyErrors::UniqueConstraintViolation(_)));
-        }
-
-        #[test]
-        fn adding_item_with_same_email_as_existing_item_after_deleting_existing_item_succeeds() {
-            // Given an empty table
-            let table = PersonTable::new();
-
-            // When we add an item
-            let person = Person::new("1".to_string(), Some("email".to_string()));
-            let statement = Statement::Add(person.clone());
-            table.apply(statement, TransactionId(1)).unwrap();
-
-            // And we delete the item
-            let statement = Statement::Remove(person.id.clone());
-            table.apply(statement, TransactionId(2)).unwrap();
-
-            // Then we can add another item with the same email
-            let person = Person::new("2".to_string(), Some("email".to_string()));
-            let statement = Statement::Add(person.clone());
-            table.apply(statement, TransactionId(3)).unwrap();
-        }
-
-        /// This caused a bug where we could not update ourself to the same email
-        #[test]
-        fn updating_item_value_to_itself_does_not_break_uniqueness_constraint() {
-            // Given a table with an that has a unique email
-            let table = PersonTable::new();
-
-            let person = Person::new("1".to_string(), Some("email".to_string()));
-            let add_statement = Statement::Add(person.clone());
-
-            table
-                .apply(add_statement, TransactionId(1))
-                .expect("should not throw an error because there is no table data");
-
-            // When we update ourself to the same email
-            let update_statement = Statement::Update(
-                person.id.clone(),
-                UpdatePersonData {
-                    full_name: UpdateStatement::NoChanges,
-                    email: UpdateStatement::Set(person.email.clone().unwrap()),
-                },
-            );
-
-            let result = table
-                .apply(update_statement, TransactionId(2))
-                .expect("should not throw an error because the email is the same");
-
-            // Then the update should succeed
-            assert_eq!(result, StatementResult::Single(person));
         }
     }
 

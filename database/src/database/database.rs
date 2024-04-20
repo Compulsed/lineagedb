@@ -306,9 +306,6 @@ impl Database {
                 self.snapshot_manager.restore_snapshot(&self.person_table);
 
             // If there was a snapshot to restore from we update the transaction log
-            // self.transaction_wal
-            // .set_current_transaction_id(metadata.current_transaction_id.clone());
-
             self.transaction_wal
                 .set_current_transaction_id(metadata.current_transaction_id.clone());
 
@@ -365,7 +362,7 @@ impl Database {
 
         let database_arc = Arc::new(self);
 
-        for (index, database_rx_channel) in rx_channels.into_iter().enumerate() {
+        for (thread_index, database_rx_channel) in rx_channels.into_iter().enumerate() {
             let database_arc = database_arc.clone();
 
             // TODO: We do this per thread, likely could do this once and then clone for each thread
@@ -376,11 +373,16 @@ impl Database {
                 .collect::<Vec<RequestManager>>();
 
             // Remove our own request manager, as we will not need to call ourselves
-            request_managers.remove(index);
+            request_managers.remove(thread_index);
 
             // Spawn a new thread for each request
             thread::spawn(move || {
-                Database::start_thread(index, database_rx_channel, request_managers, database_arc);
+                Database::start_thread(
+                    thread_index,
+                    database_rx_channel,
+                    request_managers,
+                    database_arc,
+                );
             });
         }
 
@@ -670,24 +672,6 @@ mod tests {
                     .get_increment_current_transaction_id(),
                 TransactionId::new_first_transaction(),
                 "Transaction log should be empty"
-            );
-        }
-
-        #[test]
-        fn indexes_are_empty() {
-            // Given an empty database
-            let mut database = Database::new_test();
-
-            // When a rollback happens
-            let rollback_actions = create_rollback_statements();
-
-            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // Then the items at the start of the transaction, should be emptied from the index
-            assert_eq!(
-                database.person_table.unique_email_index.len(),
-                0,
-                "Unique email index should be empty"
             );
         }
 
