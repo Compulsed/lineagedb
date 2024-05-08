@@ -98,7 +98,9 @@ impl SnapshotManager {
     }
 
     fn read_file<T: DeserializeOwned + Default>(&self, file_path: FileType) -> T {
-        let result = self.file_persistence.read_blob(file_path.as_str());
+        let result = self
+            .file_persistence
+            .read_blob(file_path.as_str().to_string());
 
         if let Ok(file_contents) = result {
             let data: T = serde_json::from_slice(&file_contents).unwrap();
@@ -114,6 +116,6 @@ impl SnapshotManager {
         let serialized_bytes = serialized_data.as_str().as_bytes();
 
         self.file_persistence
-            .write_blob(file_path.as_str(), serialized_bytes);
+            .write_blob(file_path.as_str().to_string(), serialized_bytes.to_vec());
     }
 }
