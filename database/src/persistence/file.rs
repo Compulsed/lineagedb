@@ -21,19 +21,19 @@ impl FilePersistence {
 }
 
 impl Persistence for FilePersistence {
-    fn write_blob(&self, path: &str, bytes: &[u8]) -> () {
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
-            .open(self.get_path(path))
+            .open(self.get_path(&path))
             .expect("Cannot open file");
 
-        file.write_all(bytes).expect("Cannot write to file");
+        file.write_all(&bytes).expect("Cannot write to file");
     }
 
     // TODO: Should have a specific type file not found, let caller handle it
-    fn read_blob(&self, path: &str) -> Result<Vec<u8>, ()> {
-        let mut file = match File::open(self.get_path(path)) {
+    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
+        let mut file = match File::open(self.get_path(&path)) {
             Ok(file) => file,
             Err(err) => match err.kind() {
                 std::io::ErrorKind::NotFound => return Err(()),
