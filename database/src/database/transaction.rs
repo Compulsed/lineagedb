@@ -86,6 +86,7 @@ impl TransactionWAL {
         let thread_log_file = log_file.clone();
         let sync_file_write = database_options.write_mode.clone();
 
+        // TODO: Name the thread
         thread::spawn(move || {
             let worker_log_file = thread_log_file;
 

@@ -302,45 +302,45 @@ impl Database {
             let now = Instant::now();
 
             // Call chain -> snapshot_manager -> person_table
-            let (snapshot_count, metadata) =
-                self.snapshot_manager.restore_snapshot(&self.person_table);
+            // let (snapshot_count, metadata) =
+            //     self.snapshot_manager.restore_snapshot(&self.person_table);
 
-            // If there was a snapshot to restore from we update the transaction log
-            self.transaction_wal
-                .set_current_transaction_id(metadata.current_transaction_id.clone());
+            // // If there was a snapshot to restore from we update the transaction log
+            // self.transaction_wal
+            //     .set_current_transaction_id(metadata.current_transaction_id.clone());
 
-            let restored_transactions = TransactionWAL::restore(transaction_log_location);
-            let restored_transaction_count = restored_transactions.len();
+            // let restored_transactions = TransactionWAL::restore(transaction_log_location);
+            // let restored_transaction_count = restored_transactions.len();
 
-            // Then add states from the transaction log
-            for transaction in restored_transactions {
-                let apply_transaction_result =
-                    self.apply_transaction(transaction.statements, ApplyMode::Restore);
+            // // Then add states from the transaction log
+            // for transaction in restored_transactions {
+            //     let apply_transaction_result =
+            //         self.apply_transaction(transaction.statements, ApplyMode::Restore);
 
-                if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
-                    apply_transaction_result
-                {
-                    panic!(
-                        "All committed transactions should be replayable on startup: {}",
-                        rollback_message
-                    );
-                }
-            }
+            //     if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
+            //         apply_transaction_result
+            //     {
+            //         panic!(
+            //             "All committed transactions should be replayable on startup: {}",
+            //             rollback_message
+            //         );
+            //     }
+            // }
 
-            log::info!(
-                "✅ Successful Restore [Duration: {}ms]",
-                now.elapsed().as_millis(),
-            );
+            // log::info!(
+            //     "✅ Successful Restore [Duration: {}ms]",
+            //     now.elapsed().as_millis(),
+            // );
 
-            log::info!(
-                "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
-                snapshot_count,
-                restored_transaction_count,
-                self.transaction_wal
-                    .get_increment_current_transaction_id()
-                    .to_number()
-                    .to_formatted_string(&Locale::en)
-            );
+            // log::info!(
+            //     "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
+            //     snapshot_count,
+            //     restored_transaction_count,
+            //     self.transaction_wal
+            //         .get_increment_current_transaction_id()
+            //         .to_number()
+            //         .to_formatted_string(&Locale::en)
+            // );
         }
 
         /*

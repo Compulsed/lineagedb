@@ -1,10 +1,10 @@
-use std::{
-    path::PathBuf,
-    sync::mpsc::{self, Sender},
-};
+use std::{path::PathBuf, thread};
 
 use aws_sdk_s3::{primitives::ByteStream, Client};
-use tokio::runtime::Builder;
+use tokio::{
+    runtime::Builder,
+    sync::mpsc::{self, Sender},
+};
 
 use super::Persistence;
 
@@ -106,30 +106,26 @@ async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
 }
 
 pub struct S3Persistence {
-    sender: Sender<S3Action>,
+    s3_action_sender: Sender<S3Action>,
 }
 
 impl S3Persistence {
     pub fn new(base_path: PathBuf) -> Self {
-        let (send, recv) = mpsc::channel::<S3Action>();
+        let (s3_action_sender, mut s3_action_receiver) = mpsc::channel::<S3Action>(16);
 
-        std::thread::spawn(move || {
-            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let _ = thread::Builder::new()
+            .name("Tokio Thread".to_string())
+            .spawn(move || {
+                let rt = Builder::new_current_thread().enable_all().build().unwrap();
 
-            rt.block_on(async move {
-                loop {
-                    let request = recv.recv().unwrap();
-
-                    tokio::spawn(handle_task(base_path.clone(), request));
-                }
-
-                // while let Some(request) = recv.recv() {
-                //     tokio::spawn(handle_task(base_path.clone(), request));
-                // }
+                rt.block_on(async move {
+                    while let Some(request) = s3_action_receiver.recv().await {
+                        tokio::spawn(handle_task(base_path.clone(), request));
+                    }
+                });
             });
-        });
 
-        Self { sender: send }
+        Self { s3_action_sender }
     }
 }
 
@@ -143,7 +139,17 @@ impl Persistence for S3Persistence {
             sender: sender,
         });
 
-        self.sender.send(write_file_request).unwrap();
+        // We fail here
+        let r = self.s3_action_sender.blocking_send(write_file_request);
+
+        match r {
+            Ok(s) => {
+                println!("here")
+            }
+            Err(e) => {
+                println!("here")
+            }
+        }
 
         let _ = receiver.recv();
 
@@ -153,10 +159,14 @@ impl Persistence for S3Persistence {
     fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
         let (sender, receiver) = oneshot::channel::<Vec<u8>>();
 
-        // Cannot block the current thread from within a runtime. This happens because a function
-        //  attempted to block the current thread while the thread is being used to drive asynchronous tasks.
-        self.sender
-            .send(S3Action::ReadBlob(ReadFileRequest {
+        "Cannot block the current thread from within a runtime. This \
+        happens because a function attempted to block the current \
+        thread while the thread is being used to drive asynchronous \
+        tasks.";
+
+        // Is the problem that this is happening within the main thread?
+        self.s3_action_sender
+            .blocking_send(S3Action::ReadBlob(ReadFileRequest {
                 file_path: path,
                 sender: sender,
             }))
@@ -174,8 +184,8 @@ impl Persistence for S3Persistence {
     fn reset(&self) {
         let (sender, receiver) = oneshot::channel::<()>();
 
-        self.sender
-            .send(S3Action::Reset(ResetFileRequest { sender: sender }))
+        self.s3_action_sender
+            .blocking_send(S3Action::Reset(ResetFileRequest { sender: sender }))
             .unwrap();
 
         let _ = receiver.recv();
