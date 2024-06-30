@@ -1,30 +1,36 @@
-use std::{fmt::Write, path::PathBuf};
-
-use aws_sdk_s3::{primitives::ByteStream, Client};
-use tokio::{
-    runtime::Builder,
+use std::{
+    path::PathBuf,
     sync::mpsc::{self, Sender},
 };
+
+use aws_sdk_s3::{primitives::ByteStream, Client};
+use tokio::runtime::Builder;
 
 use super::Persistence;
 
 struct WriteFileRequest {
     bytes: Vec<u8>,
     file_path: String,
+    sender: oneshot::Sender<()>,
 }
 
-pub struct S3Persistence {
-    sender: Sender<S3Action>,
+struct ResetFileRequest {
+    sender: oneshot::Sender<()>,
+}
+
+struct ReadFileRequest {
+    file_path: String,
+    sender: oneshot::Sender<Vec<u8>>,
 }
 
 enum S3Action {
     WriteBlob(WriteFileRequest),
-    ReadBlob,
-    Reset,
+    ReadBlob(ReadFileRequest),
+    Reset(ResetFileRequest),
 }
 
 // TODO:
-//  - Add error handling
+//  - Add error handling (_ + unwrap)
 //  - Does not want a base path, maybe we convert it to a string before passing it into handle task
 //  - One shot the response
 async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
@@ -32,10 +38,12 @@ async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
 
     let client = Client::new(&shared_config);
 
+    // TODO: Make bucket configurable
     let bucket = "dalesalter-test-bucket";
 
     match s3_action {
-        S3Action::Reset => {
+        S3Action::Reset(r) => {
+            // Delete all files within a particular folder / prefix (data/)
             let mut response = client
                 .list_objects_v2()
                 .prefix(base_path.to_str().unwrap())
@@ -62,12 +70,13 @@ async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
                     }
                 }
             }
+
+            let _ = r.sender.send(()).unwrap();
         }
         S3Action::WriteBlob(file_request) => {
             // TODO: Should we normalize the path before getting to this point? Will make system more dry
             let file_path = base_path.join(file_request.file_path);
 
-            // TODO: Make bucket configurable
             let req = client
                 .put_object()
                 .bucket(bucket)
@@ -75,22 +84,48 @@ async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
                 .body(ByteStream::from(file_request.bytes));
 
             let _ = req.send().await.unwrap();
+
+            let _ = file_request.sender.send(()).unwrap();
         }
-        S3Action::ReadBlob => todo!(),
+        S3Action::ReadBlob(file_request) => {
+            let file_path = base_path.join(file_request.file_path);
+
+            let response = client
+                .get_object()
+                .bucket(bucket)
+                .key(file_path.to_str().unwrap())
+                .send()
+                .await
+                .unwrap();
+
+            let bytes = response.body.collect().await.unwrap().into_bytes().to_vec();
+
+            let _ = file_request.sender.send(bytes).unwrap();
+        }
     }
+}
+
+pub struct S3Persistence {
+    sender: Sender<S3Action>,
 }
 
 impl S3Persistence {
     pub fn new(base_path: PathBuf) -> Self {
-        let (send, mut recv) = mpsc::channel::<S3Action>(16);
-
-        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let (send, recv) = mpsc::channel::<S3Action>();
 
         std::thread::spawn(move || {
+            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+
             rt.block_on(async move {
-                while let Some(request) = recv.recv().await {
+                loop {
+                    let request = recv.recv().unwrap();
+
                     tokio::spawn(handle_task(base_path.clone(), request));
                 }
+
+                // while let Some(request) = recv.recv() {
+                //     tokio::spawn(handle_task(base_path.clone(), request));
+                // }
             });
         });
 
@@ -100,24 +135,49 @@ impl S3Persistence {
 
 impl Persistence for S3Persistence {
     fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
+        let (sender, receiver) = oneshot::channel::<()>();
+
         let write_file_request = S3Action::WriteBlob(WriteFileRequest {
             file_path: path,
             bytes: bytes,
+            sender: sender,
         });
 
-        self.sender.blocking_send(write_file_request).unwrap();
+        self.sender.send(write_file_request).unwrap();
 
-        // TODO: Add one shot response?
-        ()
+        let _ = receiver.recv();
+
+        return ();
     }
 
     fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
-        Err(())
+        let (sender, receiver) = oneshot::channel::<Vec<u8>>();
+
+        // Cannot block the current thread from within a runtime. This happens because a function
+        //  attempted to block the current thread while the thread is being used to drive asynchronous tasks.
+        self.sender
+            .send(S3Action::ReadBlob(ReadFileRequest {
+                file_path: path,
+                sender: sender,
+            }))
+            .unwrap();
+
+        let response = receiver.recv().unwrap();
+
+        return Ok(response);
     }
 
-    fn init(&self) {}
+    fn init(&self) {
+        // This method is not needed, s3 does not have folders
+    }
 
     fn reset(&self) {
-        self.sender.blocking_send(S3Action::Reset).unwrap();
+        let (sender, receiver) = oneshot::channel::<()>();
+
+        self.sender
+            .send(S3Action::Reset(ResetFileRequest { sender: sender }))
+            .unwrap();
+
+        let _ = receiver.recv();
     }
 }

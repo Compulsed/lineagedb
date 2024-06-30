@@ -3,7 +3,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use crate::{
     consts::consts::TransactionId,
     model::statement::Statement,
-    persistence::{s3::S3Persistence, Persistence},
+    persistence::{file::FilePersistence, s3::S3Persistence, Persistence},
 };
 
 use super::{
