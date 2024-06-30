@@ -7,12 +7,69 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug unit tests in library 'database'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=database"
+                ],
+                "filter": {
+                    "name": "database",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'request_manager'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=request_manager",
+                    "--package=database"
+                ],
+                "filter": {
+                    "name": "request_manager",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug benchmark 'database'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bench=database",
+                    "--package=database"
+                ],
+                "filter": {
+                    "name": "database",
+                    "kind": "bench"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug executable 'lineagedb'",
             "cargo": {
                 "args": [
                     "build",
                     "--bin=lineagedb",
-                    "--package=lineagedb"
+                    "--package=graphql"
                 ],
                 "filter": {
                     "name": "lineagedb",
@@ -31,10 +88,47 @@
                     "test",
                     "--no-run",
                     "--bin=lineagedb",
-                    "--package=lineagedb"
+                    "--package=graphql"
                 ],
                 "filter": {
                     "name": "lineagedb",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'lineagedb-tcp-server'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=lineagedb-tcp-server",
+                    "--package=tcp-server"
+                ],
+                "filter": {
+                    "name": "lineagedb-tcp-server",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'lineagedb-tcp-server'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=lineagedb-tcp-server",
+                    "--package=tcp-server"
+                ],
+                "filter": {
+                    "name": "lineagedb-tcp-server",
                     "kind": "bin"
                 }
             },
