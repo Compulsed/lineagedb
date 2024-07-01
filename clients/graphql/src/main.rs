@@ -3,6 +3,7 @@ use actix_web::{
     get,
     middleware::{self, Condition},
     route,
+    rt::{spawn, task::spawn_blocking},
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
@@ -76,7 +77,16 @@ async fn main() -> io::Result<()> {
 
     let database_options = DatabaseOptions::default().set_data_directory(args.data);
 
-    let request_manager = Database::new(database_options).run(5);
+    // For S3 (an optional backing storage engine), we must use tokio. This would be fine
+    //  but the database uses sync apis (blocking_send). blocking_send CANNOT be called with any call-stack
+    //  that has tokio or actix. This is fine for the standard database requests as they have their own sync
+    //  thread. This becomes an issue when we want to call blocking_send when spinning up a new database (like below)
+    //  the way we can get around this issue is just by transferring into a sync context.
+    //
+    // Context reference: Actix (Async) -> Database (Sync) -> Tokio S3 (Async)
+    let request_manager: RequestManager = spawn_blocking(|| Database::new(database_options).run(5))
+        .await
+        .unwrap();
 
     // Set up Ctrl-C handler
     let set_handler_database_sender_clone = request_manager.clone();
