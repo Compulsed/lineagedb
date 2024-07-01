@@ -83,6 +83,11 @@ async fn main() -> io::Result<()> {
     //  thread. This becomes an issue when we want to call blocking_send when spinning up a new database (like below)
     //  the way we can get around this issue is just by transferring into a sync context.
     //
+    // Error Message: Cannot block the current thread from within a runtime. This \
+    // happens because a function attempted to block the current \
+    // thread while the thread is being used to drive asynchronous \
+    // tasks.
+    //
     // Context reference: Actix (Async) -> Database (Sync) -> Tokio S3 (Async)
     let request_manager: RequestManager = spawn_blocking(|| Database::new(database_options).run(5))
         .await

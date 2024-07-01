@@ -1,4 +1,4 @@
-use std::{path::PathBuf, thread};
+use std::{path::PathBuf, sync::Arc, thread};
 
 use aws_sdk_s3::{primitives::ByteStream, Client};
 use tokio::{
@@ -33,13 +33,7 @@ enum S3Action {
 //  - Add error handling (_ + unwrap)
 //  - Does not want a base path, maybe we convert it to a string before passing it into handle task
 //  - One shot the response
-async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
-    // let shared_config = aws_config::load_from_env().await;
-
-    let shared_config = aws_config::from_env().load().await;
-
-    let client = Client::new(&shared_config);
-
+async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Action) {
     // TODO: Make bucket configurable
     let bucket = "dalesalter-test-bucket";
 
@@ -121,8 +115,12 @@ impl S3Persistence {
                 let rt = Builder::new_current_thread().enable_all().build().unwrap();
 
                 rt.block_on(async move {
+                    // Set up the client once on start up
+                    // TODO: Do we need arc here?
+                    let client = Arc::new(Client::new(&aws_config::load_from_env().await));
+
                     while let Some(request) = s3_action_receiver.recv().await {
-                        tokio::spawn(handle_task(base_path.clone(), request));
+                        tokio::spawn(handle_task(base_path.clone(), client.clone(), request));
                     }
                 });
             });
@@ -141,17 +139,9 @@ impl Persistence for S3Persistence {
             sender: sender,
         });
 
-        // We fail here
-        let r = self.s3_action_sender.blocking_send(write_file_request);
-
-        match r {
-            Ok(s) => {
-                println!("here")
-            }
-            Err(e) => {
-                println!("here")
-            }
-        }
+        self.s3_action_sender
+            .blocking_send(write_file_request)
+            .unwrap();
 
         let _ = receiver.recv();
 
@@ -160,11 +150,6 @@ impl Persistence for S3Persistence {
 
     fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
         let (sender, receiver) = oneshot::channel::<Vec<u8>>();
-
-        "Cannot block the current thread from within a runtime. This \
-        happens because a function attempted to block the current \
-        thread while the thread is being used to drive asynchronous \
-        tasks.";
 
         // Is the problem that this is happening within the main thread?
         self.s3_action_sender
