@@ -34,7 +34,9 @@ enum S3Action {
 //  - Does not want a base path, maybe we convert it to a string before passing it into handle task
 //  - One shot the response
 async fn handle_task(base_path: PathBuf, s3_action: S3Action) {
-    let shared_config = aws_config::load_from_env().await;
+    // let shared_config = aws_config::load_from_env().await;
+
+    let shared_config = aws_config::from_env().load().await;
 
     let client = Client::new(&shared_config);
 
