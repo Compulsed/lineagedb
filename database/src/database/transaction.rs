@@ -86,62 +86,63 @@ impl TransactionWAL {
         let thread_log_file = log_file.clone();
         let sync_file_write = database_options.write_mode.clone();
 
-        // TODO: Name the thread
-        thread::spawn(move || {
-            let worker_log_file = thread_log_file;
+        let _ = thread::Builder::new()
+            .name("Transaction Manager".to_string())
+            .spawn(move || {
+                let worker_log_file = thread_log_file;
 
-            loop {
-                let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
-                    vec![];
+                loop {
+                    let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
+                        vec![];
 
-                for transaction_data in receiver.try_iter() {
-                    let mut file = worker_log_file.lock().unwrap();
+                    for transaction_data in receiver.try_iter() {
+                        let mut file = worker_log_file.lock().unwrap();
 
-                    let TransactionCommitData {
-                        applied_transaction_id,
-                        statements,
-                        response,
-                        resolver,
-                    } = transaction_data;
+                        let TransactionCommitData {
+                            applied_transaction_id,
+                            statements,
+                            response,
+                            resolver,
+                        } = transaction_data;
 
-                    if matches!(sync_file_write, TransactionWriteMode::File(_)) {
-                        let transaction_json_line = format!(
-                            "{}\n",
-                            serde_json::to_string(&Transaction {
-                                id: applied_transaction_id,
-                                statements: statements,
-                                status: TransactionStatus::Committed,
-                            })
-                            .unwrap()
-                        );
+                        if matches!(sync_file_write, TransactionWriteMode::File(_)) {
+                            let transaction_json_line = format!(
+                                "{}\n",
+                                serde_json::to_string(&Transaction {
+                                    id: applied_transaction_id,
+                                    statements: statements,
+                                    status: TransactionStatus::Committed,
+                                })
+                                .unwrap()
+                            );
 
-                        // Buffered OS write, is not 'durable' without the fsync
-                        file.write_all(transaction_json_line.as_bytes()).unwrap();
+                            // Buffered OS write, is not 'durable' without the fsync
+                            file.write_all(transaction_json_line.as_bytes()).unwrap();
+                        }
+
+                        batch.push((resolver, response));
                     }
 
-                    batch.push((resolver, response));
-                }
+                    // Performs an fsync on the transaction log, ensuring that the transaction is durable
+                    // https://www.postgresql.org/docs/current/wal-reliability.html
+                    //
+                    // Note: This is a slow operation and if possible we should allow multiple transactions to be committed at once
+                    //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
+                    //
+                    // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
+                    if let TransactionWriteMode::File(m) = &sync_file_write {
+                        if m == &TransactionFileWriteMode::Sync {
+                            let file = worker_log_file.lock().unwrap();
 
-                // Performs an fsync on the transaction log, ensuring that the transaction is durable
-                // https://www.postgresql.org/docs/current/wal-reliability.html
-                //
-                // Note: This is a slow operation and if possible we should allow multiple transactions to be committed at once
-                //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
-                //
-                // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
-                if let TransactionWriteMode::File(m) = &sync_file_write {
-                    if m == &TransactionFileWriteMode::Sync {
-                        let file = worker_log_file.lock().unwrap();
+                            file.sync_all().unwrap();
+                        }
+                    }
 
-                        file.sync_all().unwrap();
+                    for (resolver, response) in batch {
+                        let _ = resolver.send(response);
                     }
                 }
-
-                for (resolver, response) in batch {
-                    let _ = resolver.send(response);
-                }
-            }
-        });
+            });
 
         Self {
             log_file,

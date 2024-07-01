@@ -12,10 +12,11 @@ impl DatabasePauseEvent {
 
         // Send request to every DB thread, telling them to shutdown / stop working
         for rm in database_request_managers {
-            // This makes more sense at a 1-shot, but a 1 shot does not work in a drop,
+            // This makes more sense as a 1-shot, but a 1 shot does not work in a impl Drop,
             //  this is because drop cannot take ownership of the channel
             //
-            // Also I wonder if this is possible bug, can drop be called multiple times?
+            // I wonder if this is to prevent a possible bug, as a drop be called multiple times.
+            //  and once shots are meant to only be called once
             let (resume_tx, resume_rx) = flume::unbounded::<()>();
 
             resume_txs.push(resume_tx);

@@ -21,10 +21,17 @@ use super::{
 };
 
 #[derive(Debug, Clone)]
+pub enum StorageEngine {
+    File,
+    S3,
+}
+
+#[derive(Debug, Clone)]
 pub struct DatabaseOptions {
     pub data_directory: PathBuf,
     pub restore: bool,
     pub write_mode: TransactionWriteMode,
+    pub storage_engine: StorageEngine,
 }
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
@@ -48,6 +55,11 @@ impl DatabaseOptions {
         self.write_mode = write_mode;
         self
     }
+
+    pub fn set_storage_engine(mut self, storage_engine: StorageEngine) -> Self {
+        self.storage_engine = storage_engine;
+        self
+    }
 }
 
 impl Default for DatabaseOptions {
@@ -56,6 +68,7 @@ impl Default for DatabaseOptions {
         Self {
             data_directory: PathBuf::from("data"),
             write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
+            storage_engine: StorageEngine::File,
             restore: true,
         }
     }
@@ -524,7 +537,7 @@ mod tests {
 
         #[test]
         fn add_happy_path() {
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             let person = Person::new_test();
 
@@ -541,7 +554,7 @@ mod tests {
 
         #[test]
         fn add_multiple_separate() {
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
@@ -573,7 +586,7 @@ mod tests {
 
         #[test]
         fn add_multiple_transaction() {
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
             let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
@@ -597,7 +610,7 @@ mod tests {
 
         #[test]
         fn add_multiple_transaction_rollback() {
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             let person_one = Person::new(
                 "Person One".to_string(),
@@ -638,7 +651,7 @@ mod tests {
         #[test]
         fn rollback_response() {
             // Given an empty database
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
@@ -658,7 +671,7 @@ mod tests {
         #[test]
         fn transaction_log_is_empty() {
             // Given an empty database
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             let rollback_actions = create_rollback_statements();
 
@@ -678,7 +691,7 @@ mod tests {
         #[test]
         fn row_table_is_empty() {
             // Given an empty database
-            let mut database = Database::new_test();
+            let database = Database::new_test();
 
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
