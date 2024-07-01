@@ -3,7 +3,7 @@ use actix_web::{
     get,
     middleware::{self, Condition},
     route,
-    rt::{spawn, task::spawn_blocking},
+    rt::task::spawn_blocking,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
@@ -11,7 +11,7 @@ use actix_web_lab::respond::Html;
 use clap::Parser;
 use database::database::{
     commands::ShutdownRequest,
-    database::{Database, DatabaseOptions},
+    database::{Database, DatabaseOptions, StorageEngine},
     request_manager::RequestManager,
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
@@ -75,7 +75,9 @@ async fn main() -> io::Result<()> {
 
     let args = Cli::parse();
 
-    let database_options = DatabaseOptions::default().set_data_directory(args.data);
+    let database_options = DatabaseOptions::default()
+        .set_data_directory(args.data)
+        .set_storage_engine(StorageEngine::S3);
 
     // For S3 (an optional backing storage engine), we must use tokio. This would be fine
     //  but the database uses sync apis (blocking_send). blocking_send CANNOT be called with any call-stack

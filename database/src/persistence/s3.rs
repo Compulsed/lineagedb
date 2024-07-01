@@ -29,13 +29,15 @@ enum S3Action {
     Reset(ResetFileRequest),
 }
 
+// TODO: Make configurable
+const S3_BUCKET: &str = "dalesalter-test-bucket";
+
 // TODO:
 //  - Add error handling (_ + unwrap)
 //  - Does not want a base path, maybe we convert it to a string before passing it into handle task
 //  - One shot the response
 async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Action) {
     // TODO: Make bucket configurable
-    let bucket = "dalesalter-test-bucket";
 
     match s3_action {
         S3Action::Reset(r) => {
@@ -43,7 +45,7 @@ async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Actio
             let mut response = client
                 .list_objects_v2()
                 .prefix(base_path.to_str().unwrap())
-                .bucket(bucket)
+                .bucket(S3_BUCKET)
                 .max_keys(10)
                 .into_paginator()
                 .send();
@@ -54,7 +56,7 @@ async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Actio
                         for object in output.contents() {
                             client
                                 .delete_object()
-                                .bucket(bucket)
+                                .bucket(S3_BUCKET)
                                 .key(object.key().unwrap())
                                 .send()
                                 .await
@@ -75,7 +77,7 @@ async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Actio
 
             let req = client
                 .put_object()
-                .bucket(bucket)
+                .bucket(S3_BUCKET)
                 .key(file_path.to_str().unwrap())
                 .body(ByteStream::from(file_request.bytes));
 
@@ -88,7 +90,7 @@ async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Actio
 
             let response = client
                 .get_object()
-                .bucket(bucket)
+                .bucket(S3_BUCKET)
                 .key(file_path.to_str().unwrap())
                 .send()
                 .await
@@ -110,7 +112,7 @@ impl S3Persistence {
         let (s3_action_sender, mut s3_action_receiver) = mpsc::channel::<S3Action>(16);
 
         let _ = thread::Builder::new()
-            .name("Tokio Thread".to_string())
+            .name("AWS SDK Tokio".to_string())
             .spawn(move || {
                 let rt = Builder::new_current_thread().enable_all().build().unwrap();
 

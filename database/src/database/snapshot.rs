@@ -7,7 +7,7 @@ use crate::{
 };
 
 use super::{
-    database::DatabaseOptions,
+    database::{DatabaseOptions, StorageEngine},
     orchestrator::DatabasePauseEvent,
     table::{row::PersonVersion, table::PersonTable},
 };
@@ -40,22 +40,20 @@ impl Default for Metadata {
 }
 
 pub struct SnapshotManager {
-    file_persistence: Box<dyn Persistence + Sync + Send>,
+    persistence: Box<dyn Persistence + Sync + Send>,
 }
 
 impl SnapshotManager {
     pub fn new(database_options: DatabaseOptions) -> Self {
-        // let persistence: Box<dyn Persistence + Sync + Send> =
-        //     Box::new(FilePersistence::new(database_options.data_directory));
-
-        let persistence: Box<dyn Persistence + Sync + Send> =
-            Box::new(S3Persistence::new(database_options.data_directory));
+        let persistence: Box<dyn Persistence + Sync + Send> = match database_options.storage_engine
+        {
+            StorageEngine::File => Box::new(FilePersistence::new(database_options.data_directory)),
+            StorageEngine::S3 => Box::new(S3Persistence::new(database_options.data_directory)),
+        };
 
         persistence.init();
 
-        Self {
-            file_persistence: persistence,
-        }
+        Self { persistence }
     }
 
     pub fn restore_snapshot(&self, table: &PersonTable) -> (usize, Metadata) {
@@ -94,13 +92,11 @@ impl SnapshotManager {
     }
 
     pub fn delete_snapshot(&self, _: &DatabasePauseEvent) {
-        self.file_persistence.reset()
+        self.persistence.reset()
     }
 
     fn read_file<T: DeserializeOwned + Default>(&self, file_path: FileType) -> T {
-        let result = self
-            .file_persistence
-            .read_blob(file_path.as_str().to_string());
+        let result = self.persistence.read_blob(file_path.as_str().to_string());
 
         if let Ok(file_contents) = result {
             let data: T = serde_json::from_slice(&file_contents).unwrap();
@@ -115,7 +111,7 @@ impl SnapshotManager {
 
         let serialized_bytes = serialized_data.as_str().as_bytes();
 
-        self.file_persistence
+        self.persistence
             .write_blob(file_path.as_str().to_string(), serialized_bytes.to_vec());
     }
 }
