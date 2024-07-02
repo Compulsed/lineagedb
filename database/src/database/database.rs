@@ -26,6 +26,7 @@ use super::{
 pub enum StorageEngine {
     File,
     S3(String),
+    DynamoDB(String),
 }
 
 #[derive(Debug, Clone)]

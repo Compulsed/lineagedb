@@ -475,6 +475,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-dynamodb"
+version = "1.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "059a3cf6c50bc79b05153a18563be062f55a8b7b3e73392aec7ba479f825fc97"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.11",
+ "once_cell",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-s3"
 version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1259,6 +1282,7 @@ name = "database"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "chrono",
  "criterion",

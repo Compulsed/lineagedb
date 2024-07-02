@@ -4,7 +4,7 @@ use crate::database::database::{DatabaseOptions, StorageEngine};
 
 use super::{
     snapshot::SnapshotManager,
-    storage::{file::FileStorage, s3::S3Storage, Storage},
+    storage::{dynamodb::DynamoDBStorage, file::FileStorage, s3::S3Storage, Storage},
     transaction::TransactionWAL,
 };
 
@@ -23,6 +23,10 @@ impl Persistence {
             }
             StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
                 bucket.clone(),
+                options.data_directory.clone(),
+            ))),
+            StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
+                table.clone(),
                 options.data_directory.clone(),
             ))),
         };

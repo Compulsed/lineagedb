@@ -51,7 +51,6 @@ struct TransactionCommitData {
 }
 
 pub struct TransactionWAL {
-    database_options: DatabaseOptions,
     current_transaction_id: LocalClock,
     size: AtomicUsize,
     commit_sender: mpsc::Sender<TransactionCommitData>,
@@ -65,15 +64,14 @@ impl TransactionWAL {
     ) -> Self {
         let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
 
-        let thread_storage = storage.clone();
+        let sync_file_write = database_options.write_mode;
+        let storage_thread = storage.clone();
 
-        let sync_file_write = database_options.write_mode.clone();
-
-        // TODO: Should we move this into its own method?
+        // TODO: Should we spawn into its own method?
         let _ = thread::Builder::new()
             .name("Transaction Manager".to_string())
             .spawn(move || {
-                let worker_storage = thread_storage;
+                let worker_storage = storage_thread;
 
                 loop {
                     let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
@@ -98,6 +96,8 @@ impl TransactionWAL {
                                 .unwrap()
                             );
 
+                            // For disk, this is fast (because it is technically async, the OS will buffer the writes)
+                            //  though for S3 it is very slow, is there any way we can buffer this?
                             worker_storage
                                 .lock()
                                 .unwrap()
@@ -127,7 +127,6 @@ impl TransactionWAL {
             });
 
         Self {
-            database_options: database_options,
             commit_sender: sender,
             current_transaction_id: LocalClock::new(),
             size: AtomicUsize::new(0),
