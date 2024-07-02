@@ -6,7 +6,7 @@ use tokio::{
     sync::mpsc::{self, Sender},
 };
 
-use super::Persistence;
+use super::Storage;
 
 struct WriteFileRequest {
     bytes: Vec<u8>,
@@ -103,11 +103,11 @@ async fn handle_task(base_path: PathBuf, client: Arc<Client>, s3_action: S3Actio
     }
 }
 
-pub struct S3Persistence {
+pub struct S3Storage {
     s3_action_sender: Sender<S3Action>,
 }
 
-impl S3Persistence {
+impl S3Storage {
     pub fn new(base_path: PathBuf) -> Self {
         let (s3_action_sender, mut s3_action_receiver) = mpsc::channel::<S3Action>(16);
 
@@ -131,7 +131,7 @@ impl S3Persistence {
     }
 }
 
-impl Persistence for S3Persistence {
+impl Storage for S3Storage {
     fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
         let (sender, receiver) = oneshot::channel::<()>();
 
@@ -170,7 +170,7 @@ impl Persistence for S3Persistence {
         // This method is not needed, s3 does not have folders
     }
 
-    fn reset(&self) {
+    fn reset_database(&self) {
         let (sender, receiver) = oneshot::channel::<()>();
 
         self.s3_action_sender
@@ -178,5 +178,21 @@ impl Persistence for S3Persistence {
             .unwrap();
 
         let _ = receiver.recv();
+    }
+
+    fn transaction_write(&mut self, transaction: &[u8]) -> () {
+        todo!()
+    }
+
+    fn transaction_sync(&self) -> () {
+        // For s3 we do not need a disk sync
+    }
+
+    fn transaction_flush(&mut self) -> () {
+        todo!()
+    }
+
+    fn transaction_load(&mut self) -> String {
+        todo!()
     }
 }

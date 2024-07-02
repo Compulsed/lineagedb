@@ -10,14 +10,16 @@ use crate::{
         orchestrator::DatabasePauseEvent,
     },
     model::statement::{Statement, StatementResult},
+    persistence::{
+        persistence::Persistence,
+        transaction::{TransactionFileWriteMode, TransactionWriteMode},
+    },
 };
 
 use super::{
     commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
     request_manager::RequestManager,
-    snapshot::SnapshotManager,
     table::table::PersonTable,
-    transaction::{TransactionFileWriteMode, TransactionWAL, TransactionWriteMode},
 };
 
 #[derive(Debug, Clone)]
@@ -89,18 +91,16 @@ pub enum ApplyMode {
 }
 
 pub struct Database {
-    transaction_wal: TransactionWAL,
-    snapshot_manager: SnapshotManager,
     person_table: PersonTable,
     database_options: DatabaseOptions,
+    persistence: Persistence,
 }
 
 impl Database {
     pub fn new(options: DatabaseOptions) -> Self {
         Self {
             person_table: PersonTable::new(),
-            transaction_wal: TransactionWAL::new(options.clone()),
-            snapshot_manager: SnapshotManager::new(options.clone()),
+            persistence: Persistence::new(options.clone()),
             database_options: options,
         }
     }
@@ -117,8 +117,7 @@ impl Database {
 
         Self {
             person_table: PersonTable::new(),
-            transaction_wal: TransactionWAL::new(options.clone()),
-            snapshot_manager: SnapshotManager::new(options.clone()),
+            persistence: Persistence::new(options.clone()),
             database_options: options,
         }
     }
@@ -132,16 +131,19 @@ impl Database {
         let row_count = self.person_table.person_rows.len();
 
         // Resets tx id, scrubs wal
-        self.transaction_wal.flush_transactions(database_pause);
+        self.persistence
+            .transaction_wal
+            .flush_transactions(database_pause);
 
         // Reset the transaction id counter
         // TODO: We should make flushing and deleting separate operations
         //  This was a legacy of us just newing up new WAL when we needed one.
-        self.transaction_wal
+        self.persistence
+            .transaction_wal
             .set_current_transaction_id(TransactionId::new_first_transaction());
 
         // Clean out snapshot and transaction log
-        self.snapshot_manager.delete_snapshot(database_pause);
+        self.persistence.reset();
 
         // Resets the in-memory persons table
         self.person_table.reset(database_pause);
@@ -245,6 +247,7 @@ impl Database {
                                 &DatabasePauseEvent::new(&database_request_managers);
 
                             let transaction_id = database
+                                .persistence
                                 .transaction_wal
                                 .get_increment_current_transaction_id()
                                 .clone();
@@ -252,13 +255,14 @@ impl Database {
                             let table = &database.person_table;
 
                             // Persist current state to disk
-                            database.snapshot_manager.create_snapshot(
+                            database.persistence.snapshot_manager.create_snapshot(
                                 database_reset_guard,
                                 table,
                                 transaction_id,
                             );
 
                             let flush_transactions = database
+                                .persistence
                                 .transaction_wal
                                 .flush_transactions(database_reset_guard);
 
@@ -288,6 +292,7 @@ impl Database {
                 false => {
                     // TODO: Change this, doing this to remove lock contention on the transaction WAL
                     let query_transaction_id = database
+                        .persistence
                         .transaction_wal
                         .get_increment_current_transaction_id()
                         .clone();
@@ -315,14 +320,17 @@ impl Database {
             let now = Instant::now();
 
             // Call chain -> snapshot_manager -> person_table
-            let (snapshot_count, metadata) =
-                self.snapshot_manager.restore_snapshot(&self.person_table);
+            let (snapshot_count, metadata) = self
+                .persistence
+                .snapshot_manager
+                .restore_snapshot(&self.person_table);
 
             // If there was a snapshot to restore from we update the transaction log
-            self.transaction_wal
+            self.persistence
+                .transaction_wal
                 .set_current_transaction_id(metadata.current_transaction_id.clone());
 
-            let restored_transactions = TransactionWAL::restore(transaction_log_location);
+            let restored_transactions = self.persistence.transaction_wal.restore();
             let restored_transaction_count = restored_transactions.len();
 
             // Then add states from the transaction log
@@ -349,7 +357,7 @@ impl Database {
                 "📀 Data               [RowsFromSnapshot: {}, TransactionsAppliedToSnapshot: {}, CurrentTxId: {}]",
                 snapshot_count,
                 restored_transaction_count,
-                self.transaction_wal
+                self.persistence.transaction_wal
                     .get_increment_current_transaction_id()
                     .to_number()
                     .to_formatted_string(&Locale::en)
@@ -431,7 +439,10 @@ impl Database {
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
         // Getting also increments -- I think this might be the place where we should be incrementing from
-        let applying_transaction_id = self.transaction_wal.get_increment_current_transaction_id();
+        let applying_transaction_id = self
+            .persistence
+            .transaction_wal
+            .get_increment_current_transaction_id();
 
         let mut status = CommitStatus::Commit;
 
@@ -474,7 +485,7 @@ impl Database {
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
                 // Send the TX off, and increment the transaction id -- Refactor this out
-                self.transaction_wal.commit(
+                self.persistence.transaction_wal.commit(
                     applying_transaction_id,
                     statements,
                     DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
@@ -681,6 +692,7 @@ mod tests {
             // Then there should be no items in the transaction log
             assert_eq!(
                 database
+                    .persistence
                     .transaction_wal
                     .get_increment_current_transaction_id(),
                 TransactionId::new_first_transaction(),

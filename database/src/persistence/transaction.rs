@@ -1,18 +1,16 @@
 use oneshot::Sender;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
-use std::io::prelude::*;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use crate::consts::consts::TransactionId;
+use crate::database::commands::DatabaseCommandResponse;
+use crate::database::database::{ApplyMode, DatabaseOptions};
+use crate::database::orchestrator::DatabasePauseEvent;
 use crate::model::statement::Statement;
 
-use super::commands::DatabaseCommandResponse;
-use super::database::{ApplyMode, DatabaseOptions};
-use super::orchestrator::DatabasePauseEvent;
+use super::storage::Storage;
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -45,15 +43,6 @@ pub struct Transaction {
     pub status: TransactionStatus,
 }
 
-#[derive(Debug)]
-pub struct TransactionWAL {
-    log_file: Arc<Mutex<File>>,
-    database_options: DatabaseOptions,
-    current_transaction_id: LocalClock,
-    size: AtomicUsize,
-    commit_sender: mpsc::Sender<TransactionCommitData>,
-}
-
 struct TransactionCommitData {
     applied_transaction_id: TransactionId,
     statements: Vec<Statement>,
@@ -61,43 +50,36 @@ struct TransactionCommitData {
     resolver: oneshot::Sender<DatabaseCommandResponse>,
 }
 
-fn get_transaction_log_location(data_directory: PathBuf) -> PathBuf {
-    // Defaults to $CWD/data/transaction_log.json, but $CWD/data can be overridden via the CLI
-    data_directory.join("transaction_log.json")
+pub struct TransactionWAL {
+    database_options: DatabaseOptions,
+    current_transaction_id: LocalClock,
+    size: AtomicUsize,
+    commit_sender: mpsc::Sender<TransactionCommitData>,
+    storage: Arc<Mutex<dyn Storage + Sync + Send>>,
 }
 
 impl TransactionWAL {
-    pub fn new(database_options: DatabaseOptions) -> Self {
-        fs::create_dir_all(&database_options.data_directory)
-            .expect("Should always be able to create a path at data/");
-
-        let raw_log_file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(get_transaction_log_location(
-                database_options.data_directory.clone(),
-            ))
-            .expect("Cannot open file");
-
-        let log_file = Arc::new(Mutex::new(raw_log_file));
-
+    pub fn new(
+        database_options: DatabaseOptions,
+        storage: Arc<Mutex<dyn Storage + Sync + Send>>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
 
-        let thread_log_file = log_file.clone();
+        let thread_storage = storage.clone();
+
         let sync_file_write = database_options.write_mode.clone();
 
+        // TODO: Should we move this into its own method?
         let _ = thread::Builder::new()
             .name("Transaction Manager".to_string())
             .spawn(move || {
-                let worker_log_file = thread_log_file;
+                let worker_storage = thread_storage;
 
                 loop {
                     let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
                         vec![];
 
                     for transaction_data in receiver.try_iter() {
-                        let mut file = worker_log_file.lock().unwrap();
-
                         let TransactionCommitData {
                             applied_transaction_id,
                             statements,
@@ -116,8 +98,10 @@ impl TransactionWAL {
                                 .unwrap()
                             );
 
-                            // Buffered OS write, is not 'durable' without the fsync
-                            file.write_all(transaction_json_line.as_bytes()).unwrap();
+                            worker_storage
+                                .lock()
+                                .unwrap()
+                                .transaction_write(transaction_json_line.as_bytes())
                         }
 
                         batch.push((resolver, response));
@@ -132,9 +116,7 @@ impl TransactionWAL {
                     // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
                     if let TransactionWriteMode::File(m) = &sync_file_write {
                         if m == &TransactionFileWriteMode::Sync {
-                            let file = worker_log_file.lock().unwrap();
-
-                            file.sync_all().unwrap();
+                            worker_storage.lock().unwrap().transaction_sync();
                         }
                     }
 
@@ -145,35 +127,21 @@ impl TransactionWAL {
             });
 
         Self {
-            log_file,
             database_options: database_options,
             commit_sender: sender,
             current_transaction_id: LocalClock::new(),
             size: AtomicUsize::new(0),
+            storage,
         }
     }
 
+    // We have persisted the current state, we can delete the transaction log
     pub fn flush_transactions(&self, _: &DatabasePauseEvent) -> usize {
-        let path = get_transaction_log_location(self.database_options.data_directory.clone());
         let flushed_size = self.size.load(Ordering::SeqCst);
 
         self.size.store(0, Ordering::SeqCst);
 
-        // When we flush we need to reset the file handle for the WAL
-        let mut state = self.log_file.lock().unwrap();
-
-        // TODO: When we are doing a dual reset, this could fail. Add
-        //  the unwrap back and think this through
-        let _ = fs::remove_file(&path);
-
-        let raw_log_file = OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .open(&path)
-            .expect("Cannot open file");
-
-        // Swap the old file handle (with transactions) with the new one (empty file handle)
-        *state = raw_log_file;
+        self.storage.lock().unwrap().transaction_flush();
 
         flushed_size
     }
@@ -204,26 +172,17 @@ impl TransactionWAL {
         self.size.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn restore(data_directory: PathBuf) -> Vec<Transaction> {
-        let mut file = match File::open(get_transaction_log_location(data_directory)) {
-            Ok(file) => file,
-            Err(_) => return vec![],
-        };
-
-        let mut contents = String::new();
-
-        file.read_to_string(&mut contents).unwrap();
-
+    pub fn restore(&self) -> Vec<Transaction> {
         let mut transactions: Vec<Transaction> = vec![];
 
-        for transaction_string in contents.split('\n') {
+        let transactions_data = self.storage.lock().unwrap().transaction_load();
+
+        for transaction_string in transactions_data.split('\n') {
             if transaction_string.is_empty() {
                 continue;
             }
 
-            let transaction: Transaction = serde_json::from_str(transaction_string).unwrap();
-
-            transactions.push(transaction);
+            transactions.push(serde_json::from_str(transaction_string).unwrap());
         }
 
         transactions

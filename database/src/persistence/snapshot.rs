@@ -1,16 +1,17 @@
+use std::sync::{Arc, Mutex};
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     consts::consts::TransactionId,
+    database::{
+        orchestrator::DatabasePauseEvent,
+        table::{row::PersonVersion, table::PersonTable},
+    },
     model::statement::Statement,
-    persistence::{file::FilePersistence, s3::S3Persistence, Persistence},
 };
 
-use super::{
-    database::{DatabaseOptions, StorageEngine},
-    orchestrator::DatabasePauseEvent,
-    table::{row::PersonVersion, table::PersonTable},
-};
+use super::storage::Storage;
 
 enum FileType {
     Metadata,
@@ -40,20 +41,12 @@ impl Default for Metadata {
 }
 
 pub struct SnapshotManager {
-    persistence: Box<dyn Persistence + Sync + Send>,
+    storage: Arc<Mutex<dyn Storage + Sync + Send>>,
 }
 
 impl SnapshotManager {
-    pub fn new(database_options: DatabaseOptions) -> Self {
-        let persistence: Box<dyn Persistence + Sync + Send> = match database_options.storage_engine
-        {
-            StorageEngine::File => Box::new(FilePersistence::new(database_options.data_directory)),
-            StorageEngine::S3 => Box::new(S3Persistence::new(database_options.data_directory)),
-        };
-
-        persistence.init();
-
-        Self { persistence }
+    pub fn new(storage: Arc<Mutex<dyn Storage + Sync + Send>>) -> Self {
+        Self { storage }
     }
 
     pub fn restore_snapshot(&self, table: &PersonTable) -> (usize, Metadata) {
@@ -91,12 +84,12 @@ impl SnapshotManager {
         );
     }
 
-    pub fn delete_snapshot(&self, _: &DatabasePauseEvent) {
-        self.persistence.reset()
-    }
-
     fn read_file<T: DeserializeOwned + Default>(&self, file_path: FileType) -> T {
-        let result = self.persistence.read_blob(file_path.as_str().to_string());
+        let result = self
+            .storage
+            .lock()
+            .unwrap()
+            .read_blob(file_path.as_str().to_string());
 
         if let Ok(file_contents) = result {
             let data: T = serde_json::from_slice(&file_contents).unwrap();
@@ -111,7 +104,9 @@ impl SnapshotManager {
 
         let serialized_bytes = serialized_data.as_str().as_bytes();
 
-        self.persistence
+        self.storage
+            .lock()
+            .unwrap()
             .write_blob(file_path.as_str().to_string(), serialized_bytes.to_vec());
     }
 }
