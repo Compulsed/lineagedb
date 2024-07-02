@@ -17,13 +17,14 @@ pub struct Persistence {
 
 impl Persistence {
     pub fn new(options: DatabaseOptions) -> Self {
-        let storage: Arc<Mutex<dyn Storage + Sync + Send>> = match options.storage_engine {
+        let storage: Arc<Mutex<dyn Storage + Sync + Send>> = match &options.storage_engine {
             StorageEngine::File => {
                 Arc::new(Mutex::new(FileStorage::new(options.data_directory.clone())))
             }
-            StorageEngine::S3 => {
-                Arc::new(Mutex::new(S3Storage::new(options.data_directory.clone())))
-            }
+            StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
+                bucket.clone(),
+                options.data_directory.clone(),
+            ))),
         };
 
         // Profiles the environment to ensure we are ready to write

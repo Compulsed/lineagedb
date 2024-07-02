@@ -25,7 +25,7 @@ use super::{
 #[derive(Debug, Clone)]
 pub enum StorageEngine {
     File,
-    S3,
+    S3(String),
 }
 
 #[derive(Debug, Clone)]
