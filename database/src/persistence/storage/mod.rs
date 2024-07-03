@@ -1,5 +1,6 @@
 pub mod dynamodb;
 pub mod file;
+pub mod network;
 pub mod s3;
 
 pub trait Storage {
