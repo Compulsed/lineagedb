@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, thread};
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc, thread};
 
 use aws_sdk_dynamodb::{types::AttributeValue, Client};
 use chrono::Utc;
@@ -58,6 +58,36 @@ impl DynamoDBStorage {
             },
         }
     }
+}
+
+struct Defaultable {}
+
+impl Default for Defaultable {
+    fn default() -> Self {
+        Defaultable {}
+    }
+}
+
+// task: fn() -> Pin<Box<dyn Future<Output = ()> + Send>>
+// static means we give ownership
+pub fn new<T: Default + Clone + 'static>(task: fn(T) -> Pin<Box<dyn Future<Output = ()> + Send>>) {
+    let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
+
+    let _ = thread::Builder::new()
+        .name("AWS SDK Tokio".to_string())
+        .spawn(move || {
+            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+
+            rt.block_on(async move {
+                let val = T::default();
+
+                while let Some(request) = action_receiver.recv().await {
+                    // and handle_task
+
+                    tokio::spawn(task(val.clone()));
+                }
+            });
+        });
 }
 
 // Is there a way to avoid this duplication?
