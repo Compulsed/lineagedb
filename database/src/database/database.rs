@@ -12,6 +12,7 @@ use crate::{
     model::statement::{Statement, StatementResult},
     persistence::{
         persistence::Persistence,
+        storage::StorageEngine,
         transaction::{TransactionFileWriteMode, TransactionWriteMode},
     },
 };
@@ -21,13 +22,6 @@ use super::{
     request_manager::RequestManager,
     table::table::PersonTable,
 };
-
-#[derive(Debug, Clone)]
-pub enum StorageEngine {
-    File,
-    S3(String),
-    DynamoDB(String),
-}
 
 #[derive(Debug, Clone)]
 pub struct DatabaseOptions {

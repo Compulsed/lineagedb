@@ -176,12 +176,14 @@ impl PersonTable {
 
                 let person_update_to_persist = update_person.clone();
 
-                let ApplyUpdateResult { current, previous } =
-                    person_row.value().write().unwrap().apply_update(
-                        &id,
-                        person_update_to_persist,
-                        transaction_id,
-                    )?;
+                let ApplyUpdateResult {
+                    current,
+                    previous: _,
+                } = person_row.value().write().unwrap().apply_update(
+                    &id,
+                    person_update_to_persist,
+                    transaction_id,
+                )?;
 
                 StatementResult::Single(current)
             }
@@ -558,7 +560,7 @@ mod tests {
         list_statement: Statement,
         compare_to: Vec<Person>,
     ) -> () {
-        let mut table = PersonTable::new();
+        let table = PersonTable::new();
         let mut next_transaction_id = TransactionId::new_first_transaction();
 
         for statement in statements {
@@ -705,6 +707,7 @@ mod versioning {
     }
 
     mod get_statement {
+        #[warn(unused_imports)]
         use super::*;
 
         #[test]
@@ -812,11 +815,13 @@ mod versioning {
         }
     }
 
+    #[allow(dead_code)]
     fn add_test_person_to_empty_database(table: &mut PersonTable) -> (Person, TransactionId) {
         let transaction_id = TransactionId::new_first_transaction();
         add_test_person(table, transaction_id)
     }
 
+    #[allow(dead_code)]
     fn add_test_person(
         table: &mut PersonTable,
         next_transaction_id: TransactionId,
@@ -832,6 +837,7 @@ mod versioning {
         (person, next_transaction_id.increment())
     }
 
+    #[allow(dead_code)]
     fn update_test_person(
         table: &mut PersonTable,
         person: &Person,
@@ -853,6 +859,7 @@ mod versioning {
         (updated_person, next_transaction_id.increment())
     }
 
+    #[allow(dead_code)]
     fn delete_test_person(
         table: &mut PersonTable,
         id: &EntityId,
@@ -865,6 +872,7 @@ mod versioning {
         next_transaction_id.increment()
     }
 
+    #[allow(dead_code)]
     fn get_test_person_at_version(
         table: &mut PersonTable,
         id: &EntityId,

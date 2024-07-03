@@ -96,8 +96,10 @@ impl TransactionWAL {
                                 .unwrap()
                             );
 
-                            // For disk, this is fast (because it is technically async, the OS will buffer the writes)
+                            // - NOTE: For disk, this is fast (because it is technically async, the OS will buffer the writes)
                             //  though for S3 it is very slow, is there any way we can buffer this?
+                            // - NOTE: We should return an error type here, what happens if out credentials timeout? The write
+                            //  looks durable but isn't (because transaction_sync always returns Ok(()) for network storage
                             worker_storage
                                 .lock()
                                 .unwrap()
@@ -212,10 +214,12 @@ impl LocalClock {
         TransactionId(self.ts_sequence.fetch_add(1, Ordering::SeqCst))
     }
 
+    #[allow(dead_code)]
     fn reset(&self) {
         self.ts_sequence.store(0, Ordering::SeqCst);
     }
 
+    #[allow(dead_code)]
     fn set(&self, value: usize) {
         self.ts_sequence.store(value, Ordering::SeqCst);
     }

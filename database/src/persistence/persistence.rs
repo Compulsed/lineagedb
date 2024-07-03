@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use crate::database::database::{DatabaseOptions, StorageEngine};
+use crate::database::database::DatabaseOptions;
 
 use super::{
     snapshot::SnapshotManager,
-    storage::{dynamodb::DynamoDBStorage, file::FileStorage, s3::S3Storage, Storage},
+    storage::{Storage, StorageEngine},
     transaction::TransactionWAL,
 };
 
@@ -17,19 +17,8 @@ pub struct Persistence {
 
 impl Persistence {
     pub fn new(options: DatabaseOptions) -> Self {
-        let storage: Arc<Mutex<dyn Storage + Sync + Send>> = match &options.storage_engine {
-            StorageEngine::File => {
-                Arc::new(Mutex::new(FileStorage::new(options.data_directory.clone())))
-            }
-            StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
-                bucket.clone(),
-                options.data_directory.clone(),
-            ))),
-            StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
-                table.clone(),
-                options.data_directory.clone(),
-            ))),
-        };
+        let storage: Arc<Mutex<dyn Storage + Sync + Send>> =
+            StorageEngine::get_engine(options.clone());
 
         // Profiles the environment to ensure we are ready to write
         storage.lock().unwrap().init();

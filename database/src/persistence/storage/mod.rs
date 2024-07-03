@@ -1,3 +1,11 @@
+use std::sync::{Arc, Mutex};
+
+use dynamodb::DynamoDBStorage;
+use file::FileStorage;
+use s3::S3Storage;
+
+use crate::database::database::DatabaseOptions;
+
 pub mod dynamodb;
 pub mod file;
 pub mod network;
@@ -17,4 +25,29 @@ pub trait Storage {
     fn transaction_sync(&self) -> ();
     fn transaction_flush(&mut self) -> ();
     fn transaction_load(&mut self) -> String;
+}
+
+#[derive(Debug, Clone)]
+pub enum StorageEngine {
+    File,
+    S3(String),
+    DynamoDB(String),
+}
+
+impl StorageEngine {
+    pub fn get_engine(options: DatabaseOptions) -> Arc<Mutex<dyn Storage + Sync + Send>> {
+        match options.storage_engine {
+            StorageEngine::File => {
+                Arc::new(Mutex::new(FileStorage::new(options.data_directory.clone())))
+            }
+            StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
+                bucket.clone(),
+                options.data_directory.clone(),
+            ))),
+            StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
+                table.clone(),
+                options.data_directory.clone(),
+            ))),
+        }
+    }
 }

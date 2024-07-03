@@ -217,6 +217,7 @@ impl RequestManager {
         map_response(response)
     }
 
+    #[allow(dead_code)]
     fn send_database_command_task(&self, database_request: DatabaseCommand) -> TaskCommandResponse {
         let (response_sender, response_receiver) = oneshot::channel::<DatabaseCommandResponse>();
 

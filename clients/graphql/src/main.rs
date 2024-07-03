@@ -9,10 +9,13 @@ use actix_web::{
 };
 use actix_web_lab::respond::Html;
 use clap::Parser;
-use database::database::{
-    commands::ShutdownRequest,
-    database::{Database, DatabaseOptions, StorageEngine},
-    request_manager::RequestManager,
+use database::{
+    database::{
+        commands::ShutdownRequest,
+        database::{Database, DatabaseOptions},
+        request_manager::RequestManager,
+    },
+    persistence::storage::StorageEngine,
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::sync::Mutex;
