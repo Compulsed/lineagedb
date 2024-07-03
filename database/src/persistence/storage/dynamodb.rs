@@ -7,41 +7,15 @@ use tokio::{
     sync::mpsc::{self, Sender},
 };
 
-use super::Storage;
+use super::{
+    network::{NetworkStorage, NetworkStorageAction},
+    Storage,
+};
 
 const HASH_KEY: &str = "Hash";
 const SORT_KEY: &str = "Sort";
 const BLOB_PARTITION: &str = "Blob";
 const DATA_KEY: &str = "Data";
-
-struct WriteFileRequest {
-    bytes: Vec<u8>,
-    file_path: String,
-    sender: oneshot::Sender<()>,
-}
-
-struct ResetFileRequest {
-    sender: oneshot::Sender<()>,
-}
-
-struct ReadFileRequest {
-    file_path: String,
-    sender: oneshot::Sender<Result<Vec<u8>, ()>>,
-}
-
-struct TransactionWriteRequest {
-    bytes: Vec<u8>,
-    sender: oneshot::Sender<()>,
-}
-
-enum DynamoDBAction {
-    WriteBlob(WriteFileRequest),
-    ReadBlob(ReadFileRequest),
-    Reset(ResetFileRequest),
-    TransactionWrite(TransactionWriteRequest),
-    TransactionFlush(oneshot::Sender<()>),
-    TransactionLoad(oneshot::Sender<String>),
-}
 
 const TRANSACTION_LOG_PATH: &str = "transaction_log";
 
@@ -49,13 +23,12 @@ const TRANSACTION_LOG_PATH: &str = "transaction_log";
 /// 1. World state is limited to 400kb (unless we split)
 /// 2. Unsure if we can write an item w/ just a PK
 pub struct DynamoDBStorage {
-    ddb_action_sender: Sender<DynamoDBAction>,
+    network_storage: NetworkStorage,
 }
 
 impl DynamoDBStorage {
     pub fn new(table: String, base_path: PathBuf) -> Self {
-        let (dynamo_action_sender, mut dynamo_action_receiver) =
-            mpsc::channel::<DynamoDBAction>(16);
+        let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
         let _ = thread::Builder::new()
             .name("AWS SDK Tokio".to_string())
@@ -63,9 +36,11 @@ impl DynamoDBStorage {
                 let rt = Builder::new_current_thread().enable_all().build().unwrap();
 
                 rt.block_on(async move {
+                    // Customize this
                     let client = Arc::new(Client::new(&aws_config::load_from_env().await));
 
-                    while let Some(request) = dynamo_action_receiver.recv().await {
+                    while let Some(request) = action_receiver.recv().await {
+                        // and handle_task
                         tokio::spawn(handle_task(
                             table.clone(),
                             base_path.clone(),
@@ -76,95 +51,47 @@ impl DynamoDBStorage {
                 });
             });
 
+        // Store on struct for usage w/ trait
         Self {
-            ddb_action_sender: dynamo_action_sender,
+            network_storage: NetworkStorage {
+                action_sender: action_sender,
+            },
         }
     }
 }
 
+// Is there a way to avoid this duplication?
 impl Storage for DynamoDBStorage {
-    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
-
-        let write_file_request = DynamoDBAction::WriteBlob(WriteFileRequest {
-            file_path: path,
-            bytes: bytes,
-            sender: sender,
-        });
-
-        self.ddb_action_sender
-            .blocking_send(write_file_request)
-            .unwrap();
-
-        let _ = receiver.recv();
-
-        return ();
-    }
-
-    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
-        let (sender, receiver) = oneshot::channel::<Result<Vec<u8>, ()>>();
-
-        // Is the problem that this is happening within the main thread?
-        self.ddb_action_sender
-            .blocking_send(DynamoDBAction::ReadBlob(ReadFileRequest {
-                file_path: path,
-                sender: sender,
-            }))
-            .unwrap();
-
-        receiver.recv().unwrap()
-    }
-
     fn init(&self) {
-        // This method is not needed, ddb does not have folders
+        self.network_storage.init();
     }
 
     fn reset_database(&self) {
-        let (sender, receiver) = oneshot::channel::<()>();
+        self.network_storage.reset_database();
+    }
 
-        self.ddb_action_sender
-            .blocking_send(DynamoDBAction::Reset(ResetFileRequest { sender: sender }))
-            .unwrap();
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
+        self.network_storage.write_blob(path, bytes);
+    }
 
-        let _ = receiver.recv();
+    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
+        self.network_storage.read_blob(path)
     }
 
     fn transaction_write(&mut self, transaction: &[u8]) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
-
-        // TODO: Externalize transaction log
-        self.ddb_action_sender
-            .blocking_send(DynamoDBAction::TransactionWrite(TransactionWriteRequest {
-                bytes: transaction.to_vec(),
-                sender: sender,
-            }))
-            .unwrap();
-
-        let _ = receiver.recv();
-    }
-
-    fn transaction_load(&mut self) -> String {
-        let (sender, receiver) = oneshot::channel::<String>();
-
-        self.ddb_action_sender
-            .blocking_send(DynamoDBAction::TransactionLoad(sender))
-            .unwrap();
-
-        receiver.recv().unwrap()
-    }
-
-    fn transaction_flush(&mut self) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
-
-        self.ddb_action_sender
-            .blocking_send(DynamoDBAction::TransactionFlush(sender))
-            .unwrap();
-
-        receiver.recv().unwrap()
+        self.network_storage.transaction_write(transaction);
     }
 
     fn transaction_sync(&self) -> () {
-        // For ddb we do not need a disk sync
+        self.network_storage.transaction_sync();
+    }
+
+    fn transaction_flush(&mut self) -> () {
+        self.network_storage.transaction_flush();
+    }
+
+    fn transaction_load(&mut self) -> String {
+        self.network_storage.transaction_load()
     }
 }
 
@@ -172,17 +99,17 @@ async fn handle_task(
     bucket: String,
     base_path: PathBuf,
     client: Arc<Client>,
-    ddb_action: DynamoDBAction,
+    ddb_action: NetworkStorageAction,
 ) {
     let table_str = &bucket;
 
     match ddb_action {
-        DynamoDBAction::Reset(r) => {
+        NetworkStorageAction::Reset(r) => {
             reset_table(&client, table_str).await;
 
             let _ = r.sender.send(()).unwrap();
         }
-        DynamoDBAction::WriteBlob(file_request) => {
+        NetworkStorageAction::WriteBlob(file_request) => {
             let file_path = base_path.join(file_request.file_path);
 
             let req = client
@@ -202,7 +129,7 @@ async fn handle_task(
 
             let _ = file_request.sender.send(()).unwrap();
         }
-        DynamoDBAction::ReadBlob(file_request) => {
+        NetworkStorageAction::ReadBlob(file_request) => {
             let file_path = base_path.join(file_request.file_path);
 
             let response = client
@@ -228,7 +155,7 @@ async fn handle_task(
 
             let _ = file_request.sender.send(response).unwrap();
         }
-        DynamoDBAction::TransactionWrite(request) => {
+        NetworkStorageAction::TransactionWrite(request) => {
             let req = client
                 .put_item()
                 .table_name(table_str)
@@ -246,12 +173,12 @@ async fn handle_task(
 
             let _ = request.sender.send(()).unwrap();
         }
-        DynamoDBAction::TransactionFlush(r) => {
+        NetworkStorageAction::TransactionFlush(r) => {
             delete_transactions_at_partition(&client, table_str, TRANSACTION_LOG_PATH).await;
 
             let _ = r.send(()).unwrap();
         }
-        DynamoDBAction::TransactionLoad(request) => {
+        NetworkStorageAction::TransactionLoad(request) => {
             let contents =
                 get_transactions_at_partition(&client, table_str, TRANSACTION_LOG_PATH).await;
 

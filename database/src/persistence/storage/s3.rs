@@ -4,49 +4,23 @@ use aws_sdk_s3::{primitives::ByteStream, Client};
 use chrono::Utc;
 use tokio::{
     runtime::Builder,
-    sync::mpsc::{self, Sender},
+    sync::mpsc::{self},
 };
 
-use super::Storage;
-
-struct WriteFileRequest {
-    bytes: Vec<u8>,
-    file_path: String,
-    sender: oneshot::Sender<()>,
-}
-
-struct ResetFileRequest {
-    sender: oneshot::Sender<()>,
-}
-
-struct ReadFileRequest {
-    file_path: String,
-    sender: oneshot::Sender<Vec<u8>>,
-}
-
-struct TransactionWriteRequest {
-    bytes: Vec<u8>,
-    sender: oneshot::Sender<()>,
-}
-
-enum S3Action {
-    WriteBlob(WriteFileRequest),
-    ReadBlob(ReadFileRequest),
-    Reset(ResetFileRequest),
-    TransactionWrite(TransactionWriteRequest),
-    TransactionFlush(oneshot::Sender<()>),
-    TransactionLoad(oneshot::Sender<String>),
-}
+use super::{
+    network::{NetworkStorage, NetworkStorageAction},
+    Storage,
+};
 
 const TRANSACTION_LOG_PATH: &str = "transaction_log";
 
 pub struct S3Storage {
-    s3_action_sender: Sender<S3Action>,
+    network_storage: NetworkStorage,
 }
 
 impl S3Storage {
     pub fn new(bucket: String, base_path: PathBuf) -> Self {
-        let (s3_action_sender, mut s3_action_receiver) = mpsc::channel::<S3Action>(16);
+        let (action_sender, mut s3_action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
         let _ = thread::Builder::new()
             .name("AWS SDK Tokio".to_string())
@@ -67,108 +41,64 @@ impl S3Storage {
                 });
             });
 
-        Self { s3_action_sender }
+        Self {
+            network_storage: NetworkStorage {
+                action_sender: action_sender,
+            },
+        }
     }
 }
 
+// Is there a way to avoid this duplication?
 impl Storage for S3Storage {
-    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
-
-        let write_file_request = S3Action::WriteBlob(WriteFileRequest {
-            file_path: path,
-            bytes: bytes,
-            sender: sender,
-        });
-
-        self.s3_action_sender
-            .blocking_send(write_file_request)
-            .unwrap();
-
-        let _ = receiver.recv();
-
-        return ();
-    }
-
-    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
-        let (sender, receiver) = oneshot::channel::<Vec<u8>>();
-
-        // Is the problem that this is happening within the main thread?
-        self.s3_action_sender
-            .blocking_send(S3Action::ReadBlob(ReadFileRequest {
-                file_path: path,
-                sender: sender,
-            }))
-            .unwrap();
-
-        let response = receiver.recv().unwrap();
-
-        return Ok(response);
-    }
-
     fn init(&self) {
-        // This method is not needed, s3 does not have folders
+        self.network_storage.init();
     }
 
     fn reset_database(&self) {
-        let (sender, receiver) = oneshot::channel::<()>();
+        self.network_storage.reset_database();
+    }
 
-        self.s3_action_sender
-            .blocking_send(S3Action::Reset(ResetFileRequest { sender: sender }))
-            .unwrap();
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
+        self.network_storage.write_blob(path, bytes);
+    }
 
-        let _ = receiver.recv();
+    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
+        self.network_storage.read_blob(path)
     }
 
     fn transaction_write(&mut self, transaction: &[u8]) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
-
-        // TODO: Externalize transaction log
-        self.s3_action_sender
-            .blocking_send(S3Action::TransactionWrite(TransactionWriteRequest {
-                bytes: transaction.to_vec(),
-                sender: sender,
-            }))
-            .unwrap();
-
-        let _ = receiver.recv();
-    }
-
-    fn transaction_load(&mut self) -> String {
-        let (sender, receiver) = oneshot::channel::<String>();
-
-        self.s3_action_sender
-            .blocking_send(S3Action::TransactionLoad(sender))
-            .unwrap();
-
-        receiver.recv().unwrap()
-    }
-
-    fn transaction_flush(&mut self) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
-
-        self.s3_action_sender
-            .blocking_send(S3Action::TransactionFlush(sender))
-            .unwrap();
-
-        receiver.recv().unwrap()
+        self.network_storage.transaction_write(transaction);
     }
 
     fn transaction_sync(&self) -> () {
-        // For s3 we do not need a disk sync
+        self.network_storage.transaction_sync();
+    }
+
+    fn transaction_flush(&mut self) -> () {
+        self.network_storage.transaction_flush();
+    }
+
+    fn transaction_load(&mut self) -> String {
+        self.network_storage.transaction_load()
     }
 }
 
-async fn handle_task(bucket: String, base_path: PathBuf, client: Arc<Client>, s3_action: S3Action) {
+async fn handle_task(
+    bucket: String,
+    base_path: PathBuf,
+    client: Arc<Client>,
+    s3_action: NetworkStorageAction,
+) {
     let bucket_str = &bucket;
 
     match s3_action {
-        S3Action::Reset(r) => {
+        NetworkStorageAction::Reset(r) => {
             delete_files_at_path(&client, bucket_str, base_path).await;
 
             let _ = r.sender.send(()).unwrap();
         }
-        S3Action::WriteBlob(file_request) => {
+        NetworkStorageAction::WriteBlob(file_request) => {
             // TODO: Should we normalize the path before getting to this point? Will make system more dry
             let file_path = base_path.join(file_request.file_path);
 
@@ -182,7 +112,7 @@ async fn handle_task(bucket: String, base_path: PathBuf, client: Arc<Client>, s3
 
             let _ = file_request.sender.send(()).unwrap();
         }
-        S3Action::ReadBlob(file_request) => {
+        NetworkStorageAction::ReadBlob(file_request) => {
             let file_path = base_path.join(file_request.file_path);
 
             let response = client
@@ -195,9 +125,9 @@ async fn handle_task(bucket: String, base_path: PathBuf, client: Arc<Client>, s3
 
             let bytes = response.body.collect().await.unwrap().into_bytes().to_vec();
 
-            let _ = file_request.sender.send(bytes).unwrap();
+            let _ = file_request.sender.send(Ok(bytes)).unwrap();
         }
-        S3Action::TransactionWrite(request) => {
+        NetworkStorageAction::TransactionWrite(request) => {
             let file_path = base_path
                 .join(TRANSACTION_LOG_PATH)
                 .join(Utc::now().to_rfc3339());
@@ -212,14 +142,14 @@ async fn handle_task(bucket: String, base_path: PathBuf, client: Arc<Client>, s3
 
             let _ = request.sender.send(()).unwrap();
         }
-        S3Action::TransactionFlush(r) => {
+        NetworkStorageAction::TransactionFlush(r) => {
             let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
 
             delete_files_at_path(&client, bucket_str, transactions_folder).await;
 
             let _ = r.send(()).unwrap();
         }
-        S3Action::TransactionLoad(request) => {
+        NetworkStorageAction::TransactionLoad(request) => {
             let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
 
             let contents =
