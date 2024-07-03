@@ -25,11 +25,10 @@ impl Persistence {
                 bucket.clone(),
                 options.data_directory.clone(),
             ))),
-            // StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
-            //     table.clone(),
-            //     options.data_directory.clone(),
-            // ))),
-            _ => unimplemented!(),
+            StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
+                table.clone(),
+                options.data_directory.clone(),
+            ))),
         };
 
         // Profiles the environment to ensure we are ready to write

@@ -1,4 +1,9 @@
-use tokio::sync::mpsc::Sender;
+use std::{future::Future, pin::Pin, sync::Arc, thread};
+
+use tokio::{
+    runtime::Builder,
+    sync::mpsc::{Receiver, Sender},
+};
 
 use super::Storage;
 
@@ -123,4 +128,25 @@ impl Storage for NetworkStorage {
     fn transaction_sync(&self) -> () {
         // For s3 we do not need a disk sync
     }
+}
+
+pub fn start_runtime<T: Clone + Send + 'static, C: Clone + Send + 'static>(
+    mut action_receiver: Receiver<NetworkStorageAction>,
+    context: T,
+    task: fn(T, Arc<C>, NetworkStorageAction) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    client: fn() -> Pin<Box<dyn Future<Output = C> + Send>>,
+) {
+    let _ = thread::Builder::new()
+        .name("AWS SDK Tokio".to_string())
+        .spawn(move || {
+            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+
+            rt.block_on(async move {
+                let client = Arc::new(client().await);
+
+                while let Some(request) = action_receiver.recv().await {
+                    tokio::spawn(task(context.clone(), client.clone(), request));
+                }
+            });
+        });
 }

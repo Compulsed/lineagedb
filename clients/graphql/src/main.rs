@@ -77,9 +77,9 @@ async fn main() -> io::Result<()> {
 
     let database_options = DatabaseOptions::default()
         .set_data_directory(args.data)
-        .set_storage_engine(StorageEngine::DynamoDB("lineagedb-ddb".to_string()));
-    // .set_storage_engine(StorageEngine::File));
-    // .set_storage_engine(StorageEngine::S3("dalesalter-test-bucket".to_string()));
+        // .set_storage_engine(StorageEngine::DynamoDB("lineagedb-ddb".to_string()));
+        // .set_storage_engine(StorageEngine::File));
+        .set_storage_engine(StorageEngine::S3("dalesalter-test-bucket".to_string()));
 
     // For S3 (an optional backing storage engine), we must use tokio. This would be fine
     //  but the database uses sync apis (blocking_send). blocking_send CANNOT be called with any call-stack

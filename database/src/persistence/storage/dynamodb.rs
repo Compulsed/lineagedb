@@ -1,14 +1,11 @@
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc, thread};
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use aws_sdk_dynamodb::{types::AttributeValue, Client};
 use chrono::Utc;
-use tokio::{
-    runtime::Builder,
-    sync::mpsc::{self, Receiver, Sender},
-};
+use tokio::sync::mpsc::{self};
 
 use super::{
-    network::{NetworkStorage, NetworkStorageAction},
+    network::{start_runtime, NetworkStorage, NetworkStorageAction},
     Storage,
 };
 
@@ -26,65 +23,16 @@ pub struct DynamoDBStorage {
     network_storage: NetworkStorage,
 }
 
-// impl DynamoDBStorage {
-//     pub fn new(table: String, base_path: PathBuf) -> Self {
-//         let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
-
-//         let _ = thread::Builder::new()
-//             .name("AWS SDK Tokio".to_string())
-//             .spawn(move || {
-//                 let rt = Builder::new_current_thread().enable_all().build().unwrap();
-
-//                 rt.block_on(async move {
-//                     // Customize this
-//                     let client = Arc::new(Client::new(&aws_config::load_from_env().await));
-
-//                     while let Some(request) = action_receiver.recv().await {
-//                         // and handle_task
-//                         tokio::spawn(handle_task(
-//                             table.clone(),
-//                             base_path.clone(),
-//                             client.clone(),
-//                             request,
-//                         ));
-//                     }
-//                 });
-//             });
-
-//         // Store on struct for usage w/ trait
-//         Self {
-//             network_storage: NetworkStorage {
-//                 action_sender: action_sender,
-//             },
-//         }
-//     }
-// }
-
-struct DataStruct {
-    table: String,
-    base_path: PathBuf,
-    client: Client,
-}
-
-fn task_fn(
-    data: DataStruct,
-    action: NetworkStorageAction,
-) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
-    Box::pin(async {
-        println!("Hello, world!");
-    })
-}
-
 impl DynamoDBStorage {
     pub fn new(table: String, base_path: PathBuf) -> Self {
         let (action_sender, action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let data: DataStruct = DataStruct {
+        let data: DynamoDBEnv = DynamoDBEnv {
             table: table,
             base_path: base_path,
         };
 
-        start_runtime(action_receiver, data, task_fn);
+        start_runtime(action_receiver, data, task_fn, client_fn);
 
         Self {
             network_storage: NetworkStorage {
@@ -94,22 +42,18 @@ impl DynamoDBStorage {
     }
 }
 
-pub fn start_runtime<C: Clone + Send + 'static>(
-    mut action_receiver: Receiver<NetworkStorageAction>,
-    context: C,
-    task: fn(C, NetworkStorageAction) -> Pin<Box<dyn Future<Output = ()> + Send>>,
-) {
-    let _ = thread::Builder::new()
-        .name("AWS SDK Tokio".to_string())
-        .spawn(move || {
-            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+#[derive(Clone)]
+struct DynamoDBEnv {
+    table: String,
+    base_path: PathBuf,
+}
 
-            rt.block_on(async move {
-                while let Some(request) = action_receiver.recv().await {
-                    tokio::spawn(task(context.clone(), request));
-                }
-            });
-        });
+fn client_fn() -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
+    Box::pin(async {
+        let sdk = aws_config::load_from_env().await;
+
+        Client::new(&sdk)
+    })
 }
 
 // Is there a way to avoid this duplication?
@@ -148,104 +92,97 @@ impl Storage for DynamoDBStorage {
 }
 
 fn task_fn(
-    data: DataStruct,
+    data: DynamoDBEnv,
+    client: Arc<Client>,
     action: NetworkStorageAction,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
-    Box::pin(async {
-        println!("Hello, world!");
+    Box::pin(async move {
+        let table_str = &data.table;
+        let base_path = &data.base_path;
+
+        match action {
+            NetworkStorageAction::Reset(r) => {
+                reset_table(&client, table_str).await;
+
+                let _ = r.sender.send(()).unwrap();
+            }
+            NetworkStorageAction::WriteBlob(file_request) => {
+                let file_path = base_path.join(file_request.file_path);
+
+                let req = client
+                    .put_item()
+                    .table_name(table_str)
+                    .item(HASH_KEY, AttributeValue::S(BLOB_PARTITION.to_string()))
+                    .item(
+                        SORT_KEY,
+                        AttributeValue::S(file_path.to_str().unwrap().to_string()),
+                    )
+                    .item(
+                        DATA_KEY,
+                        AttributeValue::S(String::from_utf8(file_request.bytes).unwrap()),
+                    );
+
+                let _ = req.send().await.unwrap();
+
+                let _ = file_request.sender.send(()).unwrap();
+            }
+            NetworkStorageAction::ReadBlob(file_request) => {
+                let file_path = base_path.join(file_request.file_path);
+
+                let response = client
+                    .get_item()
+                    .table_name(table_str)
+                    .key(HASH_KEY, AttributeValue::S(BLOB_PARTITION.to_string()))
+                    .key(
+                        SORT_KEY,
+                        AttributeValue::S(file_path.to_str().unwrap().to_string()),
+                    );
+
+                let response = if let Some(item) = response.send().await.unwrap().item {
+                    Ok(item
+                        .get(DATA_KEY)
+                        .unwrap()
+                        .as_s()
+                        .unwrap()
+                        .bytes()
+                        .collect::<Vec<u8>>())
+                } else {
+                    Err(())
+                };
+
+                let _ = file_request.sender.send(response).unwrap();
+            }
+            NetworkStorageAction::TransactionWrite(request) => {
+                let req = client
+                    .put_item()
+                    .table_name(table_str)
+                    .item(
+                        HASH_KEY,
+                        AttributeValue::S(TRANSACTION_LOG_PATH.to_string()),
+                    )
+                    .item(SORT_KEY, AttributeValue::S(Utc::now().to_rfc3339()))
+                    .item(
+                        DATA_KEY,
+                        AttributeValue::S(String::from_utf8(request.bytes).unwrap()),
+                    );
+
+                let _ = req.send().await.unwrap();
+
+                let _ = request.sender.send(()).unwrap();
+            }
+            NetworkStorageAction::TransactionFlush(r) => {
+                delete_transactions_at_partition(&client, table_str, TRANSACTION_LOG_PATH).await;
+
+                let _ = r.send(()).unwrap();
+            }
+            NetworkStorageAction::TransactionLoad(request) => {
+                let contents =
+                    get_transactions_at_partition(&client, table_str, TRANSACTION_LOG_PATH).await;
+
+                let _ = request.send(contents).unwrap();
+            }
+        }
     })
-}
-
-async fn handle_task(
-    bucket: String,
-    base_path: PathBuf,
-    client: Arc<Client>,
-    ddb_action: NetworkStorageAction,
-) {
-    let table_str = &bucket;
-
-    match ddb_action {
-        NetworkStorageAction::Reset(r) => {
-            reset_table(&client, table_str).await;
-
-            let _ = r.sender.send(()).unwrap();
-        }
-        NetworkStorageAction::WriteBlob(file_request) => {
-            let file_path = base_path.join(file_request.file_path);
-
-            let req = client
-                .put_item()
-                .table_name(table_str)
-                .item(HASH_KEY, AttributeValue::S(BLOB_PARTITION.to_string()))
-                .item(
-                    SORT_KEY,
-                    AttributeValue::S(file_path.to_str().unwrap().to_string()),
-                )
-                .item(
-                    DATA_KEY,
-                    AttributeValue::S(String::from_utf8(file_request.bytes).unwrap()),
-                );
-
-            let _ = req.send().await.unwrap();
-
-            let _ = file_request.sender.send(()).unwrap();
-        }
-        NetworkStorageAction::ReadBlob(file_request) => {
-            let file_path = base_path.join(file_request.file_path);
-
-            let response = client
-                .get_item()
-                .table_name(table_str)
-                .key(HASH_KEY, AttributeValue::S(BLOB_PARTITION.to_string()))
-                .key(
-                    SORT_KEY,
-                    AttributeValue::S(file_path.to_str().unwrap().to_string()),
-                );
-
-            let response = if let Some(item) = response.send().await.unwrap().item {
-                Ok(item
-                    .get(DATA_KEY)
-                    .unwrap()
-                    .as_s()
-                    .unwrap()
-                    .bytes()
-                    .collect::<Vec<u8>>())
-            } else {
-                Err(())
-            };
-
-            let _ = file_request.sender.send(response).unwrap();
-        }
-        NetworkStorageAction::TransactionWrite(request) => {
-            let req = client
-                .put_item()
-                .table_name(table_str)
-                .item(
-                    HASH_KEY,
-                    AttributeValue::S(TRANSACTION_LOG_PATH.to_string()),
-                )
-                .item(SORT_KEY, AttributeValue::S(Utc::now().to_rfc3339()))
-                .item(
-                    DATA_KEY,
-                    AttributeValue::S(String::from_utf8(request.bytes).unwrap()),
-                );
-
-            let _ = req.send().await.unwrap();
-
-            let _ = request.sender.send(()).unwrap();
-        }
-        NetworkStorageAction::TransactionFlush(r) => {
-            delete_transactions_at_partition(&client, table_str, TRANSACTION_LOG_PATH).await;
-
-            let _ = r.send(()).unwrap();
-        }
-        NetworkStorageAction::TransactionLoad(request) => {
-            let contents =
-                get_transactions_at_partition(&client, table_str, TRANSACTION_LOG_PATH).await;
-
-            let _ = request.send(contents).unwrap();
-        }
-    }
 }
 
 async fn reset_table(client: &Client, table_name: &str) {

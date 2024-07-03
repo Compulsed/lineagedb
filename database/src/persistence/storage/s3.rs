@@ -1,14 +1,11 @@
-use std::{path::PathBuf, sync::Arc, thread};
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use aws_sdk_s3::{primitives::ByteStream, Client};
 use chrono::Utc;
-use tokio::{
-    runtime::Builder,
-    sync::mpsc::{self},
-};
+use tokio::sync::mpsc::{self};
 
 use super::{
-    network::{NetworkStorage, NetworkStorageAction},
+    network::{start_runtime, NetworkStorage, NetworkStorageAction},
     Storage,
 };
 
@@ -20,26 +17,11 @@ pub struct S3Storage {
 
 impl S3Storage {
     pub fn new(bucket: String, base_path: PathBuf) -> Self {
-        let (action_sender, mut s3_action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
+        let (action_sender, action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let _ = thread::Builder::new()
-            .name("AWS SDK Tokio".to_string())
-            .spawn(move || {
-                let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let data = S3Env { bucket, base_path };
 
-                rt.block_on(async move {
-                    let client = Arc::new(Client::new(&aws_config::load_from_env().await));
-
-                    while let Some(request) = s3_action_receiver.recv().await {
-                        tokio::spawn(handle_task(
-                            bucket.clone(),
-                            base_path.clone(),
-                            client.clone(),
-                            request,
-                        ));
-                    }
-                });
-            });
+        start_runtime(action_receiver, data, task_fn, client_fn);
 
         Self {
             network_storage: NetworkStorage {
@@ -47,6 +29,20 @@ impl S3Storage {
             },
         }
     }
+}
+
+#[derive(Clone)]
+struct S3Env {
+    bucket: String,
+    base_path: PathBuf,
+}
+
+fn client_fn() -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
+    Box::pin(async {
+        let sdk = aws_config::load_from_env().await;
+
+        Client::new(&sdk)
+    })
 }
 
 // Is there a way to avoid this duplication?
@@ -84,80 +80,85 @@ impl Storage for S3Storage {
     }
 }
 
-async fn handle_task(
-    bucket: String,
-    base_path: PathBuf,
+fn task_fn(
+    data: S3Env,
     client: Arc<Client>,
-    s3_action: NetworkStorageAction,
-) {
-    let bucket_str = &bucket;
+    action: NetworkStorageAction,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+    Box::pin(async move {
+        let bucket = &data.bucket;
+        let base_path = data.base_path;
 
-    match s3_action {
-        NetworkStorageAction::Reset(r) => {
-            delete_files_at_path(&client, bucket_str, base_path).await;
+        match action {
+            NetworkStorageAction::Reset(r) => {
+                delete_files_at_path(&client, &bucket, base_path).await;
 
-            let _ = r.sender.send(()).unwrap();
+                let _ = r.sender.send(()).unwrap();
+            }
+            NetworkStorageAction::WriteBlob(file_request) => {
+                // TODO: Should we normalize the path before getting to this point? Will make system more dry
+                let file_path = base_path.join(file_request.file_path);
+
+                let req = client
+                    .put_object()
+                    .bucket(bucket)
+                    .key(file_path.to_str().unwrap())
+                    .body(ByteStream::from(file_request.bytes));
+
+                let _ = req.send().await.unwrap();
+
+                let _ = file_request.sender.send(()).unwrap();
+            }
+            NetworkStorageAction::ReadBlob(file_request) => {
+                let file_path = base_path.join(file_request.file_path);
+
+                let request = client
+                    .get_object()
+                    .bucket(bucket)
+                    .key(file_path.to_str().unwrap())
+                    .send()
+                    .await;
+
+                let response = if let Ok(o) = request {
+                    Ok(o.body.collect().await.unwrap().into_bytes().to_vec())
+                } else {
+                    Err(())
+                };
+
+                let _ = file_request.sender.send(response).unwrap();
+            }
+            NetworkStorageAction::TransactionWrite(request) => {
+                let file_path = base_path
+                    .join(TRANSACTION_LOG_PATH)
+                    .join(Utc::now().to_rfc3339());
+
+                let req = client
+                    .put_object()
+                    .bucket(bucket)
+                    .key(file_path.to_str().unwrap())
+                    .body(ByteStream::from(request.bytes));
+
+                let _ = req.send().await.unwrap();
+
+                let _ = request.sender.send(()).unwrap();
+            }
+            NetworkStorageAction::TransactionFlush(r) => {
+                let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
+
+                delete_files_at_path(&client, &bucket, transactions_folder).await;
+
+                let _ = r.send(()).unwrap();
+            }
+            NetworkStorageAction::TransactionLoad(request) => {
+                let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
+
+                let contents =
+                    get_file_contents_at_path(&client, &bucket, transactions_folder).await;
+
+                let _ = request.send(contents).unwrap();
+            }
         }
-        NetworkStorageAction::WriteBlob(file_request) => {
-            // TODO: Should we normalize the path before getting to this point? Will make system more dry
-            let file_path = base_path.join(file_request.file_path);
-
-            let req = client
-                .put_object()
-                .bucket(bucket_str)
-                .key(file_path.to_str().unwrap())
-                .body(ByteStream::from(file_request.bytes));
-
-            let _ = req.send().await.unwrap();
-
-            let _ = file_request.sender.send(()).unwrap();
-        }
-        NetworkStorageAction::ReadBlob(file_request) => {
-            let file_path = base_path.join(file_request.file_path);
-
-            let response = client
-                .get_object()
-                .bucket(bucket)
-                .key(file_path.to_str().unwrap())
-                .send()
-                .await
-                .unwrap();
-
-            let bytes = response.body.collect().await.unwrap().into_bytes().to_vec();
-
-            let _ = file_request.sender.send(Ok(bytes)).unwrap();
-        }
-        NetworkStorageAction::TransactionWrite(request) => {
-            let file_path = base_path
-                .join(TRANSACTION_LOG_PATH)
-                .join(Utc::now().to_rfc3339());
-
-            let req = client
-                .put_object()
-                .bucket(bucket)
-                .key(file_path.to_str().unwrap())
-                .body(ByteStream::from(request.bytes));
-
-            let _ = req.send().await.unwrap();
-
-            let _ = request.sender.send(()).unwrap();
-        }
-        NetworkStorageAction::TransactionFlush(r) => {
-            let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
-
-            delete_files_at_path(&client, bucket_str, transactions_folder).await;
-
-            let _ = r.send(()).unwrap();
-        }
-        NetworkStorageAction::TransactionLoad(request) => {
-            let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
-
-            let contents =
-                get_file_contents_at_path(&client, bucket_str, transactions_folder).await;
-
-            let _ = request.send(contents).unwrap();
-        }
-    }
+    })
 }
 
 async fn delete_files_at_path(client: &Client, bucket: &str, path: PathBuf) {
