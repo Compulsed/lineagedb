@@ -4,7 +4,7 @@ use aws_sdk_dynamodb::{types::AttributeValue, Client};
 use chrono::Utc;
 use tokio::{
     runtime::Builder,
-    sync::mpsc::{self, Sender},
+    sync::mpsc::{self, Receiver, Sender},
 };
 
 use super::{
@@ -60,10 +60,16 @@ pub struct DynamoDBStorage {
 //     }
 // }
 
-#[derive(Clone)]
-struct DataStruct {}
+struct DataStruct {
+    table: String,
+    base_path: PathBuf,
+    client: Client,
+}
 
-fn task_fn(data: DataStruct) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+fn task_fn(
+    data: DataStruct,
+    action: NetworkStorageAction,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
     Box::pin(async {
         println!("Hello, world!");
     })
@@ -71,13 +77,15 @@ fn task_fn(data: DataStruct) -> Pin<Box<dyn Future<Output = ()> + Send + 'static
 
 impl DynamoDBStorage {
     pub fn new(table: String, base_path: PathBuf) -> Self {
-        let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
+        let (action_sender, action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let data: DataStruct = DataStruct {};
+        let data: DataStruct = DataStruct {
+            table: table,
+            base_path: base_path,
+        };
 
-        start_runtime(data, task_fn);
+        start_runtime(action_receiver, data, task_fn);
 
-        // Store on struct for usage w/ trait
         Self {
             network_storage: NetworkStorage {
                 action_sender: action_sender,
@@ -86,14 +94,11 @@ impl DynamoDBStorage {
     }
 }
 
-// task: fn() -> Pin<Box<dyn Future<Output = ()> + Send>>
-// static means we give ownership
-pub fn start_runtime<T: Clone + Send + 'static>(
-    val: T,
-    task: fn(T) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+pub fn start_runtime<C: Clone + Send + 'static>(
+    mut action_receiver: Receiver<NetworkStorageAction>,
+    context: C,
+    task: fn(C, NetworkStorageAction) -> Pin<Box<dyn Future<Output = ()> + Send>>,
 ) {
-    let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
-
     let _ = thread::Builder::new()
         .name("AWS SDK Tokio".to_string())
         .spawn(move || {
@@ -101,9 +106,7 @@ pub fn start_runtime<T: Clone + Send + 'static>(
 
             rt.block_on(async move {
                 while let Some(request) = action_receiver.recv().await {
-                    // and handle_task
-
-                    tokio::spawn(task(val.clone()));
+                    tokio::spawn(task(context.clone(), request));
                 }
             });
         });
@@ -142,6 +145,15 @@ impl Storage for DynamoDBStorage {
     fn transaction_load(&mut self) -> String {
         self.network_storage.transaction_load()
     }
+}
+
+fn task_fn(
+    data: DataStruct,
+    action: NetworkStorageAction,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+    Box::pin(async {
+        println!("Hello, world!");
+    })
 }
 
 async fn handle_task(
