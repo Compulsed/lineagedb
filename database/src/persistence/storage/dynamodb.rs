@@ -26,30 +26,56 @@ pub struct DynamoDBStorage {
     network_storage: NetworkStorage,
 }
 
+// impl DynamoDBStorage {
+//     pub fn new(table: String, base_path: PathBuf) -> Self {
+//         let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
+
+//         let _ = thread::Builder::new()
+//             .name("AWS SDK Tokio".to_string())
+//             .spawn(move || {
+//                 let rt = Builder::new_current_thread().enable_all().build().unwrap();
+
+//                 rt.block_on(async move {
+//                     // Customize this
+//                     let client = Arc::new(Client::new(&aws_config::load_from_env().await));
+
+//                     while let Some(request) = action_receiver.recv().await {
+//                         // and handle_task
+//                         tokio::spawn(handle_task(
+//                             table.clone(),
+//                             base_path.clone(),
+//                             client.clone(),
+//                             request,
+//                         ));
+//                     }
+//                 });
+//             });
+
+//         // Store on struct for usage w/ trait
+//         Self {
+//             network_storage: NetworkStorage {
+//                 action_sender: action_sender,
+//             },
+//         }
+//     }
+// }
+
+#[derive(Clone)]
+struct DataStruct {}
+
+fn task_fn(data: DataStruct) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+    Box::pin(async {
+        println!("Hello, world!");
+    })
+}
+
 impl DynamoDBStorage {
     pub fn new(table: String, base_path: PathBuf) -> Self {
         let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let _ = thread::Builder::new()
-            .name("AWS SDK Tokio".to_string())
-            .spawn(move || {
-                let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let data: DataStruct = DataStruct {};
 
-                rt.block_on(async move {
-                    // Customize this
-                    let client = Arc::new(Client::new(&aws_config::load_from_env().await));
-
-                    while let Some(request) = action_receiver.recv().await {
-                        // and handle_task
-                        tokio::spawn(handle_task(
-                            table.clone(),
-                            base_path.clone(),
-                            client.clone(),
-                            request,
-                        ));
-                    }
-                });
-            });
+        start_runtime(data, task_fn);
 
         // Store on struct for usage w/ trait
         Self {
@@ -60,17 +86,12 @@ impl DynamoDBStorage {
     }
 }
 
-struct Defaultable {}
-
-impl Default for Defaultable {
-    fn default() -> Self {
-        Defaultable {}
-    }
-}
-
 // task: fn() -> Pin<Box<dyn Future<Output = ()> + Send>>
 // static means we give ownership
-pub fn new<T: Default + Clone + 'static>(task: fn(T) -> Pin<Box<dyn Future<Output = ()> + Send>>) {
+pub fn start_runtime<T: Clone + Send + 'static>(
+    val: T,
+    task: fn(T) -> Pin<Box<dyn Future<Output = ()> + Send>>,
+) {
     let (action_sender, mut action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
     let _ = thread::Builder::new()
@@ -79,8 +100,6 @@ pub fn new<T: Default + Clone + 'static>(task: fn(T) -> Pin<Box<dyn Future<Outpu
             let rt = Builder::new_current_thread().enable_all().build().unwrap();
 
             rt.block_on(async move {
-                let val = T::default();
-
                 while let Some(request) = action_receiver.recv().await {
                     // and handle_task
 
