@@ -138,6 +138,25 @@ fn task_fn(
                     .key(file_path.to_str().unwrap())
                     .body(ByteStream::from(request.bytes));
 
+                panic!("AWS SSO Error");
+
+                // Problems:
+                // 1. file transaction write panics if there is an issue, network does not
+                // 2. there is no result type from the persistence layer
+                // 3. DatabaseCommandResponse -> DatabaseCommandTransactionResponse -> Rollback is the only type of error
+                //  which is likely okay, because we do not apply if we timeout
+                // 4. Is there even a way to roll back if we fail to write to the WAL? -- looks like the response
+                //  is only a success... Would then need to hold onto the transaction until we can write it (no longer an async pipeline.
+                //  may need to look at the paper for the various phases of the TX. It is kind of bad that we have applied
+                //  the transaction to the database, but not to the WAL. We should probably hold onto the transaction until we can write it.
+                //
+                // Solutions:
+                // 1. Implement an error class / result (1/2/3)
+                // 2. Solve the transaction phase issues (4) -- 4 is unlikely, though increases
+                //  in the case we are using network storage. In a way a panic / restart here is okay
+                //  and because the transaction was not durably written to the WAL, a restart would be a stop-gap.
+
+                // Why do we past the tests if we fail to write the transaction?
                 let _ = req.send().await.unwrap();
 
                 let _ = request.sender.send(()).unwrap();

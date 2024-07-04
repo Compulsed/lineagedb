@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use super::Storage;
+use super::{ReadBlobState, Storage, StorageError, StorageResult};
 
 pub struct FileStorage {
     base_path: PathBuf,
@@ -39,23 +39,23 @@ impl FileStorage {
 }
 
 impl Storage for FileStorage {
-    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .open(self.get_path(&path))
-            .expect("Cannot open file");
+            .map_err(StorageError::UnableToWriteBlob)?;
 
-        file.write_all(&bytes).expect("Cannot write to file");
+        file.write_all(&bytes)
+            .map_err(StorageError::UnableToWriteBlob)
     }
 
-    // TODO: Should have a specific type file not found, let caller handle it
-    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
+    fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
         let mut file = match File::open(self.get_path(&path)) {
             Ok(file) => file,
             Err(err) => match err.kind() {
-                std::io::ErrorKind::NotFound => return Err(()),
-                _ => panic!("Error reading file: {:?}", err),
+                std::io::ErrorKind::NotFound => return Ok(ReadBlobState::NotFound),
+                _ => return Err(StorageError::UnableToReadBlob(err)),
             },
         };
 
@@ -63,54 +63,67 @@ impl Storage for FileStorage {
 
         let _ = file.read_to_end(&mut buf);
 
-        return Ok(buf);
+        return Ok(ReadBlobState::Found(buf));
     }
 
-    // Called on DB Start-up
-    fn init(&self) {
-        std::fs::create_dir_all(&self.base_path).expect("Cannot create directory");
+    // Called on DB Start-up, should be idempotent
+    fn init(&self) -> StorageResult<()> {
+        std::fs::create_dir_all(&self.base_path)
+            .map_err(StorageError::UnableToInitializePersistence)?;
+
+        Ok(())
     }
 
     // Called when the database gets cleared (via user)
-    fn reset_database(&self) {
-        fs::remove_dir_all(&self.base_path)
-            .expect("Should always exist, folder is created on init");
+    fn reset_database(&self) -> StorageResult<()> {
+        fs::remove_dir_all(&self.base_path).map_err(StorageError::UnableToInitializePersistence)?;
 
-        self.init();
+        self.init()
     }
 
-    fn transaction_write(&mut self, transaction: &[u8]) -> () {
+    fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
         // Buffered OS write, is not 'durable' without the fsync
-        self.log_file.write_all(transaction).unwrap();
+        self.log_file
+            .write_all(transaction)
+            .map_err(StorageError::UnableToWriteTransaction)
     }
 
-    fn transaction_sync(&self) -> () {
-        self.log_file.sync_all().unwrap();
+    // TODO: We seem to fail here?
+    fn transaction_sync(&self) -> StorageResult<()> {
+        self.log_file
+            .sync_all()
+            .map_err(StorageError::UnableToSyncTransactionBufferToPersistentStorage)?;
+
+        Ok(())
     }
 
-    fn transaction_flush(&mut self) -> () {
+    fn transaction_flush(&mut self) -> StorageResult<()> {
         // TODO: When we are doing a dual reset, this could fail. Add
         //  the unwrap back and think this through
-        let _ = fs::remove_file(self.transaction_file_path.clone());
+        let _ = fs::remove_file(self.transaction_file_path.clone())
+            .map_err(StorageError::UnableToDeleteTransactionLog);
 
         self.log_file = OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&self.transaction_file_path)
-            .expect("Cannot open file");
+            .map_err(StorageError::UnableToCreateNewTransactionLog)?;
+
+        Ok(())
     }
 
     // File may or may not exist
-    fn transaction_load(&mut self) -> String {
+    fn transaction_load(&mut self) -> StorageResult<String> {
         let mut contents = String::new();
 
-        OpenOptions::new()
+        let mut file = OpenOptions::new()
             .read(true)
             .open(&self.transaction_file_path)
-            .expect("Cannot open file")
-            .read_to_string(&mut contents)
-            .unwrap();
+            .map_err(StorageError::UnableToLoadPreviousTransactions)?;
 
-        contents
+        file.read_to_string(&mut contents)
+            .map_err(StorageError::UnableToLoadPreviousTransactions)?;
+
+        Ok(contents)
     }
 }

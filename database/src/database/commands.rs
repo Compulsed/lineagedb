@@ -35,6 +35,8 @@ pub enum DatabaseCommandTransactionResponse {
     Commit(Vec<StatementResult>),
     /// Transaction has been rolled back, returns a message for why it was rolled back
     Rollback(String),
+    /// Status
+    Status(String),
 }
 
 impl DatabaseCommandTransactionResponse {
@@ -85,6 +87,12 @@ impl DatabaseCommandResponse {
     pub fn transaction_rollback(message: &str) -> Self {
         DatabaseCommandResponse::DatabaseCommandTransactionResponse(
             DatabaseCommandTransactionResponse::Rollback(message.to_string()),
+        )
+    }
+
+    pub fn transaction_status(message: &str) -> Self {
+        DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+            DatabaseCommandTransactionResponse::Status(message.to_string()),
         )
     }
 }

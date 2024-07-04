@@ -8,6 +8,7 @@ use crate::{
     database::{
         commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
         orchestrator::DatabasePauseEvent,
+        utils::crash::{crash_database, DatabaseCrash},
     },
     model::statement::{Statement, StatementResult},
     persistence::{
@@ -106,9 +107,28 @@ impl Database {
             .collect();
 
         let options = DatabaseOptions::default()
+            .set_storage_engine(StorageEngine::File)
             .set_data_directory(database_dir)
             .set_restore(false)
             .set_sync_file_write(TransactionWriteMode::Off);
+
+        Self {
+            person_table: PersonTable::new(),
+            persistence: Persistence::new(options.clone()),
+            database_options: options,
+        }
+    }
+
+    pub fn new_test_other_storage() -> Self {
+        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            .iter()
+            .collect();
+
+        let options = DatabaseOptions::default()
+            // .set_storage_engine(StorageEngine::S3("dalesalter-test-bucket".to_string()))
+            .set_data_directory(database_dir)
+            .set_restore(false)
+            .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 
         Self {
             person_table: PersonTable::new(),
@@ -126,9 +146,17 @@ impl Database {
         let row_count = self.person_table.person_rows.len();
 
         // Resets tx id, scrubs wal
-        self.persistence
+        // NOTE: This is kind of odd, why do we need to delete the WAL off of disk if the
+        //  crash database will handle this? -- We still have to call this method to delete
+        //  transaction state out of memory
+        let flush_transactions_from_disk_result = self
+            .persistence
             .transaction_wal
             .flush_transactions(database_pause);
+
+        if let Err(e) = flush_transactions_from_disk_result {
+            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
+        }
 
         // Reset the transaction id counter
         // TODO: We should make flushing and deleting separate operations
@@ -138,7 +166,11 @@ impl Database {
             .set_current_transaction_id(TransactionId::new_first_transaction());
 
         // Clean out snapshot and transaction log
-        self.persistence.reset();
+        let result = self.persistence.reset();
+
+        if let Err(e) = result {
+            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
+        }
 
         // Resets the in-memory persons table
         self.person_table.reset(database_pause);
@@ -250,21 +282,44 @@ impl Database {
                             let table = &database.person_table;
 
                             // Persist current state to disk
-                            database.persistence.snapshot_manager.create_snapshot(
-                                database_reset_guard,
-                                table,
-                                transaction_id,
-                            );
+                            let snapshot_request = database
+                                .persistence
+                                .snapshot_manager
+                                .create_snapshot(database_reset_guard, table, transaction_id);
+
+                            if let Err(e) = snapshot_request {
+                                let _ = resolver.send(DatabaseCommandResponse::control_error(
+                                    &format!(
+                                    "Failed to create snapshot database is now inconsistent: {}",
+                                    e
+                                ),
+                                ));
+
+                                crash_database(DatabaseCrash::InconsistentStorageFromSnapshot(e));
+                            }
 
                             let flush_transactions = database
                                 .persistence
                                 .transaction_wal
                                 .flush_transactions(database_reset_guard);
 
+                            let flush_transactions_count = match flush_transactions {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    let _ = resolver.send(DatabaseCommandResponse::control_error(
+                                        &format!("Failed to create snapshot database is now inconsistent: {}", e),
+                                    ));
+
+                                    crash_database(DatabaseCrash::InconsistentStorageFromSnapshot(
+                                        e,
+                                    ));
+                                }
+                            };
+
                             let _ =
                                 resolver.send(DatabaseCommandResponse::control_success(&format!(
                                     "Successfully created snapshot: compressed {} txs",
-                                    flush_transactions
+                                    flush_transactions_count
                                 )));
 
                             continue;
@@ -303,7 +358,15 @@ impl Database {
         }
     }
 
+    /// Starts the database and returns a request manager that can be used to send requests to the database
+    /// 
+    /// TODO: Is it sufficient to just panic here or if there is something wrong should we crash the database?
     pub fn run(self, threads: usize) -> RequestManager {
+        self.persistence.init().expect(
+            r#"Should always be able to initialize persistence, e.g. setting up files, database connections, etc.
+            if we are unable to it means we cannot durably write and thus, need to panic"#,
+        );
+
         if self.database_options.restore {
             let transaction_log_location = self.database_options.data_directory.clone();
 
@@ -318,14 +381,19 @@ impl Database {
             let (snapshot_count, metadata) = self
                 .persistence
                 .snapshot_manager
-                .restore_snapshot(&self.person_table);
+                .restore_snapshot(&self.person_table)
+                .expect(
+                    r#"Once persistence has been initialized there should be no issues restoring state from storage"#,
+                );
 
             // If there was a snapshot to restore from we update the transaction log
             self.persistence
                 .transaction_wal
                 .set_current_transaction_id(metadata.current_transaction_id.clone());
 
-            let restored_transactions = self.persistence.transaction_wal.restore();
+            let restored_transactions = self.persistence.transaction_wal.restore()
+                .expect(r#"Once persistence has been initialized there should be no issues restoring state from storage"#);
+
             let restored_transaction_count = restored_transactions.len();
 
             // Then add states from the transaction log

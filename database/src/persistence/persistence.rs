@@ -4,7 +4,7 @@ use crate::database::database::DatabaseOptions;
 
 use super::{
     snapshot::SnapshotManager,
-    storage::{Storage, StorageEngine},
+    storage::{Storage, StorageEngine, StorageResult},
     transaction::TransactionWAL,
 };
 
@@ -20,17 +20,22 @@ impl Persistence {
         let storage: Arc<Mutex<dyn Storage + Sync + Send>> =
             StorageEngine::get_engine(options.clone());
 
-        // Profiles the environment to ensure we are ready to write
-        storage.lock().unwrap().init();
+        let mut transaction_wal = TransactionWAL::new(options.clone(), storage.clone());
+
+        transaction_wal.init();
 
         Self {
-            transaction_wal: TransactionWAL::new(options.clone(), storage.clone()),
+            transaction_wal: transaction_wal,
             snapshot_manager: SnapshotManager::new(storage.clone()),
             storage,
         }
     }
 
-    pub fn reset(&self) {
-        self.storage.lock().unwrap().reset_database();
+    pub fn init(&self) -> StorageResult<()> {
+        return self.storage.lock().unwrap().init();
+    }
+
+    pub fn reset(&self) -> StorageResult<()> {
+        self.storage.lock().unwrap().reset_database()
     }
 }

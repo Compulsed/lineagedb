@@ -2,6 +2,7 @@ use flume::Sender;
 
 use super::request_manager::RequestManager;
 
+// Is there a way to replace this with a barrier synchronization?
 pub struct DatabasePauseEvent {
     resume_txs: Vec<Sender<()>>,
 }

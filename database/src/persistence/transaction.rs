@@ -8,9 +8,10 @@ use crate::consts::consts::TransactionId;
 use crate::database::commands::DatabaseCommandResponse;
 use crate::database::database::{ApplyMode, DatabaseOptions};
 use crate::database::orchestrator::DatabasePauseEvent;
+use crate::database::utils::crash::{crash_database, DatabaseCrash};
 use crate::model::statement::Statement;
 
-use super::storage::Storage;
+use super::storage::{Storage, StorageResult};
 
 // Todo: use this status to denote if we have done an fsync on the transaction log
 //  once fsync is done, THEN we can consider the transaction committed / durable
@@ -43,17 +44,25 @@ pub struct Transaction {
     pub status: TransactionStatus,
 }
 
-struct TransactionCommitData {
+pub struct TransactionCommitData {
     applied_transaction_id: TransactionId,
     statements: Vec<Statement>,
     response: DatabaseCommandResponse,
     resolver: oneshot::Sender<DatabaseCommandResponse>,
 }
 
+pub enum TransactionWalStatus {
+    Ready(mpsc::Sender<TransactionCommitData>),
+    Uninitialized,
+}
+
+// By decoupling init from thread start we are able to initialize anything (files, directories, etc). that is needed for the WAL to start
+//  without immediately starting it.
 pub struct TransactionWAL {
     current_transaction_id: LocalClock,
+    database_options: DatabaseOptions,
     size: AtomicUsize,
-    commit_sender: mpsc::Sender<TransactionCommitData>,
+    commit_sender: TransactionWalStatus,
     storage: Arc<Mutex<dyn Storage + Sync + Send>>,
 }
 
@@ -62,12 +71,24 @@ impl TransactionWAL {
         database_options: DatabaseOptions,
         storage: Arc<Mutex<dyn Storage + Sync + Send>>,
     ) -> Self {
+        Self {
+            current_transaction_id: LocalClock::new(),
+            size: AtomicUsize::new(0),
+            database_options,
+            commit_sender: TransactionWalStatus::Uninitialized,
+            storage,
+        }
+    }
+
+    pub fn init(&mut self) {
+        let sync_file_write = self.database_options.write_mode.clone();
+        let storage_thread = self.storage.clone();
+
         let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
 
-        let sync_file_write = database_options.write_mode;
-        let storage_thread = storage.clone();
+        // Mark the WAL as ready to accept transactions
+        self.commit_sender = TransactionWalStatus::Ready(sender);
 
-        // TODO: Should we spawn into its own method?
         let _ = thread::Builder::new()
             .name("Transaction Manager".to_string())
             .spawn(move || {
@@ -98,12 +119,25 @@ impl TransactionWAL {
 
                             // - NOTE: For disk, this is fast (because it is technically async, the OS will buffer the writes)
                             //  though for S3 it is very slow, is there any way we can buffer this?
-                            // - NOTE: We should return an error type here, what happens if out credentials timeout? The write
-                            //  looks durable but isn't (because transaction_sync always returns Ok(()) for network storage
-                            worker_storage
+                            let result = worker_storage
                                 .lock()
                                 .unwrap()
-                                .transaction_write(transaction_json_line.as_bytes())
+                                .transaction_write(transaction_json_line.as_bytes());
+
+                            // There are a few problems here:
+                            // 1. We are 'committing' to world state, and other writes can read that commit BEFORE it is durable to disk.
+                            //      the only benefit to this approach is that at least we are not responding committed to the CLIENT until it is durable.
+                            // 2. The above is not great -- though this type of error is especially bad, this is because once we get to this point
+                            //      of not being able to commit the transaction to disk, the world state is now invalid and non-recoverable w/o
+                            //      restoring from the existing WAL / snapshot. Crash, and let the caller restart the DB process.
+                            if let Err(e) = result {
+                                let _ =
+                                    resolver.send(DatabaseCommandResponse::transaction_rollback(
+                                        "Transaction aborted. Critical error writing to WAL, world state is invalid. Database crash",
+                                    ));
+
+                                crash_database(DatabaseCrash::InconsistentUncommittedInMemoryWorldStateFromWALWrite(e));
+                            }
                         }
 
                         batch.push((resolver, response));
@@ -116,9 +150,24 @@ impl TransactionWAL {
                     //   e.g. every 5ms, we flush the log and send back to the caller we have committed.
                     //
                     // Note: The observed speed of fsync is ~3ms on my machine. This is a _very_ slow operation.
-                    if let TransactionWriteMode::File(m) = &sync_file_write {
-                        if m == &TransactionFileWriteMode::Sync {
-                            worker_storage.lock().unwrap().transaction_sync();
+                    if batch.len() > 0 {
+                        if let TransactionWriteMode::File(m) = &sync_file_write {
+                            if m == &TransactionFileWriteMode::Sync {
+                                let transaction_sync_error_result = worker_storage.lock().unwrap().transaction_sync();
+    
+                                if let Err(e) = transaction_sync_error_result {
+                                    log::error!("Unable to fsync transaction to disk: {}", e);
+    
+                                    for (resolver, _) in batch {
+                                        let _ = resolver.send(DatabaseCommandResponse::transaction_status(
+                                            "Unable to flush transaction to disk, unsure if transaction is durable",
+                                        ));
+                                    }
+    
+                                    continue;
+                                }
+    
+                            }
                         }
                     }
 
@@ -127,24 +176,17 @@ impl TransactionWAL {
                     }
                 }
             });
-
-        Self {
-            commit_sender: sender,
-            current_transaction_id: LocalClock::new(),
-            size: AtomicUsize::new(0),
-            storage,
-        }
     }
 
     // We have persisted the current state, we can delete the transaction log
-    pub fn flush_transactions(&self, _: &DatabasePauseEvent) -> usize {
+    pub fn flush_transactions(&self, _: &DatabasePauseEvent) -> StorageResult<usize> {
         let flushed_size = self.size.load(Ordering::SeqCst);
 
         self.size.store(0, Ordering::SeqCst);
 
-        self.storage.lock().unwrap().transaction_flush();
+        self.storage.lock().unwrap().transaction_flush()?;
 
-        flushed_size
+        Ok(flushed_size)
     }
 
     pub fn get_increment_current_transaction_id(&self) -> TransactionId {
@@ -166,17 +208,27 @@ impl TransactionWAL {
                 resolver,
             };
 
-            self.commit_sender.send(commit_data).unwrap();
+            match self.commit_sender {
+                TransactionWalStatus::Ready(ref sender) => {
+                    sender.send(commit_data).unwrap();
+                }
+                TransactionWalStatus::Uninitialized => {
+                    panic!(
+                        r#"The WAL must be initialized before we can perform a commit. This is a programmer error because WAL initialization
+                        is not dynamic and should be performed as a part of the database initialization"#
+                    );
+                }
+            }
         }
 
         // We have committed a transaction, add it to our counter
         self.size.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn restore(&self) -> Vec<Transaction> {
+    pub fn restore(&self) -> StorageResult<Vec<Transaction>> {
         let mut transactions: Vec<Transaction> = vec![];
 
-        let transactions_data = self.storage.lock().unwrap().transaction_load();
+        let transactions_data = self.storage.lock().unwrap().transaction_load()?;
 
         for transaction_string in transactions_data.split('\n') {
             if transaction_string.is_empty() {
@@ -186,7 +238,7 @@ impl TransactionWAL {
             transactions.push(serde_json::from_str(transaction_string).unwrap());
         }
 
-        transactions
+        Ok(transactions)
     }
 
     pub fn set_current_transaction_id(&self, transaction_id: TransactionId) {

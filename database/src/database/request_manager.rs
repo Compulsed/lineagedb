@@ -30,6 +30,10 @@ pub enum RequestManagerError {
     #[error("Rolled back transaction: {0}")]
     TransactionRollback(String),
 
+    /// From transaction rollbacks
+    #[error("Transaction status: {0}")]
+    TransactionStatus(String),
+
     /// From control commands
     #[error("Database Error Status: {0}")]
     DatabaseErrorStatus(String),
@@ -246,6 +250,9 @@ fn map_response(
                 }
                 DatabaseCommandTransactionResponse::Rollback(s) => {
                     Err(RequestManagerError::TransactionRollback(s))
+                }
+                DatabaseCommandTransactionResponse::Status(s) => {
+                    Err(RequestManagerError::TransactionStatus(s))
                 }
             }
         }
@@ -564,5 +571,27 @@ mod tests {
             .expect("should not timeout");
 
         assert_eq!(added_person, person);
+    }
+
+    mod with_storage {
+        use super::*;
+
+        #[test]
+        fn with_storage() {
+            let request_manager = Database::new_test_other_storage().run(1);
+
+            let person = Person {
+                id: EntityId::new(),
+                full_name: "Test".to_string(),
+                email: Some(Uuid::new_v4().to_string()),
+            };
+
+            let added_person = request_manager
+                .send_add_task(person.clone())
+                .get()
+                .expect("should not timeout");
+
+            assert_eq!(added_person, person);
+        }
     }
 }
