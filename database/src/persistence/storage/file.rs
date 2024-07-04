@@ -16,6 +16,10 @@ impl FileStorage {
     pub fn new(base_path: PathBuf) -> Self {
         let transaction_file_path = base_path.join("transaction_log.json");
 
+        // TODO: This is duplicated from the init function
+        //  should this be refactored into a common function?
+        std::fs::create_dir_all(&base_path).expect("Cannot create directory");
+
         let log_file = OpenOptions::new()
             .append(true)
             .create(true)

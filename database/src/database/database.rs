@@ -189,7 +189,7 @@ impl Database {
                                     // Once we have successfully shutdown all threads, report success to the caller
                                     let _ = resolver.send(
                                         DatabaseCommandResponse::control_success(&format!(
-                                            "[Thread - {}] Successfully shutdown database",
+                                            "[Thread: {}] Successfully shutdown database",
                                             thread_id
                                         )),
                                     );
@@ -197,7 +197,7 @@ impl Database {
                                 ShutdownRequest::Worker => {
                                     let _ = resolver.send(
                                         DatabaseCommandResponse::control_success(&format!(
-                                            "[Thread - {}] Successfully shut down",
+                                            "[Thread: {}] Successfully shut down",
                                             thread_id
                                         )),
                                     );
@@ -615,6 +615,7 @@ mod tests {
         }
 
         #[test]
+        #[ignore = "with multiple writers we no longer support database constraints"]
         fn add_multiple_transaction_rollback() {
             let database = Database::new_test();
 
@@ -655,6 +656,7 @@ mod tests {
         use super::*;
 
         #[test]
+        #[ignore = "with multiple writers we no longer support database constraints"]
         fn rollback_response() {
             // Given an empty database
             let database = Database::new_test();
@@ -696,6 +698,7 @@ mod tests {
         }
 
         #[test]
+        #[ignore = "with multiple writers we no longer support database constraints"]
         fn row_table_is_empty() {
             // Given an empty database
             let database = Database::new_test();

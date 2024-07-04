@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use dynamodb::DynamoDBStorage;
 use file::FileStorage;
+use postgres::PgStorage;
 use s3::S3Storage;
 
 use crate::database::database::DatabaseOptions;
@@ -9,6 +10,7 @@ use crate::database::database::DatabaseOptions;
 pub mod dynamodb;
 pub mod file;
 pub mod network;
+pub mod postgres;
 pub mod s3;
 
 pub trait Storage {
@@ -32,6 +34,7 @@ pub enum StorageEngine {
     File,
     S3(String),
     DynamoDB(String),
+    Postgres(String),
 }
 
 impl StorageEngine {
@@ -46,6 +49,10 @@ impl StorageEngine {
             ))),
             StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
                 table.clone(),
+                options.data_directory.clone(),
+            ))),
+            StorageEngine::Postgres(database) => Arc::new(Mutex::new(PgStorage::new(
+                database.clone(),
                 options.data_directory.clone(),
             ))),
         }
