@@ -88,7 +88,6 @@ impl Storage for FileStorage {
             .map_err(StorageError::UnableToWriteTransaction)
     }
 
-    // TODO: We seem to fail here?
     fn transaction_sync(&self) -> StorageResult<()> {
         self.log_file
             .sync_all()

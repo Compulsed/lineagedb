@@ -359,8 +359,9 @@ impl Database {
     }
 
     /// Starts the database and returns a request manager that can be used to send requests to the database
-    /// 
-    /// TODO: Is it sufficient to just panic here or if there is something wrong should we crash the database?
+    ///
+    /// Note: Because this method is being called in the main thread, it is sufficient to just panic and the process
+    ///     will exist
     pub fn run(self, threads: usize) -> RequestManager {
         self.persistence.init().expect(
             r#"Should always be able to initialize persistence, e.g. setting up files, database connections, etc.
