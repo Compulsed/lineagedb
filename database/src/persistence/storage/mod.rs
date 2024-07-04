@@ -1,5 +1,5 @@
 use std::{
-    io,
+    any, io,
     sync::{Arc, Mutex},
 };
 
@@ -17,6 +17,19 @@ pub mod file;
 // pub mod postgres;
 // pub mod s3;
 
+/*
+Questions:
+- How do we handle the errors from different types of storage engines? does each engine implement their own error type?
+    though this is kind of odd because they are the same type of error, just different implementations.
+- Maybe we need to abstract the error type, as in, these errors are more behavioral rather than 'what'.
+
+Options:
+1. Each storage engine implements their own error type
+    1. Files is:                        io:Error
+    2. Cloud / Postgres is different    credentials, network, etc.
+2. Unable to is now just a result of the storage specific implementation errors (generic...? dyn?)
+3. I guess this might be where refying an error if we have to?...
+*/
 #[derive(Error, Debug)]
 pub enum StorageError {
     #[error("Unhandled")]
@@ -24,7 +37,7 @@ pub enum StorageError {
 
     // Control plane
     #[error("Unable to initialize the storage engine")]
-    UnableToInitializePersistence(io::Error),
+    UnableToInitializePersistence(anyhow::Error),
 
     #[error("Unable to reset the storage engine")]
     UnableToResetPersistence(io::Error),
@@ -51,6 +64,16 @@ pub enum StorageError {
 
     #[error("Unable load previous transactions")]
     UnableToLoadPreviousTransactions(io::Error),
+}
+
+#[derive(Error, Debug)]
+
+pub enum UnableToInitializePersistenceStruct {
+    Io { source: io::Error },
+}
+
+pub fn from_io_error(err: io::Error) -> StorageError {
+    StorageError::UnableToInitializePersistence(anyhow::Error::new(err))
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;

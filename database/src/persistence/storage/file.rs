@@ -4,7 +4,9 @@ use std::{
     path::PathBuf,
 };
 
-use super::{ReadBlobState, Storage, StorageError, StorageResult};
+use super::{
+    ReadBlobState, Storage, StorageError, StorageResult, UnableToInitializePersistenceStruct,
+};
 
 pub struct FileStorage {
     base_path: PathBuf,
@@ -69,14 +71,14 @@ impl Storage for FileStorage {
     // Called on DB Start-up, should be idempotent
     fn init(&self) -> StorageResult<()> {
         std::fs::create_dir_all(&self.base_path)
-            .map_err(StorageError::UnableToInitializePersistence)?;
+            .map_err(|e| StorageError::UnableToInitializePersistence(anyhow::Error::new(e)))?;
 
         Ok(())
     }
 
     // Called when the database gets cleared (via user)
     fn reset_database(&self) -> StorageResult<()> {
-        fs::remove_dir_all(&self.base_path).map_err(StorageError::UnableToInitializePersistence)?;
+        fs::remove_dir_all(&self.base_path).map_err(UnableToInitializePersistenceStruct::Io)?;
 
         self.init()
     }
