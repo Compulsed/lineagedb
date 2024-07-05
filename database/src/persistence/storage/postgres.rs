@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use serde_json::Value;
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::sync::mpsc::{self};
 use tokio_postgres::{Client, NoTls};
 
@@ -14,15 +14,10 @@ pub struct PgStorage {
 }
 
 impl PgStorage {
-    pub fn new(database: String, base_path: PathBuf) -> Self {
+    pub fn new(options: PostgresOptions) -> Self {
         let (action_sender, action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let data = PgEnv {
-            database,
-            base_path,
-        };
-
-        start_runtime(action_receiver, data, task_fn, client_fn);
+        start_runtime(action_receiver, options, task_fn, client_fn);
 
         Self {
             network_storage: NetworkStorage {
@@ -32,20 +27,65 @@ impl PgStorage {
     }
 }
 
-#[derive(Clone)]
-struct PgEnv {
-    database: String,
-    base_path: PathBuf,
+#[derive(Debug, Clone)]
+pub struct PostgresOptions {
+    pub database: String,
+    pub host: String,
+    pub user: String,
+    pub password: String,
 }
 
-fn client_fn() -> Pin<Box<dyn Future<Output = Arc<Client>> + Send + 'static>> {
-    Box::pin(async {
-        // TODO: Make this generic
+impl PostgresOptions {
+    pub fn new_local() -> Self {
+        Self {
+            user: "dalesalter".to_string(),
+            database: "dalesalter1".to_string(),
+            host: "localhost".to_string(),
+            password: "mysecretpassword".to_string(),
+        }
+    }
+}
+
+pub fn format_connection_string(options: &PostgresOptions, database_name: &str) -> String {
+    format!(
+        r#"
+            host={host}
+            user={user}
+            password={password}
+            dbname={dbname}
+        "#,
+        dbname = database_name,
+        host = options.host,
+        password = options.password,
+        user = options.user,
+    )
+}
+
+fn client_fn(
+    options: PostgresOptions,
+) -> Pin<Box<dyn Future<Output = Arc<Client>> + Send + 'static>> {
+    Box::pin(async move {
+        // Database creation must be done via the servicing / admin user 'postgres'
+        let (admin_client, admin_connection) =
+            tokio_postgres::connect(&format_connection_string(&options, "postgres"), NoTls)
+                .await
+                .unwrap();
+
+        tokio::spawn(async move {
+            if let Err(e) = admin_connection.await {
+                eprintln!("connection error: {}", e);
+            }
+        });
+
+        let create_database = format!(r#"CREATE DATABASE {};"#, &options.database);
+
+        // There is no IF NOT EXISTs, attempt to create the database and if it fails that's okay
+        //  the DB already exists
+        let _ = admin_client.execute(&create_database, &[]).await;
+
+        // Return a connection string with our upserted database
         let (client, connection) = tokio_postgres::connect(
-            r#"
-            host=localhost
-            user=dalesalter
-            password=mysecretpassword"#,
+            &format_connection_string(&options, &options.database),
             NoTls,
         )
         .await
@@ -76,7 +116,7 @@ fn client_fn() -> Pin<Box<dyn Future<Output = Arc<Client>> + Send + 'static>> {
 
         let transaction_table = r#"
             CREATE TABLE IF NOT EXISTS "public"."transaction" (
-                "id" int4 NOT NULL DEFAULT nextval('tranaction_id_seq'::regclass),
+                "id" int4 NOT NULL DEFAULT nextval('transaction_id_seq'::regclass),
                 "data" jsonb,
                 PRIMARY KEY ("id")
             );
@@ -131,16 +171,13 @@ impl Storage for PgStorage {
 //  be to find an API that allows us to create a transaction w/o multiple await points, another
 //  way might be to inject 'static clients each take task_fn is invoked. This could be done via
 //  a connection pool. Though again, this is a little odd because we mutex the persistence client (meaning)
-//  there already is exclusive access.
+//  there already is exclusive access. Wild.
 fn task_fn(
-    data: PgEnv,
+    data: PostgresOptions,
     client: Arc<Arc<Client>>,
     action: NetworkStorageAction,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
     Box::pin(async move {
-        // TODO: Move the database into the set-up
-        let database = &data.database;
-
         match action {
             NetworkStorageAction::Reset(r) => {
                 let delete_transactions = r#"

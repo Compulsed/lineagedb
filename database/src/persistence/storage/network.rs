@@ -141,7 +141,7 @@ pub fn start_runtime<T: Clone + Send + 'static, C: Clone + Send + 'static>(
     mut action_receiver: Receiver<NetworkStorageAction>,
     context: T,
     task: fn(T, Arc<C>, NetworkStorageAction) -> Pin<Box<dyn Future<Output = ()> + Send>>,
-    client: fn() -> Pin<Box<dyn Future<Output = C> + Send>>,
+    client: fn(T) -> Pin<Box<dyn Future<Output = C> + Send>>,
 ) {
     let _ = thread::Builder::new()
         .name("AWS SDK Tokio".to_string())
@@ -149,7 +149,7 @@ pub fn start_runtime<T: Clone + Send + 'static, C: Clone + Send + 'static>(
             let rt = Builder::new_current_thread().enable_all().build().unwrap();
 
             rt.block_on(async move {
-                let client = Arc::new(client().await);
+                let client = Arc::new(client(context.clone()).await);
 
                 while let Some(request) = action_receiver.recv().await {
                     tokio::spawn(task(context.clone(), client.clone(), request));

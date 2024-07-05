@@ -35,7 +35,7 @@ fn main() {
 
     log::info!("TCP Server running on {}:{}", args.address, args.port);
 
-    let database_options = DatabaseOptions::default().set_data_directory(args.data);
+    let database_options = DatabaseOptions::default();
 
     // Setup database
     let rm = Database::new(database_options).run(5);

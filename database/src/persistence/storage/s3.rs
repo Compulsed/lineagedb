@@ -38,7 +38,7 @@ struct S3Env {
     base_path: PathBuf,
 }
 
-fn client_fn() -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
+fn client_fn(options: S3Env) -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
     Box::pin(async {
         let sdk = aws_config::load_from_env().await;
 

@@ -13,7 +13,7 @@ use crate::{
     model::statement::{Statement, StatementResult},
     persistence::{
         persistence::Persistence,
-        storage::StorageEngine,
+        storage::{postgres::PostgresOptions, StorageEngine},
         transaction::{TransactionFileWriteMode, TransactionWriteMode},
     },
 };
@@ -26,7 +26,6 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct DatabaseOptions {
-    pub data_directory: PathBuf,
     pub restore: bool,
     pub write_mode: TransactionWriteMode,
     pub storage_engine: StorageEngine,
@@ -34,13 +33,6 @@ pub struct DatabaseOptions {
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
-    /// Defines the directory where the database will store its data
-    /// TODO: Move this into the the engine implementation
-    pub fn set_data_directory(mut self, data_directory: PathBuf) -> Self {
-        self.data_directory = data_directory;
-        self
-    }
-
     /// Defines whether we should attempt to restore the database from a snapshot and transaction log
     /// on startup
     pub fn set_restore(mut self, restore: bool) -> Self {
@@ -65,9 +57,8 @@ impl Default for DatabaseOptions {
     fn default() -> Self {
         // Defaults to $CDW/data
         Self {
-            data_directory: PathBuf::from("data"),
             write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
-            storage_engine: StorageEngine::File,
+            storage_engine: StorageEngine::File(PathBuf::from("data")),
             restore: true,
         }
     }
@@ -108,8 +99,7 @@ impl Database {
             .collect();
 
         let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::File)
-            .set_data_directory(database_dir)
+            .set_storage_engine(StorageEngine::File(database_dir))
             .set_restore(false)
             .set_sync_file_write(TransactionWriteMode::Off);
 
@@ -121,13 +111,8 @@ impl Database {
     }
 
     pub fn new_test_other_storage() -> Self {
-        // let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-        //     .iter()
-        //     .collect();
-
         let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::Postgres("TODO".to_string()))
-            // .set_data_directory(database_dir)
+            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_local()))
             .set_restore(false)
             .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 
@@ -370,12 +355,14 @@ impl Database {
         );
 
         if self.database_options.restore {
-            let transaction_log_location = self.database_options.data_directory.clone();
-
-            log::info!(
-                "Transaction Log Location: [{}]",
-                transaction_log_location.display()
-            );
+            if let StorageEngine::File(transaction_log_location) =
+                &self.database_options.storage_engine
+            {
+                log::info!(
+                    "Transaction Log Location: [{}]",
+                    transaction_log_location.display()
+                );
+            }
 
             let now = Instant::now();
 

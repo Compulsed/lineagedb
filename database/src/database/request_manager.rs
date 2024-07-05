@@ -590,7 +590,7 @@ mod tests {
         use crate::{
             database::{commands::ShutdownRequest, database::DatabaseOptions},
             persistence::{
-                storage::StorageEngine,
+                storage::{postgres::PostgresOptions, StorageEngine},
                 transaction::{TransactionFileWriteMode, TransactionWriteMode},
             },
         };
@@ -599,21 +599,20 @@ mod tests {
 
         #[test]
         fn with_storage_file() {
-            test_restore_with_engine(StorageEngine::File);
-        }
-
-        #[test]
-        fn with_storage_pg() {
-            test_restore_with_engine(StorageEngine::Postgres("TODO".to_string()));
-        }
-
-        fn test_restore_with_engine(engine: StorageEngine) {
             let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
                 .iter()
                 .collect();
 
+            test_restore_with_engine(StorageEngine::File(database_dir));
+        }
+
+        #[test]
+        fn with_storage_pg() {
+            test_restore_with_engine(StorageEngine::Postgres(PostgresOptions::new_local()));
+        }
+
+        fn test_restore_with_engine(engine: StorageEngine) {
             let options_initial = DatabaseOptions::default()
-                .set_data_directory(database_dir.clone())
                 .set_storage_engine(engine.clone())
                 .set_restore(false)
                 .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
@@ -652,7 +651,6 @@ mod tests {
             // // -- Restore from disk
 
             let options_restore = DatabaseOptions::default()
-                .set_data_directory(database_dir.clone())
                 .set_storage_engine(engine)
                 .set_restore(true)
                 .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));

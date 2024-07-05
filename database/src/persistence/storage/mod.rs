@@ -1,12 +1,13 @@
 use crate::database::database::DatabaseOptions;
 use std::{
     io,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 // use dynamodb::DynamoDBStorage;
 use file::FileStorage;
-use postgres::PgStorage;
+use postgres::{PgStorage, PostgresOptions};
 use s3::S3Storage;
 use thiserror::Error;
 
@@ -100,30 +101,27 @@ pub trait Storage {
 
 #[derive(Debug, Clone)]
 pub enum StorageEngine {
-    File,
-    S3(String),
+    File(PathBuf),
+    S3(String, PathBuf),
     // DynamoDB(String),
-    Postgres(String),
+    Postgres(PostgresOptions),
 }
 
 impl StorageEngine {
     pub fn get_engine(options: DatabaseOptions) -> Arc<Mutex<dyn Storage + Sync + Send>> {
         match options.storage_engine {
-            StorageEngine::File => {
-                Arc::new(Mutex::new(FileStorage::new(options.data_directory.clone())))
-            }
-            StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
+            StorageEngine::File(base_dir) => Arc::new(Mutex::new(FileStorage::new(base_dir))),
+            StorageEngine::S3(bucket, base_path) => Arc::new(Mutex::new(S3Storage::new(
                 bucket.clone(),
-                options.data_directory.clone(),
+                base_path.clone(),
             ))),
             // StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
             //     table.clone(),
             //     options.data_directory.clone(),
             // ))),
-            StorageEngine::Postgres(database) => Arc::new(Mutex::new(PgStorage::new(
-                database.clone(),
-                options.data_directory.clone(),
-            ))),
+            StorageEngine::Postgres(options) => {
+                Arc::new(Mutex::new(PgStorage::new(options.clone())))
+            }
         }
     }
 }
