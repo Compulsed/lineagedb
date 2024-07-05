@@ -5,26 +5,26 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 
-use super::Storage;
+use super::{ReadBlobState, Storage, StorageResult};
 
 pub struct WriteFileRequest {
     pub bytes: Vec<u8>,
     pub file_path: String,
-    pub sender: oneshot::Sender<()>,
+    pub sender: oneshot::Sender<StorageResult<()>>,
 }
 
 pub struct ResetFileRequest {
-    pub sender: oneshot::Sender<()>,
+    pub sender: oneshot::Sender<StorageResult<()>>,
 }
 
 pub struct ReadFileRequest {
     pub file_path: String,
-    pub sender: oneshot::Sender<Result<Vec<u8>, ()>>,
+    pub sender: oneshot::Sender<StorageResult<ReadBlobState>>,
 }
 
 pub struct TransactionWriteRequest {
     pub bytes: Vec<u8>,
-    pub sender: oneshot::Sender<()>,
+    pub sender: oneshot::Sender<StorageResult<()>>,
 }
 
 pub enum NetworkStorageAction {
@@ -32,8 +32,8 @@ pub enum NetworkStorageAction {
     ReadBlob(ReadFileRequest),
     Reset(ResetFileRequest),
     TransactionWrite(TransactionWriteRequest),
-    TransactionFlush(oneshot::Sender<()>),
-    TransactionLoad(oneshot::Sender<String>),
+    TransactionFlush(oneshot::Sender<StorageResult<()>>),
+    TransactionLoad(oneshot::Sender<StorageResult<String>>),
 }
 
 pub struct NetworkStorage {
@@ -41,8 +41,8 @@ pub struct NetworkStorage {
 }
 
 impl Storage for NetworkStorage {
-    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
         let write_file_request = NetworkStorageAction::WriteBlob(WriteFileRequest {
             file_path: path,
@@ -56,11 +56,11 @@ impl Storage for NetworkStorage {
 
         let _ = receiver.recv();
 
-        return ();
+        Ok(())
     }
 
-    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
-        let (sender, receiver) = oneshot::channel::<Result<Vec<u8>, ()>>();
+    fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<ReadBlobState>>();
 
         // Is the problem that this is happening within the main thread?
         self.action_sender
@@ -73,12 +73,14 @@ impl Storage for NetworkStorage {
         receiver.recv().unwrap()
     }
 
-    fn init(&self) {
+    fn init(&self) -> StorageResult<()> {
         // This method is not needed, s3 does not have folders
+
+        Ok(())
     }
 
-    fn reset_database(&self) {
-        let (sender, receiver) = oneshot::channel::<()>();
+    fn reset_database(&self) -> StorageResult<()> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
         self.action_sender
             .blocking_send(NetworkStorageAction::Reset(ResetFileRequest {
@@ -87,10 +89,12 @@ impl Storage for NetworkStorage {
             .unwrap();
 
         let _ = receiver.recv();
+
+        Ok(())
     }
 
-    fn transaction_write(&mut self, transaction: &[u8]) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
+    fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
         // TODO: Externalize transaction log
         self.action_sender
@@ -103,10 +107,12 @@ impl Storage for NetworkStorage {
             .unwrap();
 
         let _ = receiver.recv();
+
+        Ok(())
     }
 
-    fn transaction_load(&mut self) -> String {
-        let (sender, receiver) = oneshot::channel::<String>();
+    fn transaction_load(&mut self) -> StorageResult<String> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<String>>();
 
         self.action_sender
             .blocking_send(NetworkStorageAction::TransactionLoad(sender))
@@ -115,8 +121,8 @@ impl Storage for NetworkStorage {
         receiver.recv().unwrap()
     }
 
-    fn transaction_flush(&mut self) -> () {
-        let (sender, receiver) = oneshot::channel::<()>();
+    fn transaction_flush(&mut self) -> StorageResult<()> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
         self.action_sender
             .blocking_send(NetworkStorageAction::TransactionFlush(sender))
@@ -125,8 +131,9 @@ impl Storage for NetworkStorage {
         receiver.recv().unwrap()
     }
 
-    fn transaction_sync(&self) -> () {
+    fn transaction_sync(&self) -> StorageResult<()> {
         // For s3 we do not need a disk sync
+        Ok(())
     }
 }
 

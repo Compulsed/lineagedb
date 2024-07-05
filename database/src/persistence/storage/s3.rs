@@ -1,12 +1,13 @@
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
-use aws_sdk_s3::{primitives::ByteStream, Client};
+use anyhow::anyhow;
+use aws_sdk_s3::{primitives::ByteStream, Client, Error as S3Error};
 use chrono::Utc;
 use tokio::sync::mpsc::{self};
 
 use super::{
     network::{start_runtime, NetworkStorage, NetworkStorageAction},
-    Storage,
+    ReadBlobState, Storage, StorageError, StorageResult,
 };
 
 const TRANSACTION_LOG_PATH: &str = "transaction_log";
@@ -47,39 +48,42 @@ fn client_fn() -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
 
 // Is there a way to avoid this duplication?
 impl Storage for S3Storage {
-    fn init(&self) {
-        self.network_storage.init();
+    fn init(&self) -> StorageResult<()> {
+        self.network_storage.init()
     }
 
-    fn reset_database(&self) {
-        self.network_storage.reset_database();
+    fn reset_database(&self) -> StorageResult<()> {
+        self.network_storage.reset_database()
     }
 
-    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
-        self.network_storage.write_blob(path, bytes);
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
+        self.network_storage.write_blob(path, bytes)
     }
 
-    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
+    fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
         self.network_storage.read_blob(path)
     }
 
-    fn transaction_write(&mut self, transaction: &[u8]) -> () {
-        self.network_storage.transaction_write(transaction);
+    fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
+        self.network_storage.transaction_write(transaction)
     }
 
-    fn transaction_sync(&self) -> () {
-        self.network_storage.transaction_sync();
+    fn transaction_sync(&self) -> StorageResult<()> {
+        self.network_storage.transaction_sync()
     }
 
-    fn transaction_flush(&mut self) -> () {
-        self.network_storage.transaction_flush();
+    fn transaction_flush(&mut self) -> StorageResult<()> {
+        self.network_storage.transaction_flush()
     }
 
-    fn transaction_load(&mut self) -> String {
+    fn transaction_load(&mut self) -> StorageResult<String> {
         self.network_storage.transaction_load()
     }
 }
 
+// TODO: Understand how to intercept errors / the paginators (there appears to be no way to intercept)
+// TODO: Should we surface / handle other SDK error types? E.g. Timeout, Dispatch, Response, Service, etc.
+//  perhaps there is a way to configure the SDK to make these errors less likely
 fn task_fn(
     data: S3Env,
     client: Arc<Client>,
@@ -91,9 +95,9 @@ fn task_fn(
 
         match action {
             NetworkStorageAction::Reset(r) => {
-                delete_files_at_path(&client, &bucket, base_path).await;
+                let result = delete_files_at_path(&client, &bucket, base_path).await;
 
-                let _ = r.sender.send(()).unwrap();
+                let _ = r.sender.send(result).unwrap();
             }
             NetworkStorageAction::WriteBlob(file_request) => {
                 // TODO: Should we normalize the path before getting to this point? Will make system more dry
@@ -105,9 +109,13 @@ fn task_fn(
                     .key(file_path.to_str().unwrap())
                     .body(ByteStream::from(file_request.bytes));
 
-                let _ = req.send().await.unwrap();
+                let result = req
+                    .send()
+                    .await
+                    .map(|_| {})
+                    .map_err(|e| StorageError::UnableToWriteBlob(anyhow!(e)));
 
-                let _ = file_request.sender.send(()).unwrap();
+                let _ = file_request.sender.send(result).unwrap();
             }
             NetworkStorageAction::ReadBlob(file_request) => {
                 let file_path = base_path.join(file_request.file_path);
@@ -119,10 +127,16 @@ fn task_fn(
                     .send()
                     .await;
 
-                let response = if let Ok(o) = request {
-                    Ok(o.body.collect().await.unwrap().into_bytes().to_vec())
-                } else {
-                    Err(())
+                let response = match request {
+                    Ok(o) => {
+                        let response = o.body.collect().await.unwrap().into_bytes().to_vec();
+
+                        Ok(ReadBlobState::Found(response))
+                    }
+                    Err(e) => match S3Error::from(e) {
+                        S3Error::NotFound(_) => Ok(ReadBlobState::NotFound),
+                        e => Err(StorageError::UnableToReadBlob(anyhow!(e))),
+                    },
                 };
 
                 let _ = file_request.sender.send(response).unwrap();
@@ -138,35 +152,21 @@ fn task_fn(
                     .key(file_path.to_str().unwrap())
                     .body(ByteStream::from(request.bytes));
 
-                panic!("AWS SSO Error");
-
-                // Problems:
-                // 1. file transaction write panics if there is an issue, network does not
-                // 2. there is no result type from the persistence layer
-                // 3. DatabaseCommandResponse -> DatabaseCommandTransactionResponse -> Rollback is the only type of error
-                //  which is likely okay, because we do not apply if we timeout
-                // 4. Is there even a way to roll back if we fail to write to the WAL? -- looks like the response
-                //  is only a success... Would then need to hold onto the transaction until we can write it (no longer an async pipeline.
-                //  may need to look at the paper for the various phases of the TX. It is kind of bad that we have applied
-                //  the transaction to the database, but not to the WAL. We should probably hold onto the transaction until we can write it.
-                //
-                // Solutions:
-                // 1. Implement an error class / result (1/2/3)
-                // 2. Solve the transaction phase issues (4) -- 4 is unlikely, though increases
-                //  in the case we are using network storage. In a way a panic / restart here is okay
-                //  and because the transaction was not durably written to the WAL, a restart would be a stop-gap.
-
                 // Why do we past the tests if we fail to write the transaction?
-                let _ = req.send().await.unwrap();
+                let result = req
+                    .send()
+                    .await
+                    .map(|_| {})
+                    .map_err(|e| StorageError::UnableToWriteTransaction(anyhow!(e)));
 
-                let _ = request.sender.send(()).unwrap();
+                let _ = request.sender.send(result).unwrap();
             }
             NetworkStorageAction::TransactionFlush(r) => {
                 let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
 
-                delete_files_at_path(&client, &bucket, transactions_folder).await;
+                let result = delete_files_at_path(&client, &bucket, transactions_folder).await;
 
-                let _ = r.send(()).unwrap();
+                let _ = r.send(result).unwrap();
             }
             NetworkStorageAction::TransactionLoad(request) => {
                 let transactions_folder = base_path.join(TRANSACTION_LOG_PATH);
@@ -180,7 +180,7 @@ fn task_fn(
     })
 }
 
-async fn delete_files_at_path(client: &Client, bucket: &str, path: PathBuf) {
+async fn delete_files_at_path(client: &Client, bucket: &str, path: PathBuf) -> StorageResult<()> {
     let mut response = client
         .list_objects_v2()
         .prefix(path.to_str().unwrap())
@@ -199,7 +199,7 @@ async fn delete_files_at_path(client: &Client, bucket: &str, path: PathBuf) {
                         .key(object.key().unwrap())
                         .send()
                         .await
-                        .unwrap();
+                        .map_err(|e| StorageError::UnableToDeleteTransactionLog(anyhow!(e)))?;
                 }
             }
             Err(err) => {
@@ -207,9 +207,15 @@ async fn delete_files_at_path(client: &Client, bucket: &str, path: PathBuf) {
             }
         }
     }
+
+    Ok(())
 }
 
-async fn get_file_contents_at_path(client: &Client, bucket: &str, path: PathBuf) -> String {
+async fn get_file_contents_at_path(
+    client: &Client,
+    bucket: &str,
+    path: PathBuf,
+) -> StorageResult<String> {
     let mut response = client
         .list_objects_v2()
         .prefix(path.to_str().unwrap())
@@ -230,7 +236,7 @@ async fn get_file_contents_at_path(client: &Client, bucket: &str, path: PathBuf)
                         .key(object.key().unwrap())
                         .send()
                         .await
-                        .unwrap();
+                        .map_err(|e| StorageError::UnableToLoadPreviousTransactions(anyhow!(e)))?;
 
                     let result_bytes = result.body.collect().await.unwrap().into_bytes();
 
@@ -243,5 +249,5 @@ async fn get_file_contents_at_path(client: &Client, bucket: &str, path: PathBuf)
         }
     }
 
-    contents
+    Ok(contents)
 }

@@ -4,9 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use super::{
-    ReadBlobState, Storage, StorageError, StorageResult, UnableToInitializePersistenceStruct,
-};
+use super::{io_to_generic_error, ReadBlobState, Storage, StorageError, StorageResult};
 
 pub struct FileStorage {
     base_path: PathBuf,
@@ -46,10 +44,10 @@ impl Storage for FileStorage {
             .write(true)
             .create(true)
             .open(self.get_path(&path))
-            .map_err(StorageError::UnableToWriteBlob)?;
+            .map_err(|e| StorageError::UnableToWriteBlob(io_to_generic_error(e)))?;
 
         file.write_all(&bytes)
-            .map_err(StorageError::UnableToWriteBlob)
+            .map_err(|e| StorageError::UnableToWriteBlob(io_to_generic_error(e)))
     }
 
     fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
@@ -57,7 +55,7 @@ impl Storage for FileStorage {
             Ok(file) => file,
             Err(err) => match err.kind() {
                 std::io::ErrorKind::NotFound => return Ok(ReadBlobState::NotFound),
-                _ => return Err(StorageError::UnableToReadBlob(err)),
+                _ => return Err(StorageError::UnableToReadBlob(io_to_generic_error(err))),
             },
         };
 
@@ -71,14 +69,15 @@ impl Storage for FileStorage {
     // Called on DB Start-up, should be idempotent
     fn init(&self) -> StorageResult<()> {
         std::fs::create_dir_all(&self.base_path)
-            .map_err(|e| StorageError::UnableToInitializePersistence(anyhow::Error::new(e)))?;
+            .map_err(|e| StorageError::UnableToInitializePersistence(io_to_generic_error(e)))?;
 
         Ok(())
     }
 
     // Called when the database gets cleared (via user)
     fn reset_database(&self) -> StorageResult<()> {
-        fs::remove_dir_all(&self.base_path).map_err(UnableToInitializePersistenceStruct::Io)?;
+        fs::remove_dir_all(&self.base_path)
+            .map_err(|e| StorageError::UnableToInitializePersistence(io_to_generic_error(e)))?;
 
         self.init()
     }
@@ -87,13 +86,13 @@ impl Storage for FileStorage {
         // Buffered OS write, is not 'durable' without the fsync
         self.log_file
             .write_all(transaction)
-            .map_err(StorageError::UnableToWriteTransaction)
+            .map_err(|e| StorageError::UnableToWriteTransaction(io_to_generic_error(e)))
     }
 
     fn transaction_sync(&self) -> StorageResult<()> {
-        self.log_file
-            .sync_all()
-            .map_err(StorageError::UnableToSyncTransactionBufferToPersistentStorage)?;
+        self.log_file.sync_all().map_err(|e| {
+            StorageError::UnableToSyncTransactionBufferToPersistentStorage(io_to_generic_error(e))
+        })?;
 
         Ok(())
     }
@@ -102,13 +101,13 @@ impl Storage for FileStorage {
         // TODO: When we are doing a dual reset, this could fail. Add
         //  the unwrap back and think this through
         let _ = fs::remove_file(self.transaction_file_path.clone())
-            .map_err(StorageError::UnableToDeleteTransactionLog);
+            .map_err(|e| StorageError::UnableToDeleteTransactionLog(io_to_generic_error(e)));
 
         self.log_file = OpenOptions::new()
             .create_new(true)
             .append(true)
             .open(&self.transaction_file_path)
-            .map_err(StorageError::UnableToCreateNewTransactionLog)?;
+            .map_err(|e| StorageError::UnableToCreateNewTransactionLog(io_to_generic_error(e)))?;
 
         Ok(())
     }
@@ -120,10 +119,10 @@ impl Storage for FileStorage {
         let mut file = OpenOptions::new()
             .read(true)
             .open(&self.transaction_file_path)
-            .map_err(StorageError::UnableToLoadPreviousTransactions)?;
+            .map_err(|e| StorageError::UnableToLoadPreviousTransactions(io_to_generic_error(e)))?;
 
         file.read_to_string(&mut contents)
-            .map_err(StorageError::UnableToLoadPreviousTransactions)?;
+            .map_err(|e| StorageError::UnableToLoadPreviousTransactions(io_to_generic_error(e)))?;
 
         Ok(contents)
     }

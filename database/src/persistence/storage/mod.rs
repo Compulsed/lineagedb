@@ -1,35 +1,22 @@
+use crate::database::database::DatabaseOptions;
 use std::{
-    any, io,
+    io,
     sync::{Arc, Mutex},
 };
 
+use aws_sdk_s3::error::SdkError;
 // use dynamodb::DynamoDBStorage;
 use file::FileStorage;
+use s3::S3Storage;
 // use postgres::PgStorage;
-// use s3::S3Storage;
 use thiserror::Error;
 
-use crate::database::database::DatabaseOptions;
-
 pub mod file;
+pub mod network;
+pub mod s3;
 // pub mod dynamodb;
-// pub mod network;
 // pub mod postgres;
-// pub mod s3;
 
-/*
-Questions:
-- How do we handle the errors from different types of storage engines? does each engine implement their own error type?
-    though this is kind of odd because they are the same type of error, just different implementations.
-- Maybe we need to abstract the error type, as in, these errors are more behavioral rather than 'what'.
-
-Options:
-1. Each storage engine implements their own error type
-    1. Files is:                        io:Error
-    2. Cloud / Postgres is different    credentials, network, etc.
-2. Unable to is now just a result of the storage specific implementation errors (generic...? dyn?)
-3. I guess this might be where refying an error if we have to?...
-*/
 #[derive(Error, Debug)]
 pub enum StorageError {
     #[error("Unhandled")]
@@ -40,40 +27,35 @@ pub enum StorageError {
     UnableToInitializePersistence(anyhow::Error),
 
     #[error("Unable to reset the storage engine")]
-    UnableToResetPersistence(io::Error),
+    UnableToResetPersistence(anyhow::Error),
 
     // Snapshot
     #[error("Unable write blob to storage")]
-    UnableToWriteBlob(io::Error),
+    UnableToWriteBlob(anyhow::Error),
 
     #[error("No pervious save state found")]
-    UnableToReadBlob(io::Error),
+    UnableToReadBlob(anyhow::Error),
 
     // Transactions
     #[error("Unable to delete transaction log")]
-    UnableToDeleteTransactionLog(io::Error),
+    UnableToDeleteTransactionLog(anyhow::Error),
 
     #[error("Unable to create new transaction log")]
-    UnableToCreateNewTransactionLog(io::Error),
+    UnableToCreateNewTransactionLog(anyhow::Error),
 
     #[error("Unable to create new transaction log")]
-    UnableToSyncTransactionBufferToPersistentStorage(io::Error),
+    UnableToSyncTransactionBufferToPersistentStorage(anyhow::Error),
 
     #[error("Unable write transaction to log")]
-    UnableToWriteTransaction(io::Error),
+    UnableToWriteTransaction(anyhow::Error),
 
     #[error("Unable load previous transactions")]
-    UnableToLoadPreviousTransactions(io::Error),
+    UnableToLoadPreviousTransactions(anyhow::Error),
 }
 
-#[derive(Error, Debug)]
-
-pub enum UnableToInitializePersistenceStruct {
-    Io { source: io::Error },
-}
-
-pub fn from_io_error(err: io::Error) -> StorageError {
-    StorageError::UnableToInitializePersistence(anyhow::Error::new(err))
+// Unable to easily convert io::Error to anyhow::Error
+pub fn io_to_generic_error(error: io::Error) -> anyhow::Error {
+    anyhow::Error::new(error)
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -104,7 +86,7 @@ pub trait Storage {
 #[derive(Debug, Clone)]
 pub enum StorageEngine {
     File,
-    // S3(String),
+    S3(String),
     // DynamoDB(String),
     // Postgres(String),
 }
@@ -114,18 +96,19 @@ impl StorageEngine {
         match options.storage_engine {
             StorageEngine::File => {
                 Arc::new(Mutex::new(FileStorage::new(options.data_directory.clone())))
-            } // StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
-              //     bucket.clone(),
-              //     options.data_directory.clone(),
-              // ))),
-              // StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
-              //     table.clone(),
-              //     options.data_directory.clone(),
-              // ))),
-              // StorageEngine::Postgres(database) => Arc::new(Mutex::new(PgStorage::new(
-              //     database.clone(),
-              //     options.data_directory.clone(),
-              // ))),
+            }
+            StorageEngine::S3(bucket) => Arc::new(Mutex::new(S3Storage::new(
+                bucket.clone(),
+                options.data_directory.clone(),
+            ))),
+            // StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
+            //     table.clone(),
+            //     options.data_directory.clone(),
+            // ))),
+            // StorageEngine::Postgres(database) => Arc::new(Mutex::new(PgStorage::new(
+            //     database.clone(),
+            //     options.data_directory.clone(),
+            // ))),
         }
     }
 }
