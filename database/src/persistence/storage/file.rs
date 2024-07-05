@@ -12,6 +12,8 @@ pub struct FileStorage {
     transaction_file_path: PathBuf,
 }
 
+const JSON_DELIMITER: &str = "\n";
+
 impl FileStorage {
     pub fn new(base_path: PathBuf) -> Self {
         let transaction_file_path = base_path.join("transaction_log.json");
@@ -84,8 +86,13 @@ impl Storage for FileStorage {
 
     fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
         // Buffered OS write, is not 'durable' without the fsync
+        let _ = self
+            .log_file
+            .write(transaction)
+            .map_err(|e| StorageError::UnableToWriteTransaction(io_to_generic_error(e)));
+
         self.log_file
-            .write_all(transaction)
+            .write_all(JSON_DELIMITER.as_bytes())
             .map_err(|e| StorageError::UnableToWriteTransaction(io_to_generic_error(e)))
     }
 
@@ -113,7 +120,7 @@ impl Storage for FileStorage {
     }
 
     // File may or may not exist
-    fn transaction_load(&mut self) -> StorageResult<String> {
+    fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
         let mut contents = String::new();
 
         let mut file = OpenOptions::new()
@@ -124,6 +131,16 @@ impl Storage for FileStorage {
         file.read_to_string(&mut contents)
             .map_err(|e| StorageError::UnableToLoadPreviousTransactions(io_to_generic_error(e)))?;
 
-        Ok(contents)
+        let mut transactions: Vec<String> = Vec::new();
+
+        for transaction_string in contents.split(JSON_DELIMITER) {
+            if transaction_string.is_empty() {
+                continue;
+            }
+
+            transactions.push(transaction_string.to_string());
+        }
+
+        Ok(transactions)
     }
 }

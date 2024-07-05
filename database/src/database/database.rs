@@ -120,13 +120,13 @@ impl Database {
     }
 
     pub fn new_test_other_storage() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
+        // let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+        //     .iter()
+        //     .collect();
 
         let options = DatabaseOptions::default()
-            // .set_storage_engine(StorageEngine::S3("dalesalter-test-bucket".to_string()))
-            .set_data_directory(database_dir)
+            .set_storage_engine(StorageEngine::Postgres("TODO".to_string()))
+            // .set_data_directory(database_dir)
             .set_restore(false)
             .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 

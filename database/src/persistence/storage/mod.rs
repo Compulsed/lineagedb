@@ -4,18 +4,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use aws_sdk_s3::error::SdkError;
 // use dynamodb::DynamoDBStorage;
 use file::FileStorage;
+use postgres::PgStorage;
 use s3::S3Storage;
-// use postgres::PgStorage;
 use thiserror::Error;
 
 pub mod file;
 pub mod network;
 pub mod s3;
 // pub mod dynamodb;
-// pub mod postgres;
+pub mod postgres;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -80,7 +79,7 @@ pub trait Storage {
     fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()>;
     fn transaction_sync(&self) -> StorageResult<()>;
     fn transaction_flush(&mut self) -> StorageResult<()>;
-    fn transaction_load(&mut self) -> StorageResult<String>;
+    fn transaction_load(&mut self) -> StorageResult<Vec<String>>;
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +87,7 @@ pub enum StorageEngine {
     File,
     S3(String),
     // DynamoDB(String),
-    // Postgres(String),
+    Postgres(String),
 }
 
 impl StorageEngine {
@@ -105,10 +104,10 @@ impl StorageEngine {
             //     table.clone(),
             //     options.data_directory.clone(),
             // ))),
-            // StorageEngine::Postgres(database) => Arc::new(Mutex::new(PgStorage::new(
-            //     database.clone(),
-            //     options.data_directory.clone(),
-            // ))),
+            StorageEngine::Postgres(database) => Arc::new(Mutex::new(PgStorage::new(
+                database.clone(),
+                options.data_directory.clone(),
+            ))),
         }
     }
 }

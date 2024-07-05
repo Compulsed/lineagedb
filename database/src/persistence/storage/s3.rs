@@ -76,11 +76,12 @@ impl Storage for S3Storage {
         self.network_storage.transaction_flush()
     }
 
-    fn transaction_load(&mut self) -> StorageResult<String> {
+    fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
         self.network_storage.transaction_load()
     }
 }
 
+// TODO: How do we handle the async nature of aws sso? Looks like it may only resolve on the first SDK request
 // TODO: Understand how to intercept errors / the paginators (there appears to be no way to intercept)
 // TODO: Should we surface / handle other SDK error types? E.g. Timeout, Dispatch, Response, Service, etc.
 //  perhaps there is a way to configure the SDK to make these errors less likely
@@ -215,7 +216,7 @@ async fn get_file_contents_at_path(
     client: &Client,
     bucket: &str,
     path: PathBuf,
-) -> StorageResult<String> {
+) -> StorageResult<Vec<String>> {
     let mut response = client
         .list_objects_v2()
         .prefix(path.to_str().unwrap())
@@ -224,7 +225,7 @@ async fn get_file_contents_at_path(
         .into_paginator()
         .send();
 
-    let mut contents: String = String::new();
+    let mut contents: Vec<String> = Vec::new();
 
     while let Some(result) = response.next().await {
         match result {
@@ -240,7 +241,7 @@ async fn get_file_contents_at_path(
 
                     let result_bytes = result.body.collect().await.unwrap().into_bytes();
 
-                    contents.push_str(std::str::from_utf8(&result_bytes).unwrap());
+                    contents.push(std::str::from_utf8(&result_bytes).unwrap().to_string());
                 }
             }
             Err(err) => {

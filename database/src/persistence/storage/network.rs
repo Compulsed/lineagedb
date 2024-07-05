@@ -33,7 +33,7 @@ pub enum NetworkStorageAction {
     Reset(ResetFileRequest),
     TransactionWrite(TransactionWriteRequest),
     TransactionFlush(oneshot::Sender<StorageResult<()>>),
-    TransactionLoad(oneshot::Sender<StorageResult<String>>),
+    TransactionLoad(oneshot::Sender<StorageResult<Vec<String>>>),
 }
 
 pub struct NetworkStorage {
@@ -111,8 +111,8 @@ impl Storage for NetworkStorage {
         Ok(())
     }
 
-    fn transaction_load(&mut self) -> StorageResult<String> {
-        let (sender, receiver) = oneshot::channel::<StorageResult<String>>();
+    fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
+        let (sender, receiver) = oneshot::channel::<StorageResult<Vec<String>>>();
 
         self.action_sender
             .blocking_send(NetworkStorageAction::TransactionLoad(sender))

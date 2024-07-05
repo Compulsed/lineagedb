@@ -213,7 +213,18 @@ impl RequestManager {
 
         // Sends the request to the database worker, database will response
         //  on the response_receiver once it's finished processing it's request
-        self.get_sender().send(request).unwrap();
+        let send_result = self.get_sender().send(request);
+
+        if let Err(e) = send_result {
+            log::error!("{}", e);
+
+            // The likely result of this error is that the database has shut down, which will
+            //  result in the database sender channel being closed. The other possible error is that
+            //  the channel has been overloaded, though we do not bound
+            return Err(RequestManagerError::DatabaseErrorStatus(
+                "Request failed, this is likely due to the database being shutdown".to_string(),
+            ));
+        }
 
         // If the database is large it can take > 30 seconds to reset
         let response = response_receiver.recv_timeout(Duration::from_secs(60));
@@ -574,11 +585,40 @@ mod tests {
     }
 
     mod with_storage {
+        use std::path::PathBuf;
+
+        use crate::{
+            database::{commands::ShutdownRequest, database::DatabaseOptions},
+            persistence::{
+                storage::StorageEngine,
+                transaction::{TransactionFileWriteMode, TransactionWriteMode},
+            },
+        };
+
         use super::*;
 
         #[test]
-        fn with_storage() {
-            let request_manager = Database::new_test_other_storage().run(1);
+        fn with_storage_file() {
+            test_restore_with_engine(StorageEngine::File);
+        }
+
+        #[test]
+        fn with_storage_pg() {
+            test_restore_with_engine(StorageEngine::Postgres("TODO".to_string()));
+        }
+
+        fn test_restore_with_engine(engine: StorageEngine) {
+            let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+                .iter()
+                .collect();
+
+            let options_initial = DatabaseOptions::default()
+                .set_data_directory(database_dir.clone())
+                .set_storage_engine(engine.clone())
+                .set_restore(false)
+                .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+
+            let request_manager_initial = Database::new(options_initial).run(1);
 
             let person = Person {
                 id: EntityId::new(),
@@ -586,12 +626,48 @@ mod tests {
                 email: Some(Uuid::new_v4().to_string()),
             };
 
-            let added_person = request_manager
+            // Write
+            let added_person = request_manager_initial
                 .send_add_task(person.clone())
                 .get()
                 .expect("should not timeout");
 
+            let added_person_2 = request_manager_initial
+                .send_add_task(Person {
+                    id: EntityId::new(),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                })
+                .get()
+                .expect("should not timeout");
+
             assert_eq!(added_person, person);
+
+            let _ = request_manager_initial
+                .send_shutdown_request(ShutdownRequest::Coordinator)
+                .unwrap();
+
+            // // -- Restore from disk
+
+            let options_restore = DatabaseOptions::default()
+                .set_data_directory(database_dir.clone())
+                .set_storage_engine(engine)
+                .set_restore(true)
+                .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+
+            let request_manager_restored = Database::new(options_restore).run(1);
+
+            let get_person = request_manager_restored
+                .send_get_task(person.clone().id)
+                .get()
+                .expect("should not timeout");
+
+            assert_eq!(get_person, Some(person));
+
+            // // Gracefully shutdown
+            let _ = request_manager_restored
+                .send_shutdown_request(ShutdownRequest::Coordinator)
+                .unwrap();
         }
     }
 }

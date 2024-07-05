@@ -108,7 +108,7 @@ impl TransactionWAL {
 
                         if matches!(sync_file_write, TransactionWriteMode::File(_)) {
                             let transaction_json_line = format!(
-                                "{}\n",
+                                "{}",
                                 serde_json::to_string(&Transaction {
                                     id: applied_transaction_id,
                                     statements: statements,
@@ -230,12 +230,8 @@ impl TransactionWAL {
 
         let transactions_data = self.storage.lock().unwrap().transaction_load()?;
 
-        for transaction_string in transactions_data.split('\n') {
-            if transaction_string.is_empty() {
-                continue;
-            }
-
-            transactions.push(serde_json::from_str(transaction_string).unwrap());
+        for transaction_string in transactions_data {
+            transactions.push(serde_json::from_str(&transaction_string).unwrap());
         }
 
         Ok(transactions)

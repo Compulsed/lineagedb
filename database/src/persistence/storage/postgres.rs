@@ -4,7 +4,7 @@ use tokio_postgres::{Client, NoTls};
 
 use super::{
     network::{start_runtime, NetworkStorage, NetworkStorageAction},
-    Storage,
+    ReadBlobState, Storage, StorageResult,
 };
 
 pub struct PgStorage {
@@ -88,59 +88,38 @@ fn client_fn() -> Pin<Box<dyn Future<Output = Arc<Client>> + Send + 'static>> {
 
 // Is there a way to avoid this duplication?
 impl Storage for PgStorage {
-    fn init(&self) {
-        self.network_storage.init();
+    fn init(&self) -> StorageResult<()> {
+        self.network_storage.init()
     }
 
-    fn reset_database(&self) {
-        self.network_storage.reset_database();
+    fn reset_database(&self) -> StorageResult<()> {
+        self.network_storage.reset_database()
     }
 
-    fn write_blob(&self, path: String, bytes: Vec<u8>) -> () {
-        self.network_storage.write_blob(path, bytes);
+    fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
+        self.network_storage.write_blob(path, bytes)
     }
 
-    fn read_blob(&self, path: String) -> Result<Vec<u8>, ()> {
+    fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
         self.network_storage.read_blob(path)
     }
 
-    fn transaction_write(&mut self, transaction: &[u8]) -> () {
-        self.network_storage.transaction_write(transaction);
+    fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
+        self.network_storage.transaction_write(transaction)
     }
 
-    fn transaction_sync(&self) -> () {
-        self.network_storage.transaction_sync();
+    fn transaction_sync(&self) -> StorageResult<()> {
+        self.network_storage.transaction_sync()
     }
 
-    fn transaction_flush(&mut self) -> () {
-        self.network_storage.transaction_flush();
+    fn transaction_flush(&mut self) -> StorageResult<()> {
+        self.network_storage.transaction_flush()
     }
 
-    fn transaction_load(&mut self) -> String {
+    fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
         self.network_storage.transaction_load()
     }
 }
-
-// #[derive(Debug)]
-// struct JSONB(Value);
-
-// impl ToSql for JSONB {
-//     fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Box<()>>
-//     where
-//         Self: Sized,
-//     {
-//         self.0.to_sql(ty, out)
-//     }
-
-//     to_sql_checked!();
-
-//     fn accepts(ty: &tokio_postgres::types::Type) -> bool
-//     where
-//         Self: Sized,
-//     {
-//         todo!()
-//     }
-// }
 
 // This Arc<Arc<>> Is wonky, it's only because postgres is not cloneable (unlike the others)
 //  should we just wrap everything in an arc?
@@ -156,13 +135,45 @@ fn task_fn(
 
         match action {
             NetworkStorageAction::Reset(r) => {
-                r.sender.send(()).unwrap();
+                r.sender.send(Ok(())).unwrap();
             }
             NetworkStorageAction::WriteBlob(file_request) => {
-                file_request.sender.send(()).unwrap();
+                let write_blob = r#"
+                    INSERT INTO "public"."data" ("id", "data") VALUES ($1, $2);
+                "#;
+
+                let json = serde_json::to_value(file_request.bytes).unwrap();
+
+                // TODO: Confirm if this was successful or not, perhaps look at the insert count
+                client
+                    .execute(write_blob, &[&file_request.file_path, &json])
+                    .await
+                    .unwrap();
+
+                // TOOD: Handle unwraps
+                let _ = file_request.sender.send(Ok(())).unwrap();
             }
             NetworkStorageAction::ReadBlob(file_request) => {
-                file_request.sender.send(Err(())).unwrap();
+                let read_blob = r#"
+                    SELECT * FROM "public"."data" WHERE id = $1;
+                "#;
+
+                let result = client
+                    .query(read_blob, &[&file_request.file_path])
+                    .await
+                    .unwrap();
+
+                let response = match result.first() {
+                    Some(row) => {
+                        let data: serde_json::Value = row.get("data");
+                        Ok(ReadBlobState::Found(
+                            data.as_str().unwrap().as_bytes().to_vec(),
+                        ))
+                    }
+                    None => Ok(ReadBlobState::NotFound),
+                };
+
+                let _ = file_request.sender.send(response).unwrap();
             }
             NetworkStorageAction::TransactionWrite(request) => {
                 let transaction_insert = r#"
@@ -172,15 +183,30 @@ fn task_fn(
                 // Should we take in a Value type and then convert to disk? This does lock us into serde json.
                 let json = serde_json::to_value(request.bytes).unwrap();
 
+                // TODO: Confirm if this was successful or not, perhaps look at the insert count
                 client.execute(transaction_insert, &[&json]).await.unwrap();
 
-                request.sender.send(()).unwrap();
+                request.sender.send(Ok(())).unwrap();
             }
             NetworkStorageAction::TransactionFlush(r) => {
-                r.send(()).unwrap();
+                r.send(Ok(())).unwrap();
             }
             NetworkStorageAction::TransactionLoad(request) => {
-                request.send("".to_string()).unwrap();
+                let transaction_select = r#"
+                    SELECT * FROM "public"."transaction";
+                "#;
+
+                let result = client.query(transaction_select, &[]).await.unwrap();
+
+                let mut contents: Vec<String> = vec![];
+
+                for row in result {
+                    let data: serde_json::Value = row.get("data");
+
+                    contents.push(data.to_string());
+                }
+
+                request.send(Ok(contents)).unwrap();
             }
         }
     })
