@@ -35,6 +35,7 @@ pub struct DatabaseOptions {
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
     /// Defines the directory where the database will store its data
+    /// TODO: Move this into the the engine implementation
     pub fn set_data_directory(mut self, data_directory: PathBuf) -> Self {
         self.data_directory = data_directory;
         self

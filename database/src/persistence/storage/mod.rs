@@ -16,6 +16,10 @@ pub mod s3;
 // pub mod dynamodb;
 pub mod postgres;
 
+// TODO: Consider grouping these errors into submodules, as storage provider it would be significantly clearer which error is
+//  related to which command
+// NOTE: Our use of anyhow is because each storage provider will return a different error type
+//  this means we cannot just standardize on something like say IO Error.
 #[derive(Error, Debug)]
 pub enum StorageError {
     #[error("Unhandled")]
@@ -66,6 +70,18 @@ pub enum ReadBlobState {
     NotFound,
 }
 
+// TODO: Our interface is a little wonky, sometimes we're passing bytes, sometimes it's a string.
+//   the idea of bytes is that it can be any format, not just JSON. Though, at the moment both layers
+//   strictly use JSON. If we use JSON we should just double down on the Value type
+// TODO: As PgStorage is a transactional data store it can be handled differently compared to other types
+//  1. Because it's transactional, we are able to safely reject ALL writes w/o crashing the database
+//      we could implement this in other stores, though, for non-atomic writes we would need to build
+//      our own system. For file storage, reset is not atomic as we need to delete two files. S3 and DynamoDB
+//      are definitely not atomic because we need to do a of network calls.
+//  2. Note: for SQL we do need the TX rollback message, we cannot just assume if there was a failure it was rolled back.
+//       This is because it could commmit & the client might never get it.
+//  3. At the moment it does not make sense to implement this level of rollback see `InconsistentUncommittedInMemoryWorldStateFromWALWrite`
+//      as to why
 pub trait Storage {
     // Control plane
     fn init(&self) -> StorageResult<()>;

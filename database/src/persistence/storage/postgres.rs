@@ -1,10 +1,12 @@
+use anyhow::anyhow;
+use serde_json::Value;
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use tokio::sync::mpsc::{self};
 use tokio_postgres::{Client, NoTls};
 
 use super::{
     network::{start_runtime, NetworkStorage, NetworkStorageAction},
-    ReadBlobState, Storage, StorageResult,
+    ReadBlobState, Storage, StorageError, StorageResult,
 };
 
 pub struct PgStorage {
@@ -121,8 +123,15 @@ impl Storage for PgStorage {
     }
 }
 
-// This Arc<Arc<>> Is wonky, it's only because postgres is not cloneable (unlike the others)
+// This Arc<Arc<>> Is wonky, it's only because postgres is not clonable (unlike the others)
 //  should we just wrap everything in an arc?
+// Note: We are not able to use postgres transactions, this is because we require exclusive access to the client.
+//  unfortunately it is not as simple as just wrapping the client in a mutex, because
+//  we cannot have a mutex guard cross await points (it's not Send). A way around this MIGHT
+//  be to find an API that allows us to create a transaction w/o multiple await points, another
+//  way might be to inject 'static clients each take task_fn is invoked. This could be done via
+//  a connection pool. Though again, this is a little odd because we mutex the persistence client (meaning)
+//  there already is exclusive access.
 fn task_fn(
     data: PgEnv,
     client: Arc<Arc<Client>>,
@@ -130,11 +139,34 @@ fn task_fn(
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
     Box::pin(async move {
         // TODO: Move the database into the set-up
-        let bucket = &data.database;
-        let base_path = data.base_path;
+        let database = &data.database;
 
         match action {
             NetworkStorageAction::Reset(r) => {
+                let delete_transactions = r#"
+                    DELETE FROM "public"."transaction";
+                "#;
+
+                if let Err(e) = client.execute(delete_transactions, &[]).await {
+                    r.sender
+                        .send(Err(StorageError::UnableToResetPersistence(anyhow!(e))))
+                        .unwrap();
+
+                    return;
+                }
+
+                let delete_data = r#"
+                    DELETE FROM "public"."data";
+                "#;
+
+                if let Err(e) = client.execute(delete_data, &[]).await {
+                    r.sender
+                        .send(Err(StorageError::UnableToResetPersistence(anyhow!(e))))
+                        .unwrap();
+
+                    return;
+                }
+
                 r.sender.send(Ok(())).unwrap();
             }
             NetworkStorageAction::WriteBlob(file_request) => {
@@ -142,35 +174,43 @@ fn task_fn(
                     INSERT INTO "public"."data" ("id", "data") VALUES ($1, $2);
                 "#;
 
-                let json = serde_json::to_value(file_request.bytes).unwrap();
+                let json: Value = byte_array_to_value(&file_request.bytes);
 
-                // TODO: Confirm if this was successful or not, perhaps look at the insert count
-                client
+                let result = client
                     .execute(write_blob, &[&file_request.file_path, &json])
-                    .await
-                    .unwrap();
+                    .await;
 
-                // TOOD: Handle unwraps
-                let _ = file_request.sender.send(Ok(())).unwrap();
+                let response = match result {
+                    Ok(1) => Ok(()),
+                    Ok(insert_count) => Err(StorageError::UnableToWriteBlob(anyhow!(
+                        "Expected 1 row to be inserted, got {}",
+                        insert_count
+                    ))),
+                    Err(e) => Err(StorageError::UnableToWriteBlob(anyhow!(e))),
+                };
+
+                let _ = file_request.sender.send(response).unwrap();
             }
             NetworkStorageAction::ReadBlob(file_request) => {
                 let read_blob = r#"
                     SELECT * FROM "public"."data" WHERE id = $1;
                 "#;
 
-                let result = client
-                    .query(read_blob, &[&file_request.file_path])
-                    .await
-                    .unwrap();
+                let result = client.query(read_blob, &[&file_request.file_path]).await;
 
-                let response = match result.first() {
-                    Some(row) => {
-                        let data: serde_json::Value = row.get("data");
-                        Ok(ReadBlobState::Found(
-                            data.as_str().unwrap().as_bytes().to_vec(),
-                        ))
-                    }
-                    None => Ok(ReadBlobState::NotFound),
+                let response = match result {
+                    Ok(rows) => match rows.first() {
+                        Some(row) => {
+                            let data: serde_json::Value = row.get("data");
+
+                            let json_string =
+                                serde_json::to_string(&data).unwrap().as_bytes().to_vec();
+
+                            Ok(ReadBlobState::Found(json_string))
+                        }
+                        None => Ok(ReadBlobState::NotFound),
+                    },
+                    Err(e) => Err(StorageError::UnableToReadBlob(anyhow!(e))),
                 };
 
                 let _ = file_request.sender.send(response).unwrap();
@@ -180,16 +220,30 @@ fn task_fn(
                     INSERT INTO "public"."transaction" ("data") VALUES ($1);
                 "#;
 
-                // Should we take in a Value type and then convert to disk? This does lock us into serde json.
-                let json = serde_json::to_value(request.bytes).unwrap();
+                let json: Value = byte_array_to_value(&request.bytes);
 
-                // TODO: Confirm if this was successful or not, perhaps look at the insert count
-                client.execute(transaction_insert, &[&json]).await.unwrap();
+                let response = match client.execute(transaction_insert, &[&json]).await {
+                    Ok(1) => Ok(()),
+                    Ok(insert_count) => Err(StorageError::UnableToWriteTransaction(anyhow!(
+                        "Expected 1 row to be inserted, got {}",
+                        insert_count
+                    ))),
+                    Err(e) => Err(StorageError::UnableToWriteTransaction(anyhow!(e))),
+                };
 
-                request.sender.send(Ok(())).unwrap();
+                request.sender.send(response).unwrap();
             }
-            NetworkStorageAction::TransactionFlush(r) => {
-                r.send(Ok(())).unwrap();
+            NetworkStorageAction::TransactionFlush(request) => {
+                let reset_sql = r#"
+                    DELETE FROM "public"."transaction";
+                "#;
+
+                let delete_transaction_response = match client.execute(reset_sql, &[]).await {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(StorageError::UnableToDeleteTransactionLog(anyhow!(e))),
+                };
+
+                request.send(delete_transaction_response).unwrap();
             }
             NetworkStorageAction::TransactionLoad(request) => {
                 let transaction_select = r#"
@@ -210,4 +264,11 @@ fn task_fn(
             }
         }
     })
+}
+
+// So that we store the jsonb value (rather than the byte array,
+//  we must first convert the bytes back to a string, then, from there a Value
+fn byte_array_to_value(bytes: &Vec<u8>) -> Value {
+    let json_string = std::str::from_utf8(&bytes).unwrap();
+    serde_json::from_str(json_string).unwrap()
 }

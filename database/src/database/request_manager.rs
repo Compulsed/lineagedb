@@ -626,13 +626,15 @@ mod tests {
                 email: Some(Uuid::new_v4().to_string()),
             };
 
-            // Write
+            // Write #1
             let added_person = request_manager_initial
                 .send_add_task(person.clone())
                 .get()
                 .expect("should not timeout");
 
-            let added_person_2 = request_manager_initial
+            // Write #2 -- used to ensure that we are batching / un-batching
+            //  transactions properly
+            let _ = request_manager_initial
                 .send_add_task(Person {
                     id: EntityId::new(),
                     full_name: "Test".to_string(),
