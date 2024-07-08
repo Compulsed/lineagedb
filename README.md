@@ -258,8 +258,8 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
     - Specify IP to bind ✅
     - List database version (https://github.com/rust-lang/cargo/issues/6583)
 - Turn index into a class
-- Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
-- Transaction that just contain queries should not be persisted to the transaction log
+- Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager ✅
+- Transaction that just contain queries should not be persisted to the transaction log ✅
 - Updating action format (e.g. adding additional params to list) causes parsing to break
 - Versions are full clones of the data, if we use RC we would be be able to save on clones
 

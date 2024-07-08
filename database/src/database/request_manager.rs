@@ -590,7 +590,10 @@ mod tests {
         use crate::{
             database::{commands::ShutdownRequest, database::DatabaseOptions},
             persistence::{
-                storage::{postgres::PostgresOptions, StorageEngine},
+                storage::{
+                    dynamodb::DynamoOptions, postgres::PostgresOptions, s3::S3Options,
+                    StorageEngine,
+                },
                 transaction::{TransactionFileWriteMode, TransactionWriteMode},
             },
         };
@@ -609,6 +612,16 @@ mod tests {
         #[test]
         fn with_storage_pg() {
             test_restore_with_engine(StorageEngine::Postgres(PostgresOptions::new_local()));
+        }
+
+        #[test]
+        fn with_storage_s3() {
+            test_restore_with_engine(StorageEngine::S3(S3Options::new_local()));
+        }
+
+        #[test]
+        fn with_storage_ddb() {
+            test_restore_with_engine(StorageEngine::DynamoDB(DynamoOptions::new_local()));
         }
 
         fn test_restore_with_engine(engine: StorageEngine) {

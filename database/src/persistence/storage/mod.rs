@@ -5,17 +5,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// use dynamodb::DynamoDBStorage;
+use dynamodb::{DynamoDBStorage, DynamoOptions};
 use file::FileStorage;
 use postgres::{PgStorage, PostgresOptions};
-use s3::S3Storage;
+use s3::{S3Options, S3Storage};
 use thiserror::Error;
 
+pub mod dynamodb;
 pub mod file;
 pub mod network;
-pub mod s3;
-// pub mod dynamodb;
 pub mod postgres;
+pub mod s3;
 
 // TODO: Consider grouping these errors into submodules, as storage provider it would be significantly clearer which error is
 //  related to which command
@@ -102,8 +102,8 @@ pub trait Storage {
 #[derive(Debug, Clone)]
 pub enum StorageEngine {
     File(PathBuf),
-    S3(String, PathBuf),
-    // DynamoDB(String),
+    S3(S3Options),
+    DynamoDB(DynamoOptions),
     Postgres(PostgresOptions),
 }
 
@@ -111,14 +111,10 @@ impl StorageEngine {
     pub fn get_engine(options: DatabaseOptions) -> Arc<Mutex<dyn Storage + Sync + Send>> {
         match options.storage_engine {
             StorageEngine::File(base_dir) => Arc::new(Mutex::new(FileStorage::new(base_dir))),
-            StorageEngine::S3(bucket, base_path) => Arc::new(Mutex::new(S3Storage::new(
-                bucket.clone(),
-                base_path.clone(),
-            ))),
-            // StorageEngine::DynamoDB(table) => Arc::new(Mutex::new(DynamoDBStorage::new(
-            //     table.clone(),
-            //     options.data_directory.clone(),
-            // ))),
+            StorageEngine::S3(options) => Arc::new(Mutex::new(S3Storage::new(options.clone()))),
+            StorageEngine::DynamoDB(options) => {
+                Arc::new(Mutex::new(DynamoDBStorage::new(options.clone())))
+            }
             StorageEngine::Postgres(options) => {
                 Arc::new(Mutex::new(PgStorage::new(options.clone())))
             }

@@ -17,12 +17,10 @@ pub struct S3Storage {
 }
 
 impl S3Storage {
-    pub fn new(bucket: String, base_path: PathBuf) -> Self {
+    pub fn new(options: S3Options) -> Self {
         let (action_sender, action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let data = S3Options { bucket, base_path };
-
-        start_runtime(action_receiver, data, task_fn, client_fn);
+        start_runtime(action_receiver, options, task_fn, client_fn);
 
         Self {
             network_storage: NetworkStorage {
@@ -32,8 +30,8 @@ impl S3Storage {
     }
 }
 
-#[derive(Clone)]
-struct S3Options {
+#[derive(Clone, Debug)]
+pub struct S3Options {
     bucket: String,
     base_path: PathBuf,
 }
@@ -144,7 +142,7 @@ fn task_fn(
                         Ok(ReadBlobState::Found(response))
                     }
                     Err(e) => match S3Error::from(e) {
-                        S3Error::NotFound(_) => Ok(ReadBlobState::NotFound),
+                        S3Error::NoSuchKey(_) => Ok(ReadBlobState::NotFound),
                         e => Err(StorageError::UnableToReadBlob(anyhow!(e))),
                     },
                 };

@@ -15,7 +15,7 @@ use database::{
         database::{Database, DatabaseOptions},
         request_manager::RequestManager,
     },
-    persistence::storage::{postgres::PostgresOptions, StorageEngine},
+    persistence::storage::{postgres::PostgresOptions, s3::S3Options, StorageEngine},
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::sync::Mutex;
@@ -79,10 +79,10 @@ async fn main() -> io::Result<()> {
     let args = Cli::parse();
 
     let database_options = DatabaseOptions::default()
-        // .set_storage_engine(StorageEngine::DynamoDB("lineagedb-ddb".to_string()));
-        // .set_storage_engine(StorageEngine::File);
-        // .set_storage_engine(StorageEngine::S3("dalesalter-test-bucket".to_string()));
-        .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_local()));
+        .set_storage_engine(StorageEngine::DynamoDB(DynamoOptions::new_local()));
+    // .set_storage_engine(StorageEngine::File);
+    // .set_storage_engine(StorageEngine::S3(S3Options::new_local()));
+    // .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_local()));
 
     // For S3 (an optional backing storage engine), we must use tokio. This would be fine
     //  but the database uses sync apis (blocking_send). blocking_send CANNOT be called with any call-stack
