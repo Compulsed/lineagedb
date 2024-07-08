@@ -15,7 +15,9 @@ use database::{
         database::{Database, DatabaseOptions},
         request_manager::RequestManager,
     },
-    persistence::storage::{postgres::PostgresOptions, s3::S3Options, StorageEngine},
+    persistence::storage::{
+        dynamodb::DynamoOptions, postgres::PostgresOptions, s3::S3Options, StorageEngine,
+    },
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::sync::Mutex;
