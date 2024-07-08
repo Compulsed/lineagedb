@@ -74,8 +74,7 @@ impl Storage for NetworkStorage {
     }
 
     fn init(&self) -> StorageResult<()> {
-        // This method is not needed, s3 does not have folders
-
+        // This method is not needed for network based storage, all initialization happens during client creation
         Ok(())
     }
 
@@ -96,7 +95,6 @@ impl Storage for NetworkStorage {
     fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
-        // TODO: Externalize transaction log
         self.action_sender
             .blocking_send(NetworkStorageAction::TransactionWrite(
                 TransactionWriteRequest {
@@ -137,6 +135,9 @@ impl Storage for NetworkStorage {
     }
 }
 
+/// Context, provided during initial set-up and is passed to both the client and task functions
+/// Client function, run once and is used to pass the client to the task function
+/// Task function, called for each incoming action
 pub fn start_runtime<T: Clone + Send + 'static, C: Clone + Send + 'static>(
     mut action_receiver: Receiver<NetworkStorageAction>,
     context: T,

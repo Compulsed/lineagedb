@@ -20,7 +20,7 @@ impl S3Storage {
     pub fn new(bucket: String, base_path: PathBuf) -> Self {
         let (action_sender, action_receiver) = mpsc::channel::<NetworkStorageAction>(16);
 
-        let data = S3Env { bucket, base_path };
+        let data = S3Options { bucket, base_path };
 
         start_runtime(action_receiver, data, task_fn, client_fn);
 
@@ -33,12 +33,21 @@ impl S3Storage {
 }
 
 #[derive(Clone)]
-struct S3Env {
+struct S3Options {
     bucket: String,
     base_path: PathBuf,
 }
 
-fn client_fn(options: S3Env) -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
+impl S3Options {
+    pub fn new_local() -> Self {
+        Self {
+            base_path: PathBuf::from("data"),
+            bucket: "dalesalter-test-bucket".to_string(),
+        }
+    }
+}
+
+fn client_fn(_: S3Options) -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
     Box::pin(async {
         let sdk = aws_config::load_from_env().await;
 
@@ -86,7 +95,7 @@ impl Storage for S3Storage {
 // TODO: Should we surface / handle other SDK error types? E.g. Timeout, Dispatch, Response, Service, etc.
 //  perhaps there is a way to configure the SDK to make these errors less likely
 fn task_fn(
-    data: S3Env,
+    data: S3Options,
     client: Arc<Client>,
     action: NetworkStorageAction,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {

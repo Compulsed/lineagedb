@@ -326,7 +326,6 @@ impl Database {
                         .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
                 }
                 false => {
-                    // TODO: Change this, doing this to remove lock contention on the transaction WAL
                     let query_transaction_id = database
                         .persistence
                         .transaction_wal
