@@ -1,7 +1,7 @@
-# Lineage DB
+# Lineage DB 🦀 ⏰
 
 Lineage DB is an educational MVCC database and has the following functionality:
-1. Supports ACID transactions (* everything currently runs as serialization)
+1. Supports ACID transactions
 1. Utilizes a WAL for performant writes / supports trimming the WAL
 1. Time travel; query the database at any given transaction id (* assuming the previous transactions are untrimmed)
 1. For any given item can look at all revisions (* assuming the previous transactions are untrimmed)
@@ -10,14 +10,11 @@ Lineage DB is an educational MVCC database and has the following functionality:
 Current limitations:
 1. Does not support session based transactions, statements in a transaction must be sent all at once
 1. Does not support DDL statements, at the moment the system is limited to a single entity (Person)
-1. Database Multi-threading is limited to a single writer / multiple readers (via a Reader Writer database lock).
-   1. This limits reading whilst writing, once correctly implemented MVCC should allow reads while there are writes
 1. The working dataset must fit entirely within memory, there is no storage pool / disk paging
 1. Does not have an SQL frontend
 1. Has limited querying capabilities, just `AND`, no `OR`, `IN`, etc.
 1. Does not clean up older item versions -- should implement this by looking at the oldest transaction and cleaning up items before that TX id
 1. Version compression, for each new version we make a clean copy of all of the previous versions' data
-
 
 ## How to use 
 
@@ -111,10 +108,18 @@ An optional CLI is provided for various configuration options
 Usage: lineagedb [OPTIONS]
 
 Options:
-  -d, --data <DATA>        Location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~ [default: data]
-  -p, --port <PORT>        Port the graphql server will run on [default: 9000]
-  -a, --address <ADDRESS>  Address the graphql server will run on [default: 0.0.0.0]
-  -h, --help               Print help
+  -p, --port <PORT>
+          Port the graphql server will run on [default: 9000]
+  -a, --address <ADDRESS>
+          Address the graphql server will run on [default: 0.0.0.0]
+      --log-http
+          Whether to log out GraphQL HTTP requests
+      --http-workers <HTTP_WORKERS>
+          [default: 2]
+      --storage <STORAGE>
+          Which storage mechanism to use [default: file] [possible values: file, dynamo, postgres, s3]
+      --data <DATA>
+          When using file storage, location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~ [default: data]
 ```
 
 **Debugging**
@@ -125,6 +130,9 @@ RUST_LOG=lineagedb cargo run
 
 # Prints out full exception strings
 RUST_BACKTRACE=1 cargo run
+
+# Prints out logs from tests, note requires updating the test annotation to #[test_log::test]
+RUST_LOG=debug cargo test -p database with_storage_file -- --nocapture
 ```
 
 **Other binaries**
@@ -137,10 +145,14 @@ cargo run --package tcp-server --bin lineagedb-tcp-server
 
 Tested on an M1 Mac.
 
-```
-Read speed ~800k statements/s
-Write speed ~80k statements/s
-```
+| Threads: | 1    | 2     | 3     | 4     |
+|----------|------|-------|-------|-------|
+| Read     | 640k | 1100k | 1400k | 1700k |
+| Write    | 280k | 400k  | 150k  | 100k  |
+
+Test notes:
+- Metrics required in transactions per second
+- A transaction has a single statement
 
 **Testing / Benchmarking**
 
@@ -155,14 +167,10 @@ cargo test --all
 # 2. These tests will yield different results based on whether the laptop is charging or not
 cargo test --package database "database::database::tests::bulk" -- --nocapture --ignored --test-threads=1
 
-# Benchmarking https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
-# There appears to be an issue with 'benchmark' that spin up multiple
-#   threads in the database. It causes 100x performance lags. 800us to 80ms
-# Seems that the performance unit tests are a more reliable indicator
+# Using the benchmarking tool https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html#baselines
 cargo bench --all
 cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to another branch
 ```
-
 
 ## Architecture
 
@@ -170,14 +178,7 @@ cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to anoth
 
 ![](images/request-responseflow.png?raw=true)
 
-
 ## Notes
-
-### Concurrent Read / Write
-
-The database single threaded, this means neither reads or writes can be concurrent. Once they are concurrent we will need to address the following challenges:
-1. Will need to move away from vectors to linked lists (unless we use a RW Lock). Resizing vectors is not thread 'safe'
-1. Must create rust data structures that are both sync + send w/ some internal unsafe operations
 
 ### Session Transactions
 
@@ -216,11 +217,15 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
 - Transaction rollbacks ✅
 - Transactions with multiple actions ✅
 - Dynamic schema
-- Lower level transaction levels (currently have max)
+- Transaction levels
+  - Serializable
+  - Repeatable read
+  - Read committed ✅
+  - Read uncommitted (will not implement due to MVCC)
 - Multiple tables support
 - Counter (id counter)
 - Multiple updates based on a condition (select)
-- Where clause in list
+- Where clause in list (limited) ✅
 - Update conditions
 - Transaction queue (max length, 5s timeout)
 - Referential integrity
@@ -228,19 +233,16 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
 
 **Architecture**
 - Split the database / clients components into their own libraries ✅
-- Transaction log listener (can run another db in another location)
+- Transaction log listener (can run another db in another location) 
 - Run on cloud via docker / lambda
 
 **Performance**
 - Create a tx/s metrics (1ms for ~100 reads / writes) ✅
 - WAL ✅
+- Move away from a single thread per request (could implement a thread pool w/ channels?) ✅
+- Investigate ~6k TX stall from load testing (was using AB, and running on a Mac) ✅
 - Is there a way to monitor rust performance? Like where are we spending the most time
-- Is there a way to improve the performance of transaction writes?
-  - i.e. we set the transaction log file to be larger than what we need
-- Read at a transaction id whilst there is a writer — may require thread safe data structures
-- Move away from a single thread per request (could implement a thread pool w/ channels?)
 - Reduce the amount of rust clones
-- Investigate ~6k TX stall from load testing (was using AB, and running on a Mac)
 - Anywhere we would clone attempt to use an RC -- this happens with Actions (check performance after doing this)
 
 **Design Improvements -- Internals**
@@ -248,13 +250,16 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
 - CI/CD Pipeline ✅
 - Improve error types -- it is not clear what part of the application can throw an error vs. an enum type response ✅
 - Improve change the send_request to be 'action aware', as in, a single action should return a single response ✅
+- Try a faster / binary serialization format. ✅
+  - Tried bare, it was not faster / the bottleneck ✅ https://github.com/Compulsed/lineagedb/blob/feat/bare-serialization/database/src/database/transaction.rs
+- Do not need to maintain the transaction log in memory -- Transation log can just use a reference ✅
 - Tests 
   - Areas:
     - GraphQL
     - Database 
       - Transaction Management ✅
     - Table (Applying / Rolling back changes)
-      - Should test all exceptions
+      - Should test all exceptions 
     - Row
   - Tooling
     - Rstest (can we use the fixture functionality to run the tests against different database states? empty, few transactions, etc)
@@ -264,11 +269,9 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
     - Specify IP to bind ✅
     - List database version (https://github.com/rust-lang/cargo/issues/6583)
 - Turn index into a class
-- Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager
-- Transaction that just contain queries should not be persisted to the transaction log
-- Do not need to maintain the transaction log in memory -- Transation log can just use a reference
+- Create a 'storage engine' abstraction. At the moment this is the responsibility of the transaction manager ✅
+- Transaction that just contain queries should not be persisted to the transaction log ✅
 - Updating action format (e.g. adding additional params to list) causes parsing to break
-- Try a faster / binary serialization format. JSON might be slow
 - Versions are full clones of the data, if we use RC we would be be able to save on clones
 
 ## Resource
@@ -303,3 +306,14 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
         SearchMethod::RequiresFullScan
     };
 ```
+
+### Persistence
+
+Snapshot:
+- Get / Set
+
+WAL:
+- bulk / individual write
+
+Questions:
+- Can I implement persistence w/o tokio? -- should I even do this?

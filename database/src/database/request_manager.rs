@@ -1,4 +1,5 @@
 use core::panic;
+use rand::{seq::SliceRandom, thread_rng};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -13,15 +14,10 @@ use crate::{
 use super::{
     commands::{
         Control, DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandRequest,
-        DatabaseCommandResponse, DatabaseCommandTransactionResponse,
+        DatabaseCommandResponse, DatabaseCommandTransactionResponse, ShutdownRequest,
     },
     table::{query::QueryPersonData, row::UpdatePersonData},
 };
-
-#[derive(Clone)]
-pub struct RequestManager {
-    database_sender: flume::Sender<DatabaseCommandRequest>,
-}
 
 /// Converts the database command hierarchy into a simple string, this is an easy interface to work with
 #[derive(Error, Debug)]
@@ -34,9 +30,18 @@ pub enum RequestManagerError {
     #[error("Rolled back transaction: {0}")]
     TransactionRollback(String),
 
+    /// From transaction rollbacks
+    #[error("Transaction status: {0}")]
+    TransactionStatus(String),
+
     /// From control commands
     #[error("Database Error Status: {0}")]
     DatabaseErrorStatus(String),
+}
+
+#[derive(Clone)]
+pub struct RequestManager {
+    database_sender: Vec<flume::Sender<DatabaseCommandRequest>>,
 }
 
 /// Goal of the request manager is to provide a simple interface for interacting with the database
@@ -54,8 +59,18 @@ pub enum RequestManagerError {
 /// - Statement, allows sending a single statement or a transaction to the database
 /// - Command, allows sending control commands to the database, e.g. shutdown, reset, snapshot
 impl RequestManager {
-    pub fn new(database_sender: flume::Sender<DatabaseCommandRequest>) -> Self {
+    pub fn new(database_sender: Vec<flume::Sender<DatabaseCommandRequest>>) -> Self {
         Self { database_sender }
+    }
+
+    fn get_sender(&self) -> &flume::Sender<DatabaseCommandRequest> {
+        let mut rng = thread_rng();
+
+        // return &self.database_sender[0];
+
+        self.database_sender
+            .choose(&mut rng)
+            .expect("Should have at least one sender")
     }
 
     // -- Entity Methods: Async Task --
@@ -149,12 +164,21 @@ impl RequestManager {
     // -- Control Methods --
 
     /// Sends a shutdown request to the database and returns the database's response
-    pub fn send_shutdown_request(&self) -> Result<String, RequestManagerError> {
-        // TODO: Shutdown may not work if there are multiple database threads.
-        //  will have to send N shutdown requests for each database thread.
-        return self.send_control(Control::Shutdown);
+    pub fn send_shutdown_request(
+        &self,
+        request: ShutdownRequest,
+    ) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::Shutdown(request));
     }
 
+    pub fn send_pause_request(
+        &self,
+        resume: flume::Receiver<()>,
+    ) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::PauseDatabase(resume));
+    }
+
+    /// Resets the database to a clean state
     pub fn send_reset_request(&self) -> Result<String, RequestManagerError> {
         return self.send_control(Control::ResetDatabase);
     }
@@ -190,7 +214,18 @@ impl RequestManager {
 
         // Sends the request to the database worker, database will response
         //  on the response_receiver once it's finished processing it's request
-        self.database_sender.send(request).unwrap();
+        let send_result = self.get_sender().send(request);
+
+        if let Err(e) = send_result {
+            log::error!("{}", e);
+
+            // The likely result of this error is that the database has shut down, which will
+            //  result in the database sender channel being closed. The other possible error is that
+            //  the channel has been overloaded, though we do not bound
+            return Err(RequestManagerError::DatabaseErrorStatus(
+                "Request failed, this is likely due to the database being shutdown".to_string(),
+            ));
+        }
 
         // If the database is large it can take > 30 seconds to reset
         let response = response_receiver.recv_timeout(Duration::from_secs(60));
@@ -198,6 +233,7 @@ impl RequestManager {
         map_response(response)
     }
 
+    #[allow(dead_code)]
     fn send_database_command_task(&self, database_request: DatabaseCommand) -> TaskCommandResponse {
         let (response_sender, response_receiver) = oneshot::channel::<DatabaseCommandResponse>();
 
@@ -206,7 +242,7 @@ impl RequestManager {
             command: database_request,
         };
 
-        self.database_sender.send(request).unwrap();
+        self.get_sender().send(request).unwrap();
 
         TaskCommandResponse::send(response_receiver)
     }
@@ -226,6 +262,9 @@ fn map_response(
                 }
                 DatabaseCommandTransactionResponse::Rollback(s) => {
                     Err(RequestManagerError::TransactionRollback(s))
+                }
+                DatabaseCommandTransactionResponse::Status(s) => {
+                    Err(RequestManagerError::TransactionStatus(s))
                 }
             }
         }
@@ -259,7 +298,7 @@ fn send_request(
         command: DatabaseCommand::Transaction(statement),
     };
 
-    request_manager.database_sender.send(request).unwrap();
+    request_manager.get_sender().send(request).unwrap();
 
     response_receiver
 }
@@ -467,7 +506,7 @@ mod tests {
     use crate::{
         consts::consts::EntityId,
         database::{
-            commands::{DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandResponse},
+            commands::{DatabaseCommand, DatabaseCommandResponse},
             database::Database,
         },
         model::{
@@ -544,5 +583,109 @@ mod tests {
             .expect("should not timeout");
 
         assert_eq!(added_person, person);
+    }
+
+    mod with_storage {
+        use std::path::PathBuf;
+
+        use crate::{
+            database::{commands::ShutdownRequest, database::DatabaseOptions},
+            persistence::{
+                storage::{
+                    dynamodb::DynamoOptions, postgres::PostgresOptions, s3::S3Options,
+                    StorageEngine,
+                },
+                transaction::{TransactionFileWriteMode, TransactionWriteMode},
+            },
+        };
+
+        use super::*;
+
+        #[test]
+        fn with_storage_file() {
+            let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+                .iter()
+                .collect();
+
+            test_restore_with_engine(StorageEngine::File(database_dir));
+        }
+
+        #[test]
+        #[ignore = "CI will not be set up for running Postgres"]
+        fn with_storage_pg() {
+            test_restore_with_engine(StorageEngine::Postgres(PostgresOptions::new_test()));
+        }
+
+        #[test]
+        #[ignore = "CI will not be set up for running S3"]
+        fn with_storage_s3() {
+            test_restore_with_engine(StorageEngine::S3(S3Options::new_test()));
+        }
+
+        #[test]
+        #[ignore = "CI will not be set up for running DynamoDB"]
+        fn with_storage_ddb() {
+            test_restore_with_engine(StorageEngine::DynamoDB(DynamoOptions::new_test()));
+        }
+
+        fn test_restore_with_engine(engine: StorageEngine) {
+            let options_initial = DatabaseOptions::default()
+                .set_storage_engine(engine.clone())
+                .set_restore(false)
+                .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+
+            let request_manager_initial = Database::new(options_initial).run(1);
+
+            let expected_person = Person {
+                id: EntityId::new(),
+                full_name: "Test".to_string(),
+                email: Some(Uuid::new_v4().to_string()),
+            };
+
+            // Write #1
+            let actual_person = request_manager_initial
+                .send_add_task(expected_person.clone())
+                .get()
+                .expect("should not timeout");
+
+            // Write #2 -- just used to ensure we are correctly batching multiple
+            //  writes together in the WAL. I suspect this would be better as a more
+            //  isolated test
+            let _ = request_manager_initial
+                .send_add_task(Person {
+                    id: EntityId::new(),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                })
+                .get()
+                .expect("should not timeout");
+
+            assert_eq!(actual_person, expected_person);
+
+            let _ = request_manager_initial
+                .send_shutdown_request(ShutdownRequest::Coordinator)
+                .unwrap();
+
+            // // -- Restore from disk
+
+            let options_restore = DatabaseOptions::default()
+                .set_storage_engine(engine)
+                .set_restore(true)
+                .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+
+            let request_manager_restored = Database::new(options_restore).run(1);
+
+            let actual_person_restored = request_manager_restored
+                .send_get_task(expected_person.clone().id)
+                .get()
+                .expect("should not timeout");
+
+            assert_eq!(actual_person_restored, Some(expected_person));
+
+            // // Gracefully shutdown
+            let _ = request_manager_restored
+                .send_shutdown_request(ShutdownRequest::Coordinator)
+                .unwrap();
+        }
     }
 }

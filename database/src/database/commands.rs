@@ -35,6 +35,8 @@ pub enum DatabaseCommandTransactionResponse {
     Commit(Vec<StatementResult>),
     /// Transaction has been rolled back, returns a message for why it was rolled back
     Rollback(String),
+    /// Status
+    Status(String),
 }
 
 impl DatabaseCommandTransactionResponse {
@@ -87,16 +89,32 @@ impl DatabaseCommandResponse {
             DatabaseCommandTransactionResponse::Rollback(message.to_string()),
         )
     }
+
+    pub fn transaction_status(message: &str) -> Self {
+        DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+            DatabaseCommandTransactionResponse::Status(message.to_string()),
+        )
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ShutdownRequest {
+    // Single thread that is responsible for checking that other threads shut down
+    Coordinator,
+    // Thread that shuts down
+    Worker,
 }
 
 #[derive(Debug)]
 pub enum Control {
     /// Performs a safe shutdown of the database, requests before the shutdown will be run / committed, requests after the shutdown will be ignored
-    Shutdown,
+    Shutdown(ShutdownRequest),
     /// Writes the current state of the database to disk, removes the need for a WAL replay on next startup
     SnapshotDatabase,
     /// Resets the database to the initial state, removes all data from the database, resets transaction ids, etc
     ResetDatabase,
+    /// Pauses the database so that we can perform certain operations
+    PauseDatabase(flume::Receiver<()>),
 }
 
 pub struct DatabaseCommandRequest {
