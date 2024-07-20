@@ -28,6 +28,7 @@ pub struct TransactionWriteRequest {
 }
 
 pub enum NetworkStorageAction {
+    Init(oneshot::Sender<StorageResult<()>>),
     WriteBlob(WriteFileRequest),
     ReadBlob(ReadFileRequest),
     Reset(ResetFileRequest),
@@ -39,6 +40,8 @@ pub enum NetworkStorageAction {
 pub struct NetworkStorage {
     pub action_sender: Sender<NetworkStorageAction>,
 }
+
+const RECEIVER_EXPECTED_TO_WORK: &str = "should not have issues with the receiver";
 
 impl Storage for NetworkStorage {
     fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
@@ -54,9 +57,7 @@ impl Storage for NetworkStorage {
             .blocking_send(write_file_request)
             .unwrap();
 
-        let _ = receiver.recv();
-
-        Ok(())
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
@@ -70,12 +71,17 @@ impl Storage for NetworkStorage {
             }))
             .unwrap();
 
-        receiver.recv().unwrap()
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn init(&self) -> StorageResult<()> {
-        // This method is not needed for network based storage, all initialization happens during client creation
-        Ok(())
+        let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
+
+        self.action_sender
+            .blocking_send(NetworkStorageAction::Init(sender))
+            .unwrap();
+
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn reset_database(&self) -> StorageResult<()> {
@@ -87,9 +93,7 @@ impl Storage for NetworkStorage {
             }))
             .unwrap();
 
-        let _ = receiver.recv();
-
-        Ok(())
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
@@ -104,9 +108,7 @@ impl Storage for NetworkStorage {
             ))
             .unwrap();
 
-        let _ = receiver.recv();
-
-        Ok(())
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
@@ -116,7 +118,7 @@ impl Storage for NetworkStorage {
             .blocking_send(NetworkStorageAction::TransactionLoad(sender))
             .unwrap();
 
-        receiver.recv().unwrap()
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn transaction_flush(&mut self) -> StorageResult<()> {
@@ -126,11 +128,11 @@ impl Storage for NetworkStorage {
             .blocking_send(NetworkStorageAction::TransactionFlush(sender))
             .unwrap();
 
-        receiver.recv().unwrap()
+        receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
     fn transaction_sync(&self) -> StorageResult<()> {
-        // For s3 we do not need a disk sync
+        // For network we do not need a disk sync
         Ok(())
     }
 }

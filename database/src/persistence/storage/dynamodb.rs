@@ -1,7 +1,13 @@
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
 use anyhow::anyhow;
-use aws_sdk_dynamodb::{types::AttributeValue, Client};
+use aws_sdk_dynamodb::{
+    types::{
+        AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
+        ScalarAttributeType, TableStatus,
+    },
+    Client, Error,
+};
 use chrono::Utc;
 use tokio::sync::mpsc::{self};
 
@@ -113,6 +119,57 @@ fn task_fn(
         let base_path = &data.base_path;
 
         match action {
+            NetworkStorageAction::Init(r) => {
+                let attribute_definitions_pk = AttributeDefinition::builder()
+                    .attribute_name(HASH_KEY)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .expect("Should not error value is statically defined in code");
+
+                let attribute_definitions_sk = AttributeDefinition::builder()
+                    .attribute_name(SORT_KEY)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .expect("Should not error value is statically defined in code");
+
+                let key_schema_pk = KeySchemaElement::builder()
+                    .attribute_name(HASH_KEY)
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .expect("Should not error value is statically defined in code");
+
+                let key_schema_sk = KeySchemaElement::builder()
+                    .attribute_name(SORT_KEY)
+                    .key_type(KeyType::Range)
+                    .build()
+                    .expect("Should not error value is statically defined in code");
+
+                let result = client
+                    .create_table()
+                    .table_name(table_str)
+                    .billing_mode(BillingMode::PayPerRequest)
+                    .attribute_definitions(attribute_definitions_pk)
+                    .attribute_definitions(attribute_definitions_sk)
+                    .key_schema(key_schema_pk)
+                    .key_schema(key_schema_sk)
+                    .send()
+                    .await;
+
+                let mut response = match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => match Error::from(e) {
+                        aws_sdk_dynamodb::Error::TableAlreadyExistsException(_) => Ok(()),
+                        aws_sdk_dynamodb::Error::ResourceInUseException(_) => Ok(()),
+                        e => Err(StorageError::UnableToInitializePersistence(anyhow!(e))),
+                    },
+                };
+
+                if let Ok(()) = response {
+                    response = wait_to_completion(table_str, &client).await;
+                }
+
+                let _ = r.send(response).unwrap();
+            }
             NetworkStorageAction::Reset(r) => {
                 let result = reset_table(&client, table_str).await;
 
@@ -308,4 +365,47 @@ async fn delete_transactions_at_partition(
     }
 
     Ok(())
+}
+
+pub async fn ddb_table_status(
+    table_name: &str,
+    client: &Client,
+) -> Result<TableStatus, StorageError> {
+    client
+        .describe_table()
+        .table_name(table_name)
+        .send()
+        .await
+        .map_err(|e| StorageError::UnableToInitializePersistence(anyhow!(e)))?
+        .table
+        .ok_or_else(|| StorageError::UnableToInitializePersistence(anyhow!("Table not found")))?
+        .table_status
+        .ok_or_else(|| {
+            StorageError::UnableToInitializePersistence(anyhow!("Table status not found"))
+        })
+}
+
+/// Waits for the DynamoDB table to be active, typically takes ~7 seconds
+pub async fn wait_to_completion(table_name: &str, client: &Client) -> Result<(), StorageError> {
+    loop {
+        let status = ddb_table_status(table_name, client).await?;
+
+        match &status {
+            TableStatus::Active => return Ok(()),
+            TableStatus::Creating | TableStatus::Updating => {}
+            _ => {
+                return Err(StorageError::UnableToInitializePersistence(anyhow!(
+                    "Unexpected table status: {:?}",
+                    status
+                )));
+            }
+        };
+
+        log::info!(
+            "Waiting for table to be active current status: {:?}",
+            status
+        );
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 }

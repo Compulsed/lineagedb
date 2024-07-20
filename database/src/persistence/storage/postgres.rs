@@ -188,6 +188,9 @@ fn task_fn(
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
     Box::pin(async move {
         match action {
+            NetworkStorageAction::Init(r) => {
+                let _ = r.send(Ok(())).unwrap();
+            }
             NetworkStorageAction::Reset(r) => {
                 let delete_transactions = r#"
                     DELETE FROM "public"."transaction";

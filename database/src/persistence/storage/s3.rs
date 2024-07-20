@@ -109,6 +109,19 @@ fn task_fn(
         let base_path = data.base_path;
 
         match action {
+            NetworkStorageAction::Init(r) => {
+                let result = client.create_bucket().bucket(bucket).send().await;
+
+                let response = match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => match S3Error::from(e) {
+                        S3Error::BucketAlreadyExists(_) => Ok(()),
+                        e => Err(StorageError::UnableToInitializePersistence(anyhow!(e))),
+                    },
+                };
+
+                let _ = r.send(response).unwrap();
+            }
             NetworkStorageAction::Reset(r) => {
                 let result = delete_files_at_path(&client, &bucket, base_path).await;
 
