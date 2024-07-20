@@ -76,11 +76,11 @@ fn client_fn(_options: DynamoOptions) -> Pin<Box<dyn Future<Output = Client> + S
 
 // Is there a way to avoid this duplication?
 impl Storage for DynamoDBStorage {
-    fn init(&self) -> StorageResult<()> {
+    fn init(&mut self) -> StorageResult<()> {
         self.network_storage.init()
     }
 
-    fn reset_database(&self) -> StorageResult<()> {
+    fn reset_database(&mut self) -> StorageResult<()> {
         self.network_storage.reset_database()
     }
 

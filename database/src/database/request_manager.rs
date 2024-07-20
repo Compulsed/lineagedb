@@ -601,7 +601,7 @@ mod tests {
 
         use super::*;
 
-        #[test]
+        #[test_log::test]
         fn with_storage_file() {
             let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
                 .iter()
@@ -636,20 +636,21 @@ mod tests {
 
             let request_manager_initial = Database::new(options_initial).run(1);
 
-            let person = Person {
+            let expected_person = Person {
                 id: EntityId::new(),
                 full_name: "Test".to_string(),
                 email: Some(Uuid::new_v4().to_string()),
             };
 
             // Write #1
-            let added_person = request_manager_initial
-                .send_add_task(person.clone())
+            let actual_person = request_manager_initial
+                .send_add_task(expected_person.clone())
                 .get()
                 .expect("should not timeout");
 
-            // Write #2 -- used to ensure that we are batching / un-batching
-            //  transactions properly
+            // Write #2 -- just used to ensure we are correctly batching multiple
+            //  writes together in the WAL. I suspect this would be better as a more
+            //  isolated test
             let _ = request_manager_initial
                 .send_add_task(Person {
                     id: EntityId::new(),
@@ -659,7 +660,7 @@ mod tests {
                 .get()
                 .expect("should not timeout");
 
-            assert_eq!(added_person, person);
+            assert_eq!(actual_person, expected_person);
 
             let _ = request_manager_initial
                 .send_shutdown_request(ShutdownRequest::Coordinator)
@@ -674,12 +675,12 @@ mod tests {
 
             let request_manager_restored = Database::new(options_restore).run(1);
 
-            let get_person = request_manager_restored
-                .send_get_task(person.clone().id)
+            let actual_person_restored = request_manager_restored
+                .send_get_task(expected_person.clone().id)
                 .get()
                 .expect("should not timeout");
 
-            assert_eq!(get_person, Some(person));
+            assert_eq!(actual_person_restored, Some(expected_person));
 
             // // Gracefully shutdown
             let _ = request_manager_restored

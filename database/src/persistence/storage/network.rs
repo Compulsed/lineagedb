@@ -74,7 +74,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
-    fn init(&self) -> StorageResult<()> {
+    fn init(&mut self) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
         self.action_sender
@@ -84,7 +84,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
-    fn reset_database(&self) -> StorageResult<()> {
+    fn reset_database(&mut self) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
         self.action_sender

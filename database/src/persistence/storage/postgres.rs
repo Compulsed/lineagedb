@@ -139,11 +139,11 @@ fn client_fn(
 
 // Is there a way to avoid this duplication?
 impl Storage for PgStorage {
-    fn init(&self) -> StorageResult<()> {
+    fn init(&mut self) -> StorageResult<()> {
         self.network_storage.init()
     }
 
-    fn reset_database(&self) -> StorageResult<()> {
+    fn reset_database(&mut self) -> StorageResult<()> {
         self.network_storage.reset_database()
     }
 

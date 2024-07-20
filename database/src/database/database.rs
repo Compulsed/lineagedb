@@ -348,21 +348,17 @@ impl Database {
     /// Note: Because this method is being called in the main thread, it is sufficient to just panic and the process
     ///     will exist
     pub fn run(self, threads: usize) -> RequestManager {
+        log::info!(
+            "Running database with the following options: {:#?}",
+            self.database_options
+        );
+
         self.persistence.init().expect(
             r#"Should always be able to initialize persistence, e.g. setting up files, database connections, etc.
             if we are unable to it means we cannot durably write and thus, need to panic"#,
         );
 
         if self.database_options.restore {
-            if let StorageEngine::File(transaction_log_location) =
-                &self.database_options.storage_engine
-            {
-                log::info!(
-                    "Transaction Log Location: [{}]",
-                    transaction_log_location.display()
-                );
-            }
-
             let now = Instant::now();
 
             // Call chain -> snapshot_manager -> person_table
@@ -420,7 +416,7 @@ impl Database {
                 r#"Should always be able to reset persistence, e.g. setting up files, database connections, etc."#
             );
 
-            log::info!("✅ Restore off Cleaned up any existing database state");
+            log::info!("✅ Restore is turned off, cleaning up any previous state");
         }
 
         /*

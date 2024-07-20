@@ -85,8 +85,8 @@ pub enum ReadBlobState {
 //      as to why
 pub trait Storage {
     // Control plane
-    fn init(&self) -> StorageResult<()>;
-    fn reset_database(&self) -> StorageResult<()>;
+    fn init(&mut self) -> StorageResult<()>;
+    fn reset_database(&mut self) -> StorageResult<()>;
 
     // Snapshot (world state, meta data, etc.)
     fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()>;

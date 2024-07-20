@@ -130,13 +130,7 @@ async fn main() -> io::Result<()> {
 
     let args = Cli::parse();
 
-    println!("args: {:?}", args.storage);
-
-    let database_options = DatabaseOptions::default()
-        // .set_storage_engine(StorageEngine::DynamoDB(DynamoOptions::new_local()));
-        .set_storage_engine(to_storage_engine(&args));
-    // .set_storage_engine(StorageEngine::S3(S3Options::new_local()));
-    // .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_local()));
+    let database_options = DatabaseOptions::default().set_storage_engine(to_storage_engine(&args));
 
     // For S3 (an optional backing storage engine), we must use tokio. This would be fine
     //  but the database uses sync apis (blocking_send). blocking_send CANNOT be called with any call-stack

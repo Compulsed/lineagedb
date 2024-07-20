@@ -36,6 +36,9 @@ anyhow = { version = "1.0.86" }
 threadpool = "1.8.1"
 criterion = "0.5.1"
 rstest = "0.18.2"
+env_logger = "*"
+test-log = "*"
+
 
 [[bench]]
 name = "request_manager"

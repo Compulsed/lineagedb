@@ -62,11 +62,11 @@ fn client_fn(_: S3Options) -> Pin<Box<dyn Future<Output = Client> + Send + 'stat
 
 // Is there a way to avoid this duplication?
 impl Storage for S3Storage {
-    fn init(&self) -> StorageResult<()> {
+    fn init(&mut self) -> StorageResult<()> {
         self.network_storage.init()
     }
 
-    fn reset_database(&self) -> StorageResult<()> {
+    fn reset_database(&mut self) -> StorageResult<()> {
         self.network_storage.reset_database()
     }
 
