@@ -45,6 +45,13 @@ pub struct DynamoOptions {
 }
 
 impl DynamoOptions {
+    pub fn new(table: String) -> Self {
+        Self {
+            base_path: PathBuf::from("data"),
+            table,
+        }
+    }
+
     pub fn new_local() -> Self {
         Self {
             base_path: PathBuf::from("data"),

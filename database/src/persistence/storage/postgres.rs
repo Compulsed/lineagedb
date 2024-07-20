@@ -36,6 +36,15 @@ pub struct PostgresOptions {
 }
 
 impl PostgresOptions {
+    pub fn new(user: String, database: String, host: String, password: String) -> Self {
+        Self {
+            user,
+            database,
+            host,
+            password,
+        }
+    }
+
     pub fn new_local() -> Self {
         Self {
             user: "dalesalter".to_string(),

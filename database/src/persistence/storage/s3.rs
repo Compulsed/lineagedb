@@ -37,6 +37,13 @@ pub struct S3Options {
 }
 
 impl S3Options {
+    pub fn new(bucket: String) -> Self {
+        Self {
+            base_path: PathBuf::from("data"),
+            bucket,
+        }
+    }
+
     pub fn new_local() -> Self {
         Self {
             base_path: PathBuf::from("data"),
