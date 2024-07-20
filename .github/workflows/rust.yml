@@ -15,7 +15,6 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - uses: actions-rust-lang/setup-rust-toolchain@v1
-      toolchain: 1.81.0-nightly
     - name: Version check
       run: cargo --version    
     - name: Build
