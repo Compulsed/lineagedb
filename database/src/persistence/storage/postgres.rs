@@ -182,7 +182,7 @@ impl Storage for PgStorage {
 //  a connection pool. Though again, this is a little odd because we mutex the persistence client (meaning)
 //  there already is exclusive access. Wild.
 fn task_fn(
-    data: PostgresOptions,
+    _data: PostgresOptions,
     client: Arc<Arc<Client>>,
     action: NetworkStorageAction,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {

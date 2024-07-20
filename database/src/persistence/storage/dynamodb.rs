@@ -66,7 +66,7 @@ impl DynamoOptions {
     }
 }
 
-fn client_fn(options: DynamoOptions) -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
+fn client_fn(_options: DynamoOptions) -> Pin<Box<dyn Future<Output = Client> + Send + 'static>> {
     Box::pin(async {
         let sdk = aws_config::load_from_env().await;
 

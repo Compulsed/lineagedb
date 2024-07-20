@@ -591,6 +591,10 @@ mod versioning {
     /// - Get Statement
     /// - Row data, normally would not depend on private fields, though MVCC has complex logic so this makes it easier to test
     mod row_data {
+        #[allow(
+            unused_imports,
+            reason = "I think there is a bug here where it thinks the imports are unused, but they are required"
+        )]
         use super::*;
 
         #[test]
@@ -707,7 +711,10 @@ mod versioning {
     }
 
     mod get_statement {
-        #[warn(unused_imports)]
+        #[allow(
+            unused_imports,
+            reason = "I think there is a bug here where it thinks the imports are unused, but they are required"
+        )]
         use super::*;
 
         #[test]
