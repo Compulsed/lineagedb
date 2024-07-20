@@ -45,7 +45,7 @@ impl PostgresOptions {
         }
     }
 
-    pub fn new_local() -> Self {
+    pub fn new_test() -> Self {
         Self {
             user: "dalesalter".to_string(),
             database: "dalesalter1".to_string(),

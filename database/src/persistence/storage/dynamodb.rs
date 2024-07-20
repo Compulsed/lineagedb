@@ -58,7 +58,7 @@ impl DynamoOptions {
         }
     }
 
-    pub fn new_local() -> Self {
+    pub fn new_test() -> Self {
         Self {
             base_path: PathBuf::from("data"),
             table: "lineagedb-ddb".to_string(),

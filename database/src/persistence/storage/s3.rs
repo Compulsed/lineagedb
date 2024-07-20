@@ -44,7 +44,7 @@ impl S3Options {
         }
     }
 
-    pub fn new_local() -> Self {
+    pub fn new_test() -> Self {
         Self {
             base_path: PathBuf::from("data"),
             bucket: "dalesalter-test-bucket".to_string(),

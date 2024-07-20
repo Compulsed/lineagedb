@@ -178,6 +178,7 @@ impl RequestManager {
         return self.send_control(Control::PauseDatabase(resume));
     }
 
+    /// Resets the database to a clean state
     pub fn send_reset_request(&self) -> Result<String, RequestManagerError> {
         return self.send_control(Control::ResetDatabase);
     }
@@ -610,18 +611,21 @@ mod tests {
         }
 
         #[test]
+        #[ignore = "CI will not be set up for running Postgres"]
         fn with_storage_pg() {
-            test_restore_with_engine(StorageEngine::Postgres(PostgresOptions::new_local()));
+            test_restore_with_engine(StorageEngine::Postgres(PostgresOptions::new_test()));
         }
 
         #[test]
+        #[ignore = "CI will not be set up for running S3"]
         fn with_storage_s3() {
-            test_restore_with_engine(StorageEngine::S3(S3Options::new_local()));
+            test_restore_with_engine(StorageEngine::S3(S3Options::new_test()));
         }
 
         #[test]
+        #[ignore = "CI will not be set up for running DynamoDB"]
         fn with_storage_ddb() {
-            test_restore_with_engine(StorageEngine::DynamoDB(DynamoOptions::new_local()));
+            test_restore_with_engine(StorageEngine::DynamoDB(DynamoOptions::new_test()));
         }
 
         fn test_restore_with_engine(engine: StorageEngine) {

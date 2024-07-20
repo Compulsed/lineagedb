@@ -112,7 +112,7 @@ impl Database {
 
     pub fn new_test_other_storage() -> Self {
         let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_local()))
+            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
             .set_restore(false)
             .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 
@@ -413,6 +413,14 @@ impl Database {
                     .to_number()
                     .to_formatted_string(&Locale::en)
             );
+        } else {
+            // Prevents the case where we have an existing snapshot / transaction log from a previous run and it is
+            //  not cleaned up
+            self.persistence.reset().expect(
+                r#"Should always be able to reset persistence, e.g. setting up files, database connections, etc."#
+            );
+
+            log::info!("✅ Restore off Cleaned up any existing database state");
         }
 
         /*
