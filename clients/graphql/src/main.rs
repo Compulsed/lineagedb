@@ -86,8 +86,8 @@ struct Cli {
     #[clap(short, long, default_value = "0.0.0.0")]
     address: String,
 
-    /// Address the graphql server will run on
-    #[clap(long)]
+    /// Whether to log out GraphQL HTTP requests
+    #[clap(long, default_value = "false")]
     log_http: bool,
 
     #[clap(long, default_value_t = 2)]

@@ -108,10 +108,18 @@ An optional CLI is provided for various configuration options
 Usage: lineagedb [OPTIONS]
 
 Options:
-  -d, --data <DATA>        Location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~ [default: data]
-  -p, --port <PORT>        Port the graphql server will run on [default: 9000]
-  -a, --address <ADDRESS>  Address the graphql server will run on [default: 0.0.0.0]
-  -h, --help               Print help
+  -p, --port <PORT>
+          Port the graphql server will run on [default: 9000]
+  -a, --address <ADDRESS>
+          Address the graphql server will run on [default: 0.0.0.0]
+      --log-http
+          Whether to log out GraphQL HTTP requests
+      --http-workers <HTTP_WORKERS>
+          [default: 2]
+      --storage <STORAGE>
+          Which storage mechanism to use [default: file] [possible values: file, dynamo, postgres, s3]
+      --data <DATA>
+          When using file storage, location of the database. Reads / writes to this directory. Note: Does not support shell paths, e.g. ~ [default: data]
 ```
 
 **Debugging**
@@ -122,6 +130,9 @@ RUST_LOG=lineagedb cargo run
 
 # Prints out full exception strings
 RUST_BACKTRACE=1 cargo run
+
+# Prints out logs from tests, note requires updating the test annotation to #[test_log::test]
+RUST_LOG=debug cargo test -p database with_storage_file -- --nocapture
 ```
 
 **Other binaries**

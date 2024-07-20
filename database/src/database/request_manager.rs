@@ -601,7 +601,7 @@ mod tests {
 
         use super::*;
 
-        #[test_log::test]
+        #[test]
         fn with_storage_file() {
             let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
                 .iter()
