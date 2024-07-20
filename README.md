@@ -2,6 +2,8 @@
 
 Lineage DB is an educational MVCC database written in Rust.
 
+![](images/graphiql.png?raw=true)
+
 * This database is not complete please note the [current functionality & limitations](#functionality-and-limitations)
 * Inspired by:
   * [High-Performance Concurrency Control
@@ -11,15 +13,13 @@ Mechanisms for Main-Memory Databases](https://vldb.org/pvldb/vol5/p298_per-akela
 
 ## Running the database
 
-![](images/graphiql.png?raw=true)
-
-
 1. Go to [releases](https://github.com/Compulsed/lineagedb/releases), find a binary that matches your OS / Architecture
 2. Extract the binary from the release
    1. MacOS - Allow running from unidentified developer - [Instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)
 3. Run `./lineagedb`, by default the database storage is stored `data/` in a directory alongside the binary
 4. Open `http://0.0.0.0:9000/graphiql`
 5. Examples of GraphQL queries / mutations can be found here [here](#graphql-examples)
+
 
 ## CLI
 
