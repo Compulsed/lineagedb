@@ -6,8 +6,8 @@ Lineage DB is an educational MVCC database written in Rust. [Current functionali
   <img src="images/graphiql.png" width="500px">
 </p>
 
-Inspired by: [High-Performance Concurrency Control
-Mechanisms for Main-Memory Databases](https://vldb.org/pvldb/vol5/p298_per-akelarson_vldb2012.pdf) & [Tikhu](https://github.com/penberg/tihku)
+*Inspired by: [High-Performance Concurrency Control
+Mechanisms for Main-Memory Databases](https://vldb.org/pvldb/vol5/p298_per-akelarson_vldb2012.pdf) & [Tikhu](https://github.com/penberg/tihku)*
 
 
 
