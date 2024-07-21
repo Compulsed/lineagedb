@@ -604,7 +604,7 @@ mod tests {
         consts::consts::EntityId,
         database::{
             commands::{DatabaseCommand, DatabaseCommandResponse, TransactionContext},
-            database::Database,
+            database::{Database, DatabaseOptions},
         },
         model::{
             person::Person,
@@ -614,7 +614,9 @@ mod tests {
 
     #[test]
     fn sync() {
-        let request_manager = Database::new_test().run(1);
+        let options = DatabaseOptions::new_test().set_threads(1);
+
+        let request_manager = Database::new(options).run();
 
         let action_result = request_manager
             .send_single_statement(
@@ -632,7 +634,9 @@ mod tests {
 
     #[test]
     fn task_command() {
-        let request_manager = Database::new_test().run(1);
+        let options = DatabaseOptions::new_test().set_threads(1);
+
+        let request_manager = Database::new(options).run();
 
         let person = Person {
             id: EntityId::new(),
@@ -654,7 +658,9 @@ mod tests {
 
     #[test]
     fn task_statement() {
-        let request_manager = Database::new_test().run(1);
+        let options = DatabaseOptions::new_test().set_threads(1);
+
+        let request_manager = Database::new(options).run();
 
         let task = request_manager.send_transaction_task(
             vec![Statement::Add(Person {
@@ -672,7 +678,9 @@ mod tests {
 
     #[test]
     fn task_add() {
-        let request_manager = Database::new_test().run(1);
+        let options = DatabaseOptions::new_test().set_threads(1);
+
+        let request_manager = Database::new(options).run();
 
         let person = Person {
             id: EntityId::new(),
@@ -737,7 +745,7 @@ mod tests {
                 .set_restore(false)
                 .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 
-            let request_manager_initial = Database::new(options_initial).run(1);
+            let request_manager_initial = Database::new(options_initial).run();
 
             let expected_person = Person {
                 id: EntityId::new(),
@@ -779,7 +787,7 @@ mod tests {
                 .set_restore(true)
                 .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 
-            let request_manager_restored = Database::new(options_restore).run(1);
+            let request_manager_restored = Database::new(options_restore).run();
 
             let actual_person_restored = request_manager_restored
                 .send_get_task(expected_person.clone().id, TransactionContext::default())

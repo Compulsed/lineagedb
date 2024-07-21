@@ -5,7 +5,7 @@ use database::{
     consts::consts::EntityId,
     database::{
         commands::{ShutdownRequest, TransactionContext},
-        database::{test_utils::run_action, Database},
+        database::{test_utils::run_action, Database, DatabaseOptions},
     },
     model::{
         person::Person,
@@ -56,7 +56,9 @@ pub fn rm_add_benchmark(c: &mut Criterion) {
     let pool = ThreadPool::new(POOL_SIZE);
 
     for database_write_threads in DATABASE_THREADS_WRITE.iter() {
-        let rm = Database::new_test().run(*database_write_threads);
+        let options = DatabaseOptions::new_test().set_threads(*database_write_threads);
+
+        let rm = Database::new(options).run();
 
         group.throughput(Throughput::Elements(SAMPLE_SIZE));
 
@@ -118,7 +120,9 @@ pub fn rm_get_benchmark(c: &mut Criterion) {
     let pool = ThreadPool::new(POOL_SIZE);
 
     for database_read_threads in DATABASE_THREADS_READ.iter() {
-        let rm = Database::new_test().run(*database_read_threads);
+        let options = DatabaseOptions::new_test().set_threads(*database_read_threads);
+
+        let rm = Database::new(options).run();
 
         for i in 0..SAMPLE_SIZE {
             let person = Person {
@@ -189,7 +193,9 @@ pub fn rm_hybrid_benchmark(c: &mut Criterion) {
     let pool = ThreadPool::new(POOL_SIZE);
 
     for database_read_threads in DATABASE_THREADS_READ.iter() {
-        let rm = Database::new_test().run(*database_read_threads);
+        let options = DatabaseOptions::new_test().set_threads(*database_read_threads);
+
+        let rm = Database::new(options).run();
 
         for i in 0..SAMPLE_SIZE {
             let person = Person {

@@ -46,7 +46,7 @@ impl DynamoDBStorage {
 
 #[derive(Clone, Debug)]
 pub struct DynamoOptions {
-    table: String,
+    pub table: String,
     base_path: PathBuf,
 }
 

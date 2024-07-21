@@ -143,7 +143,7 @@ async fn main() -> io::Result<()> {
     // tasks.
     //
     // Context reference: Actix (Async) -> Database (Sync) -> Tokio S3 (Async)
-    let request_manager: RequestManager = spawn_blocking(|| Database::new(database_options).run(5))
+    let request_manager: RequestManager = spawn_blocking(|| Database::new(database_options).run())
         .await
         .unwrap();
 

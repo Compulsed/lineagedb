@@ -31,10 +31,25 @@ pub struct DatabaseOptions {
     pub restore: bool,
     pub write_mode: TransactionWriteMode,
     pub storage_engine: StorageEngine,
+    pub threads: usize,
 }
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
+    pub fn new_test() -> Self {
+        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            .iter()
+            .collect();
+
+        let options = DatabaseOptions::default()
+            .set_storage_engine(StorageEngine::File(database_dir))
+            .set_restore(false)
+            .set_threads(2)
+            .set_sync_file_write(TransactionWriteMode::Off);
+
+        return options;
+    }
+
     /// Defines whether we should attempt to restore the database from a snapshot and transaction log
     /// on startup
     pub fn set_restore(mut self, restore: bool) -> Self {
@@ -53,6 +68,11 @@ impl DatabaseOptions {
         self.storage_engine = storage_engine;
         self
     }
+
+    pub fn set_threads(mut self, threads: usize) -> Self {
+        self.threads = threads;
+        self
+    }
 }
 
 impl Default for DatabaseOptions {
@@ -61,6 +81,7 @@ impl Default for DatabaseOptions {
             write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
             storage_engine: StorageEngine::File(PathBuf::from("data")),
             restore: true,
+            threads: 2,
         }
     }
 }
@@ -95,20 +116,7 @@ impl Database {
     }
 
     pub fn new_test() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
-
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::File(database_dir))
-            .set_restore(false)
-            .set_sync_file_write(TransactionWriteMode::Off);
-
-        Self {
-            person_table: PersonTable::new(),
-            persistence: Persistence::new(options.clone()),
-            database_options: options,
-        }
+        Database::new(DatabaseOptions::new_test())
     }
 
     pub fn new_test_other_storage() -> Self {
@@ -222,7 +230,25 @@ impl Database {
                                 database.person_table.person_rows.len().to_string(),
                             );
 
-                            let info = vec![current_transaction_id, wal_size, row_count];
+                            let database_threads = (
+                                "DatabaseThreads".to_string(),
+                                database.database_options.threads.to_string(),
+                            );
+
+                            let engine = database
+                                .database_options
+                                .storage_engine
+                                .get_engine_info_stats();
+
+                            let info = vec![
+                                row_count,
+                                wal_size,
+                                current_transaction_id,
+                                database_threads,
+                            ]
+                            .into_iter()
+                            .chain(engine.into_iter())
+                            .collect::<Vec<(String, String)>>();
 
                             let _ = resolver.send(DatabaseCommandResponse::control_info(info));
 
@@ -385,7 +411,7 @@ impl Database {
     ///
     /// Note: Because this method is being called in the main thread, it is sufficient to just panic and the process
     ///     will exist
-    pub fn run(self, threads: usize) -> RequestManager {
+    pub fn run(self) -> RequestManager {
         log::info!(
             "Running database with the following options: {:#?}",
             self.database_options
@@ -475,7 +501,7 @@ impl Database {
         let mut tx_channels = vec![];
         let mut rx_channels = vec![];
 
-        for _ in 0..threads {
+        for _ in 0..self.database_options.threads {
             let (tx, rx) = flume::unbounded::<DatabaseCommandRequest>();
 
             tx_channels.push(tx);
@@ -976,7 +1002,7 @@ pub mod test_utils {
         time::{Duration, Instant},
     };
 
-    use super::ApplyMode;
+    use super::{ApplyMode, DatabaseOptions};
 
     #[derive(Debug)]
     pub enum Mode {
@@ -1062,7 +1088,7 @@ pub mod test_utils {
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
     ) -> TestMetrics {
-        let rm = Database::new_test().run(database_threads);
+        let rm = Database::new(DatabaseOptions::new_test().set_threads(database_threads)).run();
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
