@@ -60,6 +60,8 @@ pub enum DatabaseCommandControlResponse {
     Success(String),
     /// Command has failed, returns a message for why it failed
     Error(String),
+    /// Returns a tuple, used for database information
+    Info(Vec<(String, String)>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +74,12 @@ impl DatabaseCommandResponse {
     pub fn control_success(message: &str) -> Self {
         DatabaseCommandResponse::DatabaseCommandControlResponse(
             DatabaseCommandControlResponse::Success(message.to_string()),
+        )
+    }
+
+    pub fn control_info(info: Vec<(String, String)>) -> Self {
+        DatabaseCommandResponse::DatabaseCommandControlResponse(
+            DatabaseCommandControlResponse::Info(info),
         )
     }
 
@@ -118,6 +126,8 @@ pub enum Control {
     ResetDatabase,
     /// Pauses the database so that we can perform certain operations
     PauseDatabase(flume::Receiver<()>),
+    /// Provides the caller some KV information on database stats
+    DatabaseStats,
 }
 
 pub enum SnapshotTimestamp {

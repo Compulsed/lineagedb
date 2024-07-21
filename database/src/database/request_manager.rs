@@ -218,6 +218,19 @@ impl RequestManager {
         return self.send_control(Control::ResetDatabase);
     }
 
+    pub fn send_info_request(&self) -> Result<Vec<(String, String)>, RequestManagerError> {
+        let command_result =
+            self.send_database_command(DatabaseCommand::Control(Control::DatabaseStats))?;
+
+        // TODO: Clean this logic up, as we are now able to return success, info and error
+        match command_result {
+            DatabaseCommandResponse::DatabaseCommandControlResponse(
+                DatabaseCommandControlResponse::Info(i),
+            ) => Ok(i),
+            _ => panic!("Controls should always return a success, info or error status"),
+        }
+    }
+
     pub fn send_snapshot_request(&self) -> Result<String, RequestManagerError> {
         return self.send_control(Control::SnapshotDatabase);
     }
@@ -230,7 +243,7 @@ impl RequestManager {
             DatabaseCommandResponse::DatabaseCommandControlResponse(
                 DatabaseCommandControlResponse::Success(s),
             ) => Ok(s),
-            _ => panic!("Controls should always return a success or error status"),
+            _ => panic!("Controls should always return a success, info or error status"),
         }
     }
 
@@ -311,6 +324,11 @@ fn map_response(
                 DatabaseCommandControlResponse::Success(s) => {
                     Ok(DatabaseCommandResponse::DatabaseCommandControlResponse(
                         DatabaseCommandControlResponse::Success(s),
+                    ))
+                }
+                DatabaseCommandControlResponse::Info(s) => {
+                    Ok(DatabaseCommandResponse::DatabaseCommandControlResponse(
+                        DatabaseCommandControlResponse::Info(s),
                     ))
                 }
                 DatabaseCommandControlResponse::Error(s) => {

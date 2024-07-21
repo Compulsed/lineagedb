@@ -143,6 +143,18 @@ impl QueryRoot {
 
         return Ok(result);
     }
+
+    fn database_info(context: &'db GraphQLContext) -> FieldResult<Vec<String>> {
+        let database = context.request_manager.lock().unwrap();
+
+        let database_info = database
+            .send_info_request()?
+            .into_iter()
+            .map(|r| format!("[{}] {}", r.0, r.1))
+            .collect();
+
+        return Ok(database_info);
+    }
 }
 
 pub struct MutationRoot;

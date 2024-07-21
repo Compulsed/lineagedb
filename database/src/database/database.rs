@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
 use num_format::{Locale, ToFormattedString};
+use tokio_postgres::row;
 use uuid::Uuid;
 
 use crate::{
@@ -186,9 +187,18 @@ impl Database {
                 }
             };
 
+            // Clock time of the transaction, we include a transaction id in all requests
+            //  this clock time is stored in an atomic so it is unique across threads
+            let transaction_timestamp = database
+                .persistence
+                .transaction_wal
+                .get_increment_current_transaction_id()
+                .clone();
+
             log::info!(
-                "[Thread: {}] Received request: {}",
+                "[Thread: {}. TxId: {}] Received request: {}",
                 thread_id,
+                transaction_timestamp,
                 command.log_format()
             );
 
@@ -198,6 +208,32 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
+                        Control::DatabaseStats => {
+                            let current_transaction_id = (
+                                "CurrentTransactionID".to_string(),
+                                transaction_timestamp.to_string(),
+                            );
+
+                            let wal_size = (
+                                "WALSize".to_string(),
+                                database
+                                    .persistence
+                                    .transaction_wal
+                                    .get_wal_size()
+                                    .to_string(),
+                            );
+
+                            let row_count = (
+                                "RowCount".to_string(),
+                                database.person_table.person_rows.len().to_string(),
+                            );
+
+                            let info = vec![current_transaction_id, wal_size, row_count];
+
+                            let _ = resolver.send(DatabaseCommandResponse::control_info(info));
+
+                            continue;
+                        }
                         Control::Shutdown(request) => {
                             // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
                             match request {
@@ -266,19 +302,15 @@ impl Database {
                             let database_reset_guard =
                                 &DatabasePauseEvent::new(&database_request_managers);
 
-                            let transaction_id = database
-                                .persistence
-                                .transaction_wal
-                                .get_increment_current_transaction_id()
-                                .clone();
-
                             let table = &database.person_table;
 
                             // Persist current state to disk
-                            let snapshot_request = database
-                                .persistence
-                                .snapshot_manager
-                                .create_snapshot(database_reset_guard, table, transaction_id);
+                            let snapshot_request =
+                                database.persistence.snapshot_manager.create_snapshot(
+                                    database_reset_guard,
+                                    table,
+                                    transaction_timestamp,
+                                );
 
                             if let Err(e) = snapshot_request {
                                 let _ = resolver.send(DatabaseCommandResponse::control_error(
@@ -329,20 +361,19 @@ impl Database {
             match contains_mutation {
                 true => {
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = database
-                        .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
+                    let _ = database.apply_transaction(
+                        transaction_timestamp,
+                        transaction_statements,
+                        ApplyMode::Request(resolver),
+                    );
                 }
                 false => {
                     // By default we run a single statement transaction, this would just use the 'latest' timestamp
                     //  though when we are running as a long-lived transaction we use the snapshot timestamp from
                     //  the transaction begin
                     let query_transaction_id = match transaction_context.snapshot_timestamp {
-                        SnapshotTimestamp::AtTransactionId(transaction_id) => transaction_id,
-                        SnapshotTimestamp::Latest => database
-                            .persistence
-                            .transaction_wal
-                            .get_increment_current_transaction_id()
-                            .clone(),
+                        SnapshotTimestamp::AtTransactionId(snapshot_id) => snapshot_id,
+                        SnapshotTimestamp::Latest => transaction_timestamp,
                     };
 
                     let response =
@@ -395,8 +426,11 @@ impl Database {
 
             // Then add states from the transaction log
             for transaction in restored_transactions {
-                let apply_transaction_result =
-                    self.apply_transaction(transaction.statements, ApplyMode::Restore);
+                let apply_transaction_result = self.apply_transaction(
+                    transaction.id,
+                    transaction.statements,
+                    ApplyMode::Restore,
+                );
 
                 if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
                     apply_transaction_result
@@ -506,15 +540,10 @@ impl Database {
 
     pub fn apply_transaction(
         &self,
+        applying_transaction_id: TransactionId,
         statements: Vec<Statement>,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        // Getting also increments -- I think this might be the place where we should be incrementing from
-        let applying_transaction_id = self
-            .persistence
-            .transaction_wal
-            .get_increment_current_transaction_id();
-
         let mut status = CommitStatus::Commit;
 
         struct StatementAndResult {
@@ -613,7 +642,7 @@ mod tests {
 
     mod add {
 
-        use crate::database::database::ApplyMode;
+        use crate::database::database::test_utils::apply_transaction_at_next_timestamp;
 
         use super::*;
 
@@ -623,11 +652,13 @@ mod tests {
 
             let person = Person::new_test();
 
-            let transcation_result = database
-                .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
+            let transaction_result = apply_transaction_at_next_timestamp(
+                &database,
+                vec![Statement::Add(person.clone())],
+            );
 
             assert_eq!(
-                transcation_result,
+                transaction_result,
                 DatabaseCommandTransactionResponse::new_committed_single_result(
                     StatementResult::Single(person)
                 )
@@ -640,11 +671,13 @@ mod tests {
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
-            let transcation_result_one = database
-                .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
+            let transaction_result_one = apply_transaction_at_next_timestamp(
+                &database,
+                vec![Statement::Add(person_one.clone())],
+            );
 
             assert_eq!(
-                transcation_result_one,
+                transaction_result_one,
                 DatabaseCommandTransactionResponse::new_committed_single_result(
                     StatementResult::Single(person_one.clone())
                 ),
@@ -654,11 +687,13 @@ mod tests {
             let person_two: Person =
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let transcation_result_two = database
-                .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
+            let transaction_result_two = apply_transaction_at_next_timestamp(
+                &database,
+                vec![Statement::Add(person_two.clone())],
+            );
 
             assert_eq!(
-                transcation_result_two,
+                transaction_result_two,
                 DatabaseCommandTransactionResponse::new_committed_single_result(
                     StatementResult::Single(person_two.clone())
                 ),
@@ -673,12 +708,12 @@ mod tests {
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
             let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let action_results = database.apply_transaction(
+            let action_results = apply_transaction_at_next_timestamp(
+                &database,
                 vec![
                     Statement::Add(person_one.clone()),
                     Statement::Add(person_two.clone()),
                 ],
-                ApplyMode::Restore,
             );
 
             assert_eq!(
@@ -705,15 +740,13 @@ mod tests {
                 Some("OverlappingEmail".to_string()),
             );
 
-            let process_action_result = database.apply_transaction(
+            let action_error = apply_transaction_at_next_timestamp(
+                &database,
                 vec![
                     Statement::Add(person_one.clone()),
                     Statement::Add(person_two.clone()),
                 ],
-                ApplyMode::Restore,
             );
-
-            let action_error = process_action_result;
 
             assert_eq!(
                 action_error,
@@ -727,7 +760,7 @@ mod tests {
     }
 
     mod transaction_rollback {
-        use crate::{consts::consts::TransactionId, database::database::ApplyMode};
+        use crate::database::database::test_utils::apply_transaction_at_next_timestamp;
 
         use super::*;
 
@@ -740,7 +773,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let error_message = apply_transaction_at_next_timestamp(&database, rollback_actions);
 
             // The transaction log will be empty
             assert_eq!(
@@ -753,27 +786,6 @@ mod tests {
         }
 
         #[test]
-        fn transaction_log_is_empty() {
-            // Given an empty database
-            let database = Database::new_test();
-
-            let rollback_actions = create_rollback_statements();
-
-            // When a rollback happens
-            database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // Then there should be no items in the transaction log
-            assert_eq!(
-                database
-                    .persistence
-                    .transaction_wal
-                    .get_increment_current_transaction_id(),
-                TransactionId::new_first_transaction(),
-                "Transaction log should be empty"
-            );
-        }
-
-        #[test]
         #[ignore = "with multiple writers we no longer support database constraints"]
         fn row_table_is_empty() {
             // Given an empty database
@@ -782,7 +794,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let _ = apply_transaction_at_next_timestamp(&database, rollback_actions);
 
             // The row that was created for the item is removed
             assert_eq!(
@@ -953,7 +965,7 @@ pub mod test_utils {
 
     use crate::{
         database::{
-            commands::TransactionContext,
+            commands::{DatabaseCommandTransactionResponse, TransactionContext},
             database::Database,
             request_manager::{RequestManager, TaskStatementResponse},
         },
@@ -964,6 +976,8 @@ pub mod test_utils {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
+
+    use super::ApplyMode;
 
     #[derive(Debug)]
     pub enum Mode {
@@ -1117,5 +1131,19 @@ pub mod test_utils {
         // );
 
         metrics
+    }
+
+    /// This test helper allows us to use the simple apply_transaction interface but still maintain
+    /// the incrementing transaction id
+    pub fn apply_transaction_at_next_timestamp(
+        database: &Database,
+        statements: Vec<Statement>,
+    ) -> DatabaseCommandTransactionResponse {
+        let next_timestamp = database
+            .persistence
+            .transaction_wal
+            .get_increment_current_transaction_id();
+
+        database.apply_transaction(next_timestamp, statements, ApplyMode::Restore)
     }
 }
