@@ -67,8 +67,6 @@ impl RequestManager {
     fn get_sender(&self) -> &flume::Sender<DatabaseCommandRequest> {
         let mut rng = thread_rng();
 
-        // return &self.database_sender[0];
-
         self.database_sender
             .choose(&mut rng)
             .expect("Should have at least one sender")

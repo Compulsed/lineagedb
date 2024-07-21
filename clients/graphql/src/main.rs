@@ -20,7 +20,6 @@ use database::{
     },
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
-use std::sync::Mutex;
 use std::{io, sync::Arc};
 
 use crate::schema::{create_schema, GraphQLContext, Schema};
@@ -43,7 +42,7 @@ async fn graphql(
     let request_manager = request_manager_ref.as_ref();
 
     let graphql_context = GraphQLContext {
-        request_manager: Mutex::new(request_manager.clone()),
+        request_manager: request_manager.clone(),
     };
 
     let user = data.execute(&schema, &graphql_context).await;
