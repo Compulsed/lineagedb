@@ -1,7 +1,6 @@
 use std::{path::PathBuf, sync::Arc, thread, time::Instant};
 
 use num_format::{Locale, ToFormattedString};
-use tokio_postgres::row;
 use uuid::Uuid;
 
 use crate::{
@@ -196,7 +195,7 @@ impl Database {
                 .clone();
 
             log::info!(
-                "[Thread: {}. TxId: {}] Received request: {}",
+                "[Thread: {}. TxId: {}] ()Received request: {}",
                 thread_id,
                 transaction_timestamp,
                 command.log_format()
