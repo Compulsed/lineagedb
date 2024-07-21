@@ -15,8 +15,7 @@ use crate::{
 use super::{
     query::{filter, query},
     row::{
-        ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion,
-        PersonVersionState, UpdateStatement,
+        ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion, PersonVersionState,
     },
 };
 
@@ -275,7 +274,7 @@ fn sort_list(people: &mut Vec<Person>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::table::row::UpdatePersonData;
+    use crate::database::table::row::{UpdatePersonData, UpdateStatement};
 
     // TODO:
     //  - There should be a better way of comparing lists of a default sort (sort_list)
@@ -427,7 +426,10 @@ mod tests {
         }
 
         mod update {
-            use crate::database::table::query::{QueryMatch, QueryPersonData};
+            use crate::database::table::{
+                query::{QueryMatch, QueryPersonData},
+                row::UpdateStatement,
+            };
 
             use super::*;
 

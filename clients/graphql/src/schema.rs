@@ -1,5 +1,5 @@
 use database::{
-    consts::consts::{EntityId, TransactionId},
+    consts::consts::EntityId,
     database::{
         commands::{SnapshotTimestamp, TransactionContext},
         request_manager::RequestManager,
