@@ -32,7 +32,7 @@ impl S3Storage {
 
 #[derive(Clone, Debug)]
 pub struct S3Options {
-    bucket: String,
+    pub bucket: String,
     base_path: PathBuf,
 }
 

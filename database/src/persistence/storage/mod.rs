@@ -1,6 +1,6 @@
 use crate::database::database::DatabaseOptions;
 use std::{
-    io,
+    fs, io,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -97,7 +97,7 @@ pub trait Storage {
     fn transaction_load(&mut self) -> StorageResult<Vec<String>>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum_macros::Display)]
 pub enum StorageEngine {
     File(PathBuf),
     S3(S3Options),
@@ -117,5 +117,27 @@ impl StorageEngine {
                 Arc::new(Mutex::new(PgStorage::new(options.clone())))
             }
         }
+    }
+
+    pub fn get_engine_info_stats(&self) -> Vec<(String, String)> {
+        let storage_engine = ("StorageEngine".to_string(), format!("{}", self));
+
+        fn prefix(info_type: &str) -> String {
+            format!("- {}", info_type)
+        }
+
+        let storage_engine_config_info: (String, String) = match self {
+            StorageEngine::File(base_dir) => (
+                prefix("BaseDir"),
+                format!("{}", fs::canonicalize(base_dir).unwrap().display()),
+            ),
+            StorageEngine::S3(options) => (prefix("S3 Bucket"), format!("{}", options.bucket)),
+            StorageEngine::DynamoDB(options) => (prefix("DDB Table"), format!("{}", options.table)),
+            StorageEngine::Postgres(options) => {
+                (prefix("SQL Database"), format!("{}", options.database))
+            }
+        };
+
+        return vec![storage_engine, storage_engine_config_info];
     }
 }
