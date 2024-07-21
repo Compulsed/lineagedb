@@ -17,9 +17,7 @@ pub mod network;
 pub mod postgres;
 pub mod s3;
 
-// TODO: Consider grouping these errors into submodules, as storage provider it would be significantly clearer which error is
-//  related to which command
-// NOTE: Our use of anyhow is because each storage provider will return a different error type
+// Our use of anyhow is because each storage provider will return a different error type
 //  this means we cannot just standardize on something like say IO Error.
 #[derive(Error, Debug)]
 pub enum StorageError {

@@ -1,4 +1,7 @@
-use crate::model::statement::{Statement, StatementResult};
+use crate::{
+    consts::consts::TransactionId,
+    model::statement::{Statement, StatementResult},
+};
 
 /// Database commands are how we interact with the database, they are how we ask the database to run a transaction, shutdown, etc
 ///
@@ -117,7 +120,35 @@ pub enum Control {
     PauseDatabase(flume::Receiver<()>),
 }
 
+pub enum SnapshotTimestamp {
+    /// The transaction id that the statement is running on
+    AtTransactionId(TransactionId),
+    /// Use the latest transaction id
+    Latest,
+}
+
+/// Information about the transaction that is being run
+pub struct TransactionContext {
+    /// The snapshot id that the transaction is running on. If none, use the latest transaction id
+    pub snapshot_timestamp: SnapshotTimestamp,
+}
+
+impl TransactionContext {
+    pub fn new(snapshot_timestamp: SnapshotTimestamp) -> Self {
+        TransactionContext { snapshot_timestamp }
+    }
+}
+
+impl Default for TransactionContext {
+    fn default() -> Self {
+        TransactionContext {
+            snapshot_timestamp: SnapshotTimestamp::Latest,
+        }
+    }
+}
+
 pub struct DatabaseCommandRequest {
     pub resolver: oneshot::Sender<DatabaseCommandResponse>,
     pub command: DatabaseCommand,
+    pub transaction_context: TransactionContext,
 }

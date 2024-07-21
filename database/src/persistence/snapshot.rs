@@ -18,12 +18,11 @@ enum FileType {
     Snapshot,
 }
 
-// TODO: Remove the filetype, should be dependent of the storage layer
 impl FileType {
     fn as_str(&self) -> &'static str {
         match self {
-            FileType::Metadata => "metadata.json",
-            FileType::Snapshot => "snapshot.json",
+            FileType::Metadata => "metadata",
+            FileType::Snapshot => "snapshot",
         }
     }
 }

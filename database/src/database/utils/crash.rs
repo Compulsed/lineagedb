@@ -6,14 +6,18 @@ use crate::persistence::storage::StorageError;
 
 #[derive(Error, Debug)]
 pub enum DatabaseCrash {
+    /// We commit to the in memory structure before writing to the WAL, if the WAL write fails
+    /// we have an inconsistent state
     #[error("Inconsistent, uncommitted world state due to storage error: {0}")]
     InconsistentUncommittedInMemoryWorldStateFromWALWrite(StorageError),
 
-    // We snapshot the world state and trim the wal, either could be inconsistent
+    /// World state creation / WAL not currently implemented as an atomic operation
+    /// this error is what happens when there are inconsistencies due to a storage error
     #[error("Inconsistent snapshot disk state due to storage error: {0}")]
     InconsistentStorageFromSnapshot(StorageError),
 
-    /// We reset both the WAL / Snapshots, either could be inconsistent
+    /// Cleaning up table state / the WAL is not currently implemented as an atomic operation
+    /// this error is what happens when there are inconsistencies due to a storage error
     #[error("Inconsistent storage from restarting database: {0}")]
     InconsistentStorageFromReset(StorageError),
 

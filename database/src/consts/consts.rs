@@ -23,6 +23,12 @@ impl TransactionId {
     }
 }
 
+impl From<i32> for TransactionId {
+    fn from(transaction_id: i32) -> TransactionId {
+        TransactionId(transaction_id.try_into().unwrap())
+    }
+}
+
 impl fmt::Display for TransactionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)

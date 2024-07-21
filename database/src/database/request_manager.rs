@@ -15,6 +15,7 @@ use super::{
     commands::{
         Control, DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandRequest,
         DatabaseCommandResponse, DatabaseCommandTransactionResponse, ShutdownRequest,
+        TransactionContext,
     },
     table::{query::QueryPersonData, row::UpdatePersonData},
 };
@@ -74,64 +75,91 @@ impl RequestManager {
     }
 
     // -- Entity Methods: Async Task --
-    pub fn send_add_task(&self, person: Person) -> TaskAddResponse {
-        TaskAddResponse::send(self, person)
+    pub fn send_add_task(
+        &self,
+        person: Person,
+        transaction_context: TransactionContext,
+    ) -> TaskAddResponse {
+        TaskAddResponse::send(self, person, transaction_context)
     }
 
     pub fn send_update_task(
         &self,
         id: EntityId,
         person_update: UpdatePersonData,
+        transaction_context: TransactionContext,
     ) -> TaskUpdateResponse {
-        TaskUpdateResponse::send(self, id, person_update)
+        TaskUpdateResponse::send(self, id, person_update, transaction_context)
     }
 
-    pub fn send_get_task(&self, id: EntityId) -> TaskGetResponse {
-        TaskGetResponse::send(self, id)
+    pub fn send_get_task(
+        &self,
+        id: EntityId,
+        transaction_context: TransactionContext,
+    ) -> TaskGetResponse {
+        TaskGetResponse::send(self, id, transaction_context)
     }
 
     pub fn send_get_version_task(
         &self,
         id: EntityId,
         version_id: VersionId,
+        transaction_context: TransactionContext,
     ) -> TaskGetVersionResponse {
-        TaskGetVersionResponse::send(self, id, version_id)
+        TaskGetVersionResponse::send(self, id, version_id, transaction_context)
     }
 
-    pub fn send_list_task(&self, query: Option<QueryPersonData>) -> TaskListResponse {
-        TaskListResponse::send(self, query)
+    pub fn send_list_task(
+        &self,
+        query: Option<QueryPersonData>,
+        transaction_context: TransactionContext,
+    ) -> TaskListResponse {
+        TaskListResponse::send(self, query, transaction_context)
     }
 
     // -- Entity Methods: Sync --
-    pub fn send_add(&self, person: Person) -> Result<Person, RequestManagerError> {
-        self.send_add_task(person).get()
+    pub fn send_add(
+        &self,
+        person: Person,
+        transaction_context: TransactionContext,
+    ) -> Result<Person, RequestManagerError> {
+        self.send_add_task(person, transaction_context).get()
     }
 
     pub fn send_update(
         &self,
         id: EntityId,
         person_update: UpdatePersonData,
+        transaction_context: TransactionContext,
     ) -> Result<Person, RequestManagerError> {
-        self.send_update_task(id, person_update).get()
+        self.send_update_task(id, person_update, transaction_context)
+            .get()
     }
 
-    pub fn send_get(&self, id: EntityId) -> Result<Option<Person>, RequestManagerError> {
-        self.send_get_task(id).get()
+    pub fn send_get(
+        &self,
+        id: EntityId,
+        transaction_context: TransactionContext,
+    ) -> Result<Option<Person>, RequestManagerError> {
+        self.send_get_task(id, transaction_context).get()
     }
 
     pub fn send_get_version(
         &self,
         id: EntityId,
         version_id: VersionId,
+        transaction_context: TransactionContext,
     ) -> Result<Option<Person>, RequestManagerError> {
-        self.send_get_version_task(id, version_id).get()
+        self.send_get_version_task(id, version_id, transaction_context)
+            .get()
     }
 
     pub fn send_list(
         &self,
         query: Option<QueryPersonData>,
+        transaction_context: TransactionContext,
     ) -> Result<Vec<Person>, RequestManagerError> {
-        self.send_list_task(query).get()
+        self.send_list_task(query, transaction_context).get()
     }
 
     /// Convenience method to send a single statement to the database and returns the response
@@ -140,9 +168,10 @@ impl RequestManager {
     pub fn send_single_statement(
         &self,
         statement: Statement,
+        transaction_context: TransactionContext,
     ) -> Result<StatementResult, RequestManagerError> {
         let single_statement_result = self
-            .send_transaction(vec![statement])?
+            .send_transaction(vec![statement], transaction_context)?
             .pop()
             .expect("single a statement should generate single response");
 
@@ -150,15 +179,21 @@ impl RequestManager {
     }
 
     /// Sends a set of statements to the database and returns the response
-    pub fn send_transaction_task(&self, statements: Vec<Statement>) -> TaskStatementResponse {
-        TaskStatementResponse::send(self, statements)
+    pub fn send_transaction_task(
+        &self,
+        statements: Vec<Statement>,
+        transaction_context: TransactionContext,
+    ) -> TaskStatementResponse {
+        TaskStatementResponse::send(self, statements, transaction_context)
     }
 
     pub fn send_transaction(
         &self,
         statements: Vec<Statement>,
+        transaction_context: TransactionContext,
     ) -> Result<Vec<StatementResult>, RequestManagerError> {
-        self.send_transaction_task(statements).get()
+        self.send_transaction_task(statements, transaction_context)
+            .get()
     }
 
     // -- Control Methods --
@@ -210,6 +245,7 @@ impl RequestManager {
         let request = DatabaseCommandRequest {
             resolver: response_sender,
             command: database_request,
+            transaction_context: TransactionContext::default(),
         };
 
         // Sends the request to the database worker, database will response
@@ -240,6 +276,7 @@ impl RequestManager {
         let request = DatabaseCommandRequest {
             resolver: response_sender,
             command: database_request,
+            transaction_context: TransactionContext::default(),
         };
 
         self.get_sender().send(request).unwrap();
@@ -290,12 +327,14 @@ fn map_response(
 fn send_request(
     request_manager: &RequestManager,
     statement: Vec<Statement>,
+    transaction_context: TransactionContext,
 ) -> oneshot::Receiver<DatabaseCommandResponse> {
     let (response_sender, response_receiver) = oneshot::channel::<DatabaseCommandResponse>();
 
     let request = DatabaseCommandRequest {
         resolver: response_sender,
         command: DatabaseCommand::Transaction(statement),
+        transaction_context,
     };
 
     request_manager.get_sender().send(request).unwrap();
@@ -349,9 +388,13 @@ pub struct TaskStatementResponse {
 }
 
 impl TaskStatementResponse {
-    pub fn send(request_manager: &RequestManager, statement: Vec<Statement>) -> Self {
+    pub fn send(
+        request_manager: &RequestManager,
+        statement: Vec<Statement>,
+        transaction_context: TransactionContext,
+    ) -> Self {
         Self {
-            response: send_request(request_manager, statement),
+            response: send_request(request_manager, statement, transaction_context),
         }
     }
 
@@ -371,9 +414,17 @@ pub struct TaskAddResponse {
 }
 
 impl TaskAddResponse {
-    pub fn send(request_manager: &RequestManager, person: Person) -> Self {
+    pub fn send(
+        request_manager: &RequestManager,
+        person: Person,
+        transaction_context: TransactionContext,
+    ) -> Self {
         Self {
-            response: send_request(request_manager, vec![Statement::Add(person)]),
+            response: send_request(
+                request_manager,
+                vec![Statement::Add(person)],
+                transaction_context,
+            ),
         }
     }
 
@@ -402,9 +453,14 @@ impl TaskUpdateResponse {
         request_manager: &RequestManager,
         id: EntityId,
         person_update: UpdatePersonData,
+        transaction_context: TransactionContext,
     ) -> Self {
         Self {
-            response: send_request(request_manager, vec![Statement::Update(id, person_update)]),
+            response: send_request(
+                request_manager,
+                vec![Statement::Update(id, person_update)],
+                transaction_context,
+            ),
         }
     }
 
@@ -429,9 +485,17 @@ pub struct TaskGetResponse {
 }
 
 impl TaskGetResponse {
-    pub fn send(request_manager: &RequestManager, id: EntityId) -> Self {
+    pub fn send(
+        request_manager: &RequestManager,
+        id: EntityId,
+        transaction_context: TransactionContext,
+    ) -> Self {
         Self {
-            response: send_request(request_manager, vec![Statement::Get(id)]),
+            response: send_request(
+                request_manager,
+                vec![Statement::Get(id)],
+                transaction_context,
+            ),
         }
     }
 
@@ -450,9 +514,18 @@ pub struct TaskGetVersionResponse {
 }
 
 impl TaskGetVersionResponse {
-    pub fn send(request_manager: &RequestManager, id: EntityId, version_id: VersionId) -> Self {
+    pub fn send(
+        request_manager: &RequestManager,
+        id: EntityId,
+        version_id: VersionId,
+        transaction_context: TransactionContext,
+    ) -> Self {
         Self {
-            response: send_request(request_manager, vec![Statement::GetVersion(id, version_id)]),
+            response: send_request(
+                request_manager,
+                vec![Statement::GetVersion(id, version_id)],
+                transaction_context,
+            ),
         }
     }
 
@@ -477,9 +550,17 @@ pub struct TaskListResponse {
 }
 
 impl TaskListResponse {
-    pub fn send(request_manager: &RequestManager, query: Option<QueryPersonData>) -> Self {
+    pub fn send(
+        request_manager: &RequestManager,
+        query: Option<QueryPersonData>,
+        transaction_context: TransactionContext,
+    ) -> Self {
         Self {
-            response: send_request(request_manager, vec![Statement::List(query)]),
+            response: send_request(
+                request_manager,
+                vec![Statement::List(query)],
+                transaction_context,
+            ),
         }
     }
 
@@ -506,7 +587,7 @@ mod tests {
     use crate::{
         consts::consts::EntityId,
         database::{
-            commands::{DatabaseCommand, DatabaseCommandResponse},
+            commands::{DatabaseCommand, DatabaseCommandResponse, TransactionContext},
             database::Database,
         },
         model::{
@@ -520,11 +601,14 @@ mod tests {
         let request_manager = Database::new_test().run(1);
 
         let action_result = request_manager
-            .send_single_statement(Statement::Add(Person {
-                id: EntityId::new(),
-                full_name: "Test".to_string(),
-                email: Some(Uuid::new_v4().to_string()),
-            }))
+            .send_single_statement(
+                Statement::Add(Person {
+                    id: EntityId::new(),
+                    full_name: "Test".to_string(),
+                    email: Some(Uuid::new_v4().to_string()),
+                }),
+                TransactionContext::default(),
+            )
             .expect("Should not timeout");
 
         assert_eq!(action_result.single().full_name, "Test");
@@ -556,11 +640,14 @@ mod tests {
     fn task_statement() {
         let request_manager = Database::new_test().run(1);
 
-        let task = request_manager.send_transaction_task(vec![Statement::Add(Person {
-            id: EntityId::new(),
-            full_name: "Test".to_string(),
-            email: Some(Uuid::new_v4().to_string()),
-        })]);
+        let task = request_manager.send_transaction_task(
+            vec![Statement::Add(Person {
+                id: EntityId::new(),
+                full_name: "Test".to_string(),
+                email: Some(Uuid::new_v4().to_string()),
+            })],
+            TransactionContext::default(),
+        );
 
         let action_result = task.get().expect("Should not timeout");
 
@@ -578,7 +665,7 @@ mod tests {
         };
 
         let added_person = request_manager
-            .send_add_task(person.clone())
+            .send_add_task(person.clone(), TransactionContext::default())
             .get()
             .expect("should not timeout");
 
@@ -644,7 +731,7 @@ mod tests {
 
             // Write #1
             let actual_person = request_manager_initial
-                .send_add_task(expected_person.clone())
+                .send_add_task(expected_person.clone(), TransactionContext::default())
                 .get()
                 .expect("should not timeout");
 
@@ -652,11 +739,14 @@ mod tests {
             //  writes together in the WAL. I suspect this would be better as a more
             //  isolated test
             let _ = request_manager_initial
-                .send_add_task(Person {
-                    id: EntityId::new(),
-                    full_name: "Test".to_string(),
-                    email: Some(Uuid::new_v4().to_string()),
-                })
+                .send_add_task(
+                    Person {
+                        id: EntityId::new(),
+                        full_name: "Test".to_string(),
+                        email: Some(Uuid::new_v4().to_string()),
+                    },
+                    TransactionContext::default(),
+                )
                 .get()
                 .expect("should not timeout");
 
@@ -676,7 +766,7 @@ mod tests {
             let request_manager_restored = Database::new(options_restore).run(1);
 
             let actual_person_restored = request_manager_restored
-                .send_get_task(expected_person.clone().id)
+                .send_get_task(expected_person.clone().id, TransactionContext::default())
                 .get()
                 .expect("should not timeout");
 

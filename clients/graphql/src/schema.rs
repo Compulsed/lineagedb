@@ -1,6 +1,7 @@
 use database::{
-    consts::consts::EntityId,
+    consts::consts::{EntityId, TransactionId},
     database::{
+        commands::{SnapshotTimestamp, TransactionContext},
         request_manager::RequestManager,
         table::{
             query::{QueryMatch, QueryPersonData},
@@ -84,9 +85,11 @@ impl QueryRoot {
 
         let entity_id = EntityId(id);
 
+        let tx_context = TransactionContext::default();
+
         let optional_person = match version_id {
-            Some(v) => database.send_get_version(entity_id, v.try_into()?)?,
-            None => database.send_get(entity_id)?,
+            Some(v) => database.send_get_version(entity_id, v.try_into()?, tx_context)?,
+            None => database.send_get(entity_id, tx_context)?,
         };
 
         Ok(optional_person.and_then(|p| Some(Human::from_person(p))))
@@ -94,9 +97,17 @@ impl QueryRoot {
 
     fn list_human(
         query: Nullable<QueryHumanData>,
+        snapshot_id: Nullable<i32>,
         context: &'db GraphQLContext,
     ) -> FieldResult<Vec<Human>> {
         let database = context.request_manager.lock().unwrap();
+
+        let snapshot_timestamp = match snapshot_id {
+            Nullable::ImplicitNull | Nullable::ExplicitNull => SnapshotTimestamp::Latest,
+            Nullable::Some(t) => SnapshotTimestamp::AtTransactionId(t.into()),
+        };
+
+        let tx_context = TransactionContext::new(snapshot_timestamp);
 
         let list_query = match query {
             Nullable::ImplicitNull => None,
@@ -119,7 +130,7 @@ impl QueryRoot {
         };
 
         let result = database
-            .send_list(list_query)?
+            .send_list(list_query, tx_context)?
             .into_iter()
             .map(Human::from_person)
             .collect();
@@ -135,8 +146,10 @@ impl MutationRoot {
     fn create_human(new_human: NewHuman, context: &'db GraphQLContext) -> FieldResult<Human> {
         let database = context.request_manager.lock().unwrap();
 
+        let transaction_context = TransactionContext::default();
+
         // Might seem a bit weird, but this is to ensure that the id is unique
-        let new_person = database.send_add(new_human.to_person())?;
+        let new_person = database.send_add(new_human.to_person(), transaction_context)?;
 
         Ok(Human::from_person(new_person))
     }
@@ -147,6 +160,8 @@ impl MutationRoot {
     ) -> FieldResult<Vec<Human>> {
         let database = context.request_manager.lock().unwrap();
 
+        let transaction_context = TransactionContext::default();
+
         let add_people = new_humans
             .into_iter()
             .map(NewHuman::to_person)
@@ -156,7 +171,7 @@ impl MutationRoot {
         // TODO: In this context we can use single, but, because it can panic an exception
         //  we probably shouldn't
         let humans = database
-            .send_transaction(add_people)?
+            .send_transaction(add_people, transaction_context)?
             .into_iter()
             .map(|r| Human::from_person(r.single()))
             .collect();
@@ -170,6 +185,8 @@ impl MutationRoot {
         context: &'db GraphQLContext,
     ) -> FieldResult<Human> {
         let database = context.request_manager.lock().unwrap();
+
+        let transaction_context = TransactionContext::default();
 
         let full_name_update = match update_human.full_name {
             Nullable::ImplicitNull => UpdateStatement::NoChanges,
@@ -188,7 +205,7 @@ impl MutationRoot {
             email: email_update,
         };
 
-        let person = database.send_update(EntityId(id), update_person_date)?;
+        let person = database.send_update(EntityId(id), update_person_date, transaction_context)?;
 
         Ok(Human::from_person(person))
     }

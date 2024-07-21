@@ -6,7 +6,9 @@ use uuid::Uuid;
 use crate::{
     consts::consts::TransactionId,
     database::{
-        commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
+        commands::{
+            Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest, SnapshotTimestamp,
+        },
         orchestrator::DatabasePauseEvent,
         utils::crash::{crash_database, DatabaseCrash},
     },
@@ -55,7 +57,6 @@ impl DatabaseOptions {
 
 impl Default for DatabaseOptions {
     fn default() -> Self {
-        // Defaults to $CDW/data
         Self {
             write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
             storage_engine: StorageEngine::File(PathBuf::from("data")),
@@ -173,7 +174,11 @@ impl Database {
         let database_request_managers = &database_request_managers;
 
         loop {
-            let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
+            let DatabaseCommandRequest {
+                command,
+                resolver,
+                transaction_context,
+            } = match receiver.recv() {
                 Ok(request) => request,
                 Err(e) => {
                     log::error!("Failed to receive data from channel {}", e);
@@ -197,7 +202,8 @@ impl Database {
                             // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
                             match request {
                                 ShutdownRequest::Coordinator => {
-                                    // Send request to every DB thread, telling them to shutdown / stop working
+                                    // Send request to every DB thread, telling them to shutdown / stop working,
+                                    //  'send_shutdown_request' is a blocking call, so we will wait for all threads to shutdown
                                     for rm in database_request_managers {
                                         let _ = rm
                                             .send_shutdown_request(ShutdownRequest::Worker)
@@ -222,6 +228,7 @@ impl Database {
                                 }
                             }
 
+                            // By returning we will exit the loop and the thread will exit
                             return;
                         }
                         Control::PauseDatabase(resume) => {
@@ -229,7 +236,7 @@ impl Database {
                                 &format!("[Thread - {}] Successfully paused thread", thread_id),
                             ));
 
-                            // No timeout, should just wait until the caller tells us we are ready to resume processing
+                            // Blocking wait for `DatabasePauseEvent` to be dropped
                             let _ = resume.recv();
 
                             log::info!("[Thread - {}] Successfully resumed thread", thread_id);
@@ -326,11 +333,17 @@ impl Database {
                         .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
                 }
                 false => {
-                    let query_transaction_id = database
-                        .persistence
-                        .transaction_wal
-                        .get_increment_current_transaction_id()
-                        .clone();
+                    // By default we run a single statement transaction, this would just use the 'latest' timestamp
+                    //  though when we are running as a long-lived transaction we use the snapshot timestamp from
+                    //  the transaction begin
+                    let query_transaction_id = match transaction_context.snapshot_timestamp {
+                        SnapshotTimestamp::AtTransactionId(transaction_id) => transaction_id,
+                        SnapshotTimestamp::Latest => database
+                            .persistence
+                            .transaction_wal
+                            .get_increment_current_transaction_id()
+                            .clone(),
+                    };
 
                     let response =
                         database.query_transaction(&query_transaction_id, transaction_statements);
@@ -477,6 +490,9 @@ impl Database {
                 .person_table
                 .query_statement(statement, query_latest_transaction_id);
 
+            // A 'not found' returns a transaction rollback error. This type of error message is confusing:
+            // 1. A caller just doing a get is using an implicit transactions, why do they get a rollback message
+            // 2. The caller is going to want a response to say the item was not found
             match statement_result {
                 Ok(statement_result) => statement_results.push(statement_result),
                 Err(err) => {
@@ -937,6 +953,7 @@ pub mod test_utils {
 
     use crate::{
         database::{
+            commands::TransactionContext,
             database::Database,
             request_manager::{RequestManager, TaskStatementResponse},
         },
@@ -1006,7 +1023,8 @@ pub mod test_utils {
         for index in 0..actions {
             let statement = action_generator(test_identifier, index);
 
-            task_statement_response.push(rm.send_transaction_task(vec![statement]));
+            task_statement_response
+                .push(rm.send_transaction_task(vec![statement], TransactionContext::default()));
         }
 
         let mut statement_result: Vec<Vec<StatementResult>> = Vec::with_capacity(actions);
@@ -1043,7 +1061,7 @@ pub mod test_utils {
                 let statement = setup(thread_id);
 
                 let action_result = rm
-                    .send_single_statement(statement)
+                    .send_single_statement(statement, TransactionContext::default())
                     .expect("Should not timeout");
 
                 match action_result {
@@ -1067,7 +1085,8 @@ pub mod test_utils {
                 for index in 0..(actions / worker_threads) {
                     let statement = action_generator(thread_id, index);
 
-                    let action_result = rm.send_transaction_task(vec![statement]);
+                    let action_result =
+                        rm.send_transaction_task(vec![statement], TransactionContext::default());
 
                     task_statement_response.push(action_result);
                 }
