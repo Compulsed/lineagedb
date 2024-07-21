@@ -1,6 +1,6 @@
 use core::panic;
 use rand::{seq::SliceRandom, thread_rng};
-use std::time::Duration;
+use std::{ops::Deref, sync::Arc, time::Duration};
 use thiserror::Error;
 
 use crate::{
@@ -46,11 +46,32 @@ enum SenderSelectionStrategy {
     Random,
     /// Looks at the length of the channels and picks one based on who has the shortest queue
     ShortestQueueFirst,
+    /// Switches between senders in a round robin fashion
+    RoundRobin(std::sync::atomic::AtomicUsize),
+}
+
+impl SenderSelectionStrategy {
+    pub fn new_round_robin() -> Self {
+        Self::RoundRobin(std::sync::atomic::AtomicUsize::new(0))
+    }
 }
 
 #[derive(Clone)]
-pub struct RequestManager {
+pub struct RequestManager(Arc<RequestManagerInner>);
+
+impl Deref for RequestManager {
+    type Target = RequestManagerInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// We want to have a single request manager instance that can be shared or sent across multiple threads.
+/// The way we can do this without poluting every consumer with an Arc<RequestManager> is to use the Deref trait
+pub struct RequestManagerInner {
     database_sender: Vec<flume::Sender<DatabaseCommandRequest>>,
+    sender_strategy: SenderSelectionStrategy,
 }
 
 /// Goal of the request manager is to provide a simple interface for interacting with the database
@@ -67,23 +88,39 @@ pub struct RequestManager {
 /// - Entity, Provides Add, Update, Get, GetVersion, List methods for interacting with the database
 /// - Statement, allows sending a single statement or a transaction to the database
 /// - Command, allows sending control commands to the database, e.g. shutdown, reset, snapshot
+///
+/// Ownership model:
+/// - The request manager is a single instance that is shared across multiple threads via an Arc
+/// - The request manager only has access to the sender and _does not_ have direct access to the database,
+///     the database is owned by the database threads via an Arc<Database>. Once those threads return (exit) the database is dropped
 impl RequestManager {
     pub fn new(database_sender: Vec<flume::Sender<DatabaseCommandRequest>>) -> Self {
-        Self { database_sender }
+        Self(Arc::new(RequestManagerInner {
+            database_sender: database_sender,
+            sender_strategy: SenderSelectionStrategy::new_round_robin(),
+        }))
     }
 
     fn get_sender(&self) -> &flume::Sender<DatabaseCommandRequest> {
-        let sender_selection_strategy = SenderSelectionStrategy::ShortestQueueFirst;
-
-        let selected_sender = match sender_selection_strategy {
+        let selected_sender = match &self.sender_strategy {
             SenderSelectionStrategy::Random => {
                 let mut rng = thread_rng();
                 self.database_sender.choose(&mut rng)
             }
+            // Ideally this strategy would assign work to a channel where the length is 0 and the thread is idle.
+            // This is challenging, because we can have an empty channel but the thread is still processing a request.
+            //
+            // Is it possible to have the request_manager keep track of the number of requests in flight? Yes,
+            //  though our async interface makes this hard.
             SenderSelectionStrategy::ShortestQueueFirst => self
                 .database_sender
                 .iter()
                 .min_by_key(|sender| sender.len()),
+            SenderSelectionStrategy::RoundRobin(counter) => {
+                let index = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    % self.database_sender.len();
+                self.database_sender.get(index)
+            }
         };
 
         selected_sender.expect("There should always be a sender")

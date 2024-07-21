@@ -247,6 +247,9 @@ impl Database {
                                 database.database_options.threads.to_string(),
                             );
 
+                            let database_thread_index =
+                                ("DatabaseThreadIndex".to_string(), thread_id.to_string());
+
                             let engine = database
                                 .database_options
                                 .storage_engine
@@ -257,6 +260,7 @@ impl Database {
                                 wal_size,
                                 current_transaction_id,
                                 database_threads,
+                                database_thread_index,
                             ]
                             .into_iter()
                             .chain(engine.into_iter())
