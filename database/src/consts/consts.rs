@@ -18,6 +18,10 @@ impl TransactionId {
         TransactionId(1)
     }
 
+    pub fn new_highest_transaction() -> TransactionId {
+        TransactionId(usize::MAX)
+    }
+
     pub fn increment(&self) -> TransactionId {
         TransactionId(self.0 + 1)
     }

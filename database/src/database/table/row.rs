@@ -222,15 +222,30 @@ impl PersonRow {
         return (version, drop_row);
     }
 
-    pub fn person_at_version(&self, version_id: VersionId) -> Option<Person> {
-        self.at_version(version_id)
+    pub fn person_at_version(
+        &self,
+        version_id: VersionId,
+        transaction_id: &TransactionId,
+    ) -> Option<Person> {
+        self.at_version(version_id, transaction_id)
             .and_then(|version| version.get_person())
     }
 
-    pub fn at_version(&self, version_id: VersionId) -> Option<PersonVersion> {
+    pub fn at_version(
+        &self,
+        version_id: VersionId,
+        transaction_id: &TransactionId,
+    ) -> Option<PersonVersion> {
+        // TODO: Filter out the versions that are not committed?
+        let versions_at_snapshot = self
+            .versions
+            .iter()
+            .filter(|version| &version.transaction_id <= transaction_id)
+            .collect::<Vec<&PersonVersion>>();
+
         // Versions are 1 indexed, subtract 1 to get the correct vector index
-        match self.versions.get(version_id.to_number() - 1) {
-            Some(version) => Some(version.clone()),
+        match versions_at_snapshot.get(version_id.to_number() - 1) {
+            Some(version) => Some((*version).clone()),
             None => None,
         }
     }

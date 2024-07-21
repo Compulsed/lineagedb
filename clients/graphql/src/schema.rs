@@ -79,13 +79,19 @@ impl QueryRoot {
     fn human(
         id: String,
         version_id: Option<i32>,
+        snapshot_id: Nullable<i32>,
         context: &'db GraphQLContext,
     ) -> FieldResult<Option<Human>> {
         let database = context.request_manager.lock().unwrap();
 
         let entity_id = EntityId(id);
 
-        let tx_context = TransactionContext::default();
+        let snapshot_timestamp = match snapshot_id {
+            Nullable::ImplicitNull | Nullable::ExplicitNull => SnapshotTimestamp::Latest,
+            Nullable::Some(t) => SnapshotTimestamp::AtTransactionId(t.into()),
+        };
+
+        let tx_context = TransactionContext::new(snapshot_timestamp);
 
         let optional_person = match version_id {
             Some(v) => database.send_get_version(entity_id, v.try_into()?, tx_context)?,
