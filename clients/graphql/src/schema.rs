@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use database::{
     consts::consts::EntityId,
     database::{
@@ -153,6 +155,16 @@ impl QueryRoot {
             .collect();
 
         return Ok(database_info);
+    }
+
+    fn sleep(sleep: i32, context: &'db GraphQLContext) -> FieldResult<String> {
+        let request_manager = &context.request_manager;
+
+        let sleep_duration: Duration = Duration::from_secs(sleep as u64);
+
+        let status = request_manager.send_sleep_request(sleep_duration)?;
+
+        return Ok(status);
     }
 }
 

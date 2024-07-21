@@ -210,6 +210,18 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
+                        Control::Sleep(duration) => {
+                            thread::sleep(duration);
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "[Thread - {}] Successfully slept thread for {} seconds",
+                                    thread_id,
+                                    duration.as_secs()
+                                )));
+
+                            continue;
+                        }
                         Control::DatabaseStats => {
                             let current_transaction_id = (
                                 "CurrentTransactionID".to_string(),
@@ -235,6 +247,9 @@ impl Database {
                                 database.database_options.threads.to_string(),
                             );
 
+                            let database_thread_index =
+                                ("DatabaseThreadIndex".to_string(), thread_id.to_string());
+
                             let engine = database
                                 .database_options
                                 .storage_engine
@@ -245,6 +260,7 @@ impl Database {
                                 wal_size,
                                 current_transaction_id,
                                 database_threads,
+                                database_thread_index,
                             ]
                             .into_iter()
                             .chain(engine.into_iter())

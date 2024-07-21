@@ -1,7 +1,7 @@
 use oneshot::Sender;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::consts::consts::TransactionId;
@@ -52,7 +52,7 @@ pub struct TransactionCommitData {
 }
 
 pub enum TransactionWalStatus {
-    Ready(mpsc::Sender<TransactionCommitData>),
+    Ready(flume::Sender<TransactionCommitData>),
     Uninitialized,
 }
 
@@ -84,7 +84,7 @@ impl TransactionWAL {
         let sync_file_write = self.database_options.write_mode.clone();
         let storage_thread = self.storage.clone();
 
-        let (sender, receiver) = mpsc::channel::<TransactionCommitData>();
+        let (sender, receiver) = flume::unbounded::<TransactionCommitData>();
 
         // Mark the WAL as ready to accept transactions
         self.commit_sender = TransactionWalStatus::Ready(sender);
@@ -98,7 +98,23 @@ impl TransactionWAL {
                     let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
                         vec![];
 
-                    for transaction_data in receiver.try_iter() {
+                    log::debug!("Start");
+
+                    // Receiver.recv() gives us a nice blocking call
+                    let Ok(blocking_data) = receiver.recv() else {
+                        // Error will be because the sender has been dropped, we can safely exit the thread
+                        return
+                    };                    
+
+                    // once the thread is token up we use `try_iter` to attempt to take a decent batch
+                    let batched_data = vec![blocking_data].into_iter()
+                        .chain(receiver.try_iter().take(50).collect::<Vec<TransactionCommitData>>())
+                        .collect::<Vec<TransactionCommitData>>();
+
+                    // Then we can persist the transactions to disk
+                    for transaction_data in batched_data.into_iter() {
+                        log::debug!("Processing Data");
+
                         let TransactionCommitData {
                             applied_transaction_id,
                             statements,
