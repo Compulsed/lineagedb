@@ -195,7 +195,7 @@ impl Database {
                 .clone();
 
             log::info!(
-                "[Thread: {}. TxId: {}] ()Received request: {}",
+                "[Thread: {}. TxId: {}] Received request: {}",
                 thread_id,
                 transaction_timestamp,
                 command.log_format()
