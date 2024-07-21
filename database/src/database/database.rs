@@ -210,6 +210,18 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
+                        Control::Sleep(duration) => {
+                            thread::sleep(duration);
+
+                            let _ =
+                                resolver.send(DatabaseCommandResponse::control_success(&format!(
+                                    "[Thread - {}] Successfully slept thread for {} seconds",
+                                    thread_id,
+                                    duration.as_secs()
+                                )));
+
+                            continue;
+                        }
                         Control::DatabaseStats => {
                             let current_transaction_id = (
                                 "CurrentTransactionID".to_string(),

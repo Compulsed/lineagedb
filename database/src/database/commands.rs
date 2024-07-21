@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{
     consts::consts::TransactionId,
     model::statement::{Statement, StatementResult},
@@ -128,6 +130,8 @@ pub enum Control {
     PauseDatabase(flume::Receiver<()>),
     /// Provides the caller some KV information on database stats
     DatabaseStats,
+    /// Sleeps the database thread for a certain duration
+    Sleep(Duration),
 }
 
 pub enum SnapshotTimestamp {

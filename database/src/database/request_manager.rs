@@ -40,6 +40,14 @@ pub enum RequestManagerError {
     DatabaseErrorStatus(String),
 }
 
+#[allow(dead_code)]
+enum SenderSelectionStrategy {
+    /// Randomly picks a sender
+    Random,
+    /// Looks at the length of the channels and picks one based on who has the shortest queue
+    ShortestQueueFirst,
+}
+
 #[derive(Clone)]
 pub struct RequestManager {
     database_sender: Vec<flume::Sender<DatabaseCommandRequest>>,
@@ -65,11 +73,20 @@ impl RequestManager {
     }
 
     fn get_sender(&self) -> &flume::Sender<DatabaseCommandRequest> {
-        let mut rng = thread_rng();
+        let sender_selection_strategy = SenderSelectionStrategy::ShortestQueueFirst;
 
-        self.database_sender
-            .choose(&mut rng)
-            .expect("Should have at least one sender")
+        let selected_sender = match sender_selection_strategy {
+            SenderSelectionStrategy::Random => {
+                let mut rng = thread_rng();
+                self.database_sender.choose(&mut rng)
+            }
+            SenderSelectionStrategy::ShortestQueueFirst => self
+                .database_sender
+                .iter()
+                .min_by_key(|sender| sender.len()),
+        };
+
+        selected_sender.expect("There should always be a sender")
     }
 
     // -- Entity Methods: Async Task --
@@ -231,6 +248,10 @@ impl RequestManager {
 
     pub fn send_snapshot_request(&self) -> Result<String, RequestManagerError> {
         return self.send_control(Control::SnapshotDatabase);
+    }
+
+    pub fn send_sleep_request(&self, duration: Duration) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::Sleep(duration));
     }
 
     // -- Internal methods --
