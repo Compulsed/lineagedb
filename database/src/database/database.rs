@@ -133,9 +133,6 @@ impl Database {
         let row_count = self.person_table.person_rows.len();
 
         // Resets tx id, scrubs wal
-        // NOTE: This is kind of odd, why do we need to delete the WAL off of disk if the
-        //  crash database will handle this? -- We still have to call this method to delete
-        //  transaction state out of memory
         let flush_transactions_from_disk_result = self
             .persistence
             .transaction_wal
@@ -146,8 +143,6 @@ impl Database {
         }
 
         // Reset the transaction id counter
-        // TODO: We should make flushing and deleting separate operations
-        //  This was a legacy of us just newing up new WAL when we needed one.
         self.persistence
             .transaction_wal
             .set_current_transaction_id(TransactionId::new_first_transaction());
@@ -425,6 +420,11 @@ impl Database {
 
             // Then add states from the transaction log
             for transaction in restored_transactions {
+                // Set the current transaction id to the transaction id we are applying
+                self.persistence
+                    .transaction_wal
+                    .set_current_transaction_id(transaction.id.clone());
+
                 let apply_transaction_result = self.apply_transaction(
                     transaction.id,
                     transaction.statements,
@@ -494,7 +494,7 @@ impl Database {
                 .map(|tx| RequestManager::new(vec![tx]))
                 .collect::<Vec<RequestManager>>();
 
-            // Remove our own request manager, as we will not need to call ourselves
+            // Remove the current threads' request manager, as we will not need to call ourselves
             request_managers.remove(thread_index);
 
             // Spawn a new thread for each request
