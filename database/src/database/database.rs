@@ -6,7 +6,9 @@ use uuid::Uuid;
 use crate::{
     consts::consts::TransactionId,
     database::{
-        commands::{Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest},
+        commands::{
+            Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest, SnapshotTimestamp,
+        },
         orchestrator::DatabasePauseEvent,
         utils::crash::{crash_database, DatabaseCrash},
     },
@@ -55,7 +57,6 @@ impl DatabaseOptions {
 
 impl Default for DatabaseOptions {
     fn default() -> Self {
-        // Defaults to $CDW/data
         Self {
             write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
             storage_engine: StorageEngine::File(PathBuf::from("data")),
@@ -132,9 +133,6 @@ impl Database {
         let row_count = self.person_table.person_rows.len();
 
         // Resets tx id, scrubs wal
-        // NOTE: This is kind of odd, why do we need to delete the WAL off of disk if the
-        //  crash database will handle this? -- We still have to call this method to delete
-        //  transaction state out of memory
         let flush_transactions_from_disk_result = self
             .persistence
             .transaction_wal
@@ -145,8 +143,6 @@ impl Database {
         }
 
         // Reset the transaction id counter
-        // TODO: We should make flushing and deleting separate operations
-        //  This was a legacy of us just newing up new WAL when we needed one.
         self.persistence
             .transaction_wal
             .set_current_transaction_id(TransactionId::new_first_transaction());
@@ -173,7 +169,11 @@ impl Database {
         let database_request_managers = &database_request_managers;
 
         loop {
-            let DatabaseCommandRequest { command, resolver } = match receiver.recv() {
+            let DatabaseCommandRequest {
+                command,
+                resolver,
+                transaction_context,
+            } = match receiver.recv() {
                 Ok(request) => request,
                 Err(e) => {
                     log::error!("Failed to receive data from channel {}", e);
@@ -181,9 +181,18 @@ impl Database {
                 }
             };
 
+            // Clock time of the transaction, we include a transaction id in all requests
+            //  this clock time is stored in an atomic so it is unique across threads
+            let transaction_timestamp = database
+                .persistence
+                .transaction_wal
+                .get_increment_current_transaction_id()
+                .clone();
+
             log::info!(
-                "[Thread: {}] Received request: {}",
+                "[Thread: {}. TxId: {}] Received request: {}",
                 thread_id,
+                transaction_timestamp,
                 command.log_format()
             );
 
@@ -193,11 +202,38 @@ impl Database {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
                     match control {
+                        Control::DatabaseStats => {
+                            let current_transaction_id = (
+                                "CurrentTransactionID".to_string(),
+                                transaction_timestamp.to_string(),
+                            );
+
+                            let wal_size = (
+                                "WALSize".to_string(),
+                                database
+                                    .persistence
+                                    .transaction_wal
+                                    .get_wal_size()
+                                    .to_string(),
+                            );
+
+                            let row_count = (
+                                "RowCount".to_string(),
+                                database.person_table.person_rows.len().to_string(),
+                            );
+
+                            let info = vec![current_transaction_id, wal_size, row_count];
+
+                            let _ = resolver.send(DatabaseCommandResponse::control_info(info));
+
+                            continue;
+                        }
                         Control::Shutdown(request) => {
                             // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
                             match request {
                                 ShutdownRequest::Coordinator => {
-                                    // Send request to every DB thread, telling them to shutdown / stop working
+                                    // Send request to every DB thread, telling them to shutdown / stop working,
+                                    //  'send_shutdown_request' is a blocking call, so we will wait for all threads to shutdown
                                     for rm in database_request_managers {
                                         let _ = rm
                                             .send_shutdown_request(ShutdownRequest::Worker)
@@ -222,6 +258,7 @@ impl Database {
                                 }
                             }
 
+                            // By returning we will exit the loop and the thread will exit
                             return;
                         }
                         Control::PauseDatabase(resume) => {
@@ -229,7 +266,7 @@ impl Database {
                                 &format!("[Thread - {}] Successfully paused thread", thread_id),
                             ));
 
-                            // No timeout, should just wait until the caller tells us we are ready to resume processing
+                            // Blocking wait for `DatabasePauseEvent` to be dropped
                             let _ = resume.recv();
 
                             log::info!("[Thread - {}] Successfully resumed thread", thread_id);
@@ -259,19 +296,15 @@ impl Database {
                             let database_reset_guard =
                                 &DatabasePauseEvent::new(&database_request_managers);
 
-                            let transaction_id = database
-                                .persistence
-                                .transaction_wal
-                                .get_increment_current_transaction_id()
-                                .clone();
-
                             let table = &database.person_table;
 
                             // Persist current state to disk
-                            let snapshot_request = database
-                                .persistence
-                                .snapshot_manager
-                                .create_snapshot(database_reset_guard, table, transaction_id);
+                            let snapshot_request =
+                                database.persistence.snapshot_manager.create_snapshot(
+                                    database_reset_guard,
+                                    table,
+                                    transaction_timestamp,
+                                );
 
                             if let Err(e) = snapshot_request {
                                 let _ = resolver.send(DatabaseCommandResponse::control_error(
@@ -322,15 +355,20 @@ impl Database {
             match contains_mutation {
                 true => {
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = database
-                        .apply_transaction(transaction_statements, ApplyMode::Request(resolver));
+                    let _ = database.apply_transaction(
+                        transaction_timestamp,
+                        transaction_statements,
+                        ApplyMode::Request(resolver),
+                    );
                 }
                 false => {
-                    let query_transaction_id = database
-                        .persistence
-                        .transaction_wal
-                        .get_increment_current_transaction_id()
-                        .clone();
+                    // By default we run a single statement transaction, this would just use the 'latest' timestamp
+                    //  though when we are running as a long-lived transaction we use the snapshot timestamp from
+                    //  the transaction begin
+                    let query_transaction_id = match transaction_context.snapshot_timestamp {
+                        SnapshotTimestamp::AtTransactionId(snapshot_id) => snapshot_id,
+                        SnapshotTimestamp::Latest => transaction_timestamp,
+                    };
 
                     let response =
                         database.query_transaction(&query_transaction_id, transaction_statements);
@@ -382,8 +420,16 @@ impl Database {
 
             // Then add states from the transaction log
             for transaction in restored_transactions {
-                let apply_transaction_result =
-                    self.apply_transaction(transaction.statements, ApplyMode::Restore);
+                // Set the current transaction id to the transaction id we are applying
+                self.persistence
+                    .transaction_wal
+                    .set_current_transaction_id(transaction.id.clone());
+
+                let apply_transaction_result = self.apply_transaction(
+                    transaction.id,
+                    transaction.statements,
+                    ApplyMode::Restore,
+                );
 
                 if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
                     apply_transaction_result
@@ -448,7 +494,7 @@ impl Database {
                 .map(|tx| RequestManager::new(vec![tx]))
                 .collect::<Vec<RequestManager>>();
 
-            // Remove our own request manager, as we will not need to call ourselves
+            // Remove the current threads' request manager, as we will not need to call ourselves
             request_managers.remove(thread_index);
 
             // Spawn a new thread for each request
@@ -477,6 +523,9 @@ impl Database {
                 .person_table
                 .query_statement(statement, query_latest_transaction_id);
 
+            // A 'not found' returns a transaction rollback error. This type of error message is confusing:
+            // 1. A caller just doing a get is using an implicit transactions, why do they get a rollback message
+            // 2. The caller is going to want a response to say the item was not found
             match statement_result {
                 Ok(statement_result) => statement_results.push(statement_result),
                 Err(err) => {
@@ -490,15 +539,10 @@ impl Database {
 
     pub fn apply_transaction(
         &self,
+        applying_transaction_id: TransactionId,
         statements: Vec<Statement>,
         mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
-        // Getting also increments -- I think this might be the place where we should be incrementing from
-        let applying_transaction_id = self
-            .persistence
-            .transaction_wal
-            .get_increment_current_transaction_id();
-
         let mut status = CommitStatus::Commit;
 
         struct StatementAndResult {
@@ -597,7 +641,7 @@ mod tests {
 
     mod add {
 
-        use crate::database::database::ApplyMode;
+        use crate::database::database::test_utils::apply_transaction_at_next_timestamp;
 
         use super::*;
 
@@ -607,11 +651,13 @@ mod tests {
 
             let person = Person::new_test();
 
-            let transcation_result = database
-                .apply_transaction(vec![Statement::Add(person.clone())], ApplyMode::Restore);
+            let transaction_result = apply_transaction_at_next_timestamp(
+                &database,
+                vec![Statement::Add(person.clone())],
+            );
 
             assert_eq!(
-                transcation_result,
+                transaction_result,
                 DatabaseCommandTransactionResponse::new_committed_single_result(
                     StatementResult::Single(person)
                 )
@@ -624,11 +670,13 @@ mod tests {
 
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
 
-            let transcation_result_one = database
-                .apply_transaction(vec![Statement::Add(person_one.clone())], ApplyMode::Restore);
+            let transaction_result_one = apply_transaction_at_next_timestamp(
+                &database,
+                vec![Statement::Add(person_one.clone())],
+            );
 
             assert_eq!(
-                transcation_result_one,
+                transaction_result_one,
                 DatabaseCommandTransactionResponse::new_committed_single_result(
                     StatementResult::Single(person_one.clone())
                 ),
@@ -638,11 +686,13 @@ mod tests {
             let person_two: Person =
                 Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let transcation_result_two = database
-                .apply_transaction(vec![Statement::Add(person_two.clone())], ApplyMode::Restore);
+            let transaction_result_two = apply_transaction_at_next_timestamp(
+                &database,
+                vec![Statement::Add(person_two.clone())],
+            );
 
             assert_eq!(
-                transcation_result_two,
+                transaction_result_two,
                 DatabaseCommandTransactionResponse::new_committed_single_result(
                     StatementResult::Single(person_two.clone())
                 ),
@@ -657,12 +707,12 @@ mod tests {
             let person_one = Person::new("Person One".to_string(), Some("Email One".to_string()));
             let person_two = Person::new("Person Two".to_string(), Some("Email Two".to_string()));
 
-            let action_results = database.apply_transaction(
+            let action_results = apply_transaction_at_next_timestamp(
+                &database,
                 vec![
                     Statement::Add(person_one.clone()),
                     Statement::Add(person_two.clone()),
                 ],
-                ApplyMode::Restore,
             );
 
             assert_eq!(
@@ -689,15 +739,13 @@ mod tests {
                 Some("OverlappingEmail".to_string()),
             );
 
-            let process_action_result = database.apply_transaction(
+            let action_error = apply_transaction_at_next_timestamp(
+                &database,
                 vec![
                     Statement::Add(person_one.clone()),
                     Statement::Add(person_two.clone()),
                 ],
-                ApplyMode::Restore,
             );
-
-            let action_error = process_action_result;
 
             assert_eq!(
                 action_error,
@@ -711,7 +759,7 @@ mod tests {
     }
 
     mod transaction_rollback {
-        use crate::{consts::consts::TransactionId, database::database::ApplyMode};
+        use crate::database::database::test_utils::apply_transaction_at_next_timestamp;
 
         use super::*;
 
@@ -724,7 +772,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let error_message = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let error_message = apply_transaction_at_next_timestamp(&database, rollback_actions);
 
             // The transaction log will be empty
             assert_eq!(
@@ -737,27 +785,6 @@ mod tests {
         }
 
         #[test]
-        fn transaction_log_is_empty() {
-            // Given an empty database
-            let database = Database::new_test();
-
-            let rollback_actions = create_rollback_statements();
-
-            // When a rollback happens
-            database.apply_transaction(rollback_actions, ApplyMode::Restore);
-
-            // Then there should be no items in the transaction log
-            assert_eq!(
-                database
-                    .persistence
-                    .transaction_wal
-                    .get_increment_current_transaction_id(),
-                TransactionId::new_first_transaction(),
-                "Transaction log should be empty"
-            );
-        }
-
-        #[test]
         #[ignore = "with multiple writers we no longer support database constraints"]
         fn row_table_is_empty() {
             // Given an empty database
@@ -766,7 +793,7 @@ mod tests {
             // When a rollback happens
             let rollback_actions = create_rollback_statements();
 
-            let _ = database.apply_transaction(rollback_actions, ApplyMode::Restore);
+            let _ = apply_transaction_at_next_timestamp(&database, rollback_actions);
 
             // The row that was created for the item is removed
             assert_eq!(
@@ -937,6 +964,7 @@ pub mod test_utils {
 
     use crate::{
         database::{
+            commands::{DatabaseCommandTransactionResponse, TransactionContext},
             database::Database,
             request_manager::{RequestManager, TaskStatementResponse},
         },
@@ -947,6 +975,8 @@ pub mod test_utils {
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
+
+    use super::ApplyMode;
 
     #[derive(Debug)]
     pub enum Mode {
@@ -1006,7 +1036,8 @@ pub mod test_utils {
         for index in 0..actions {
             let statement = action_generator(test_identifier, index);
 
-            task_statement_response.push(rm.send_transaction_task(vec![statement]));
+            task_statement_response
+                .push(rm.send_transaction_task(vec![statement], TransactionContext::default()));
         }
 
         let mut statement_result: Vec<Vec<StatementResult>> = Vec::with_capacity(actions);
@@ -1043,7 +1074,7 @@ pub mod test_utils {
                 let statement = setup(thread_id);
 
                 let action_result = rm
-                    .send_single_statement(statement)
+                    .send_single_statement(statement, TransactionContext::default())
                     .expect("Should not timeout");
 
                 match action_result {
@@ -1067,7 +1098,8 @@ pub mod test_utils {
                 for index in 0..(actions / worker_threads) {
                     let statement = action_generator(thread_id, index);
 
-                    let action_result = rm.send_transaction_task(vec![statement]);
+                    let action_result =
+                        rm.send_transaction_task(vec![statement], TransactionContext::default());
 
                     task_statement_response.push(action_result);
                 }
@@ -1098,5 +1130,19 @@ pub mod test_utils {
         // );
 
         metrics
+    }
+
+    /// This test helper allows us to use the simple apply_transaction interface but still maintain
+    /// the incrementing transaction id
+    pub fn apply_transaction_at_next_timestamp(
+        database: &Database,
+        statements: Vec<Statement>,
+    ) -> DatabaseCommandTransactionResponse {
+        let next_timestamp = database
+            .persistence
+            .transaction_wal
+            .get_increment_current_transaction_id();
+
+        database.apply_transaction(next_timestamp, statements, ApplyMode::Restore)
     }
 }

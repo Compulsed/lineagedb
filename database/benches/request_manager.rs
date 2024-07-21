@@ -4,7 +4,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use database::{
     consts::consts::EntityId,
     database::{
-        commands::ShutdownRequest,
+        commands::{ShutdownRequest, TransactionContext},
         database::{test_utils::run_action, Database},
     },
     model::{
@@ -127,8 +127,11 @@ pub fn rm_get_benchmark(c: &mut Criterion) {
                 email: None,
             };
 
-            rm.send_single_statement(Statement::Add(person.clone()))
-                .expect("Should not timeout");
+            rm.send_single_statement(
+                Statement::Add(person.clone()),
+                TransactionContext::default(),
+            )
+            .expect("Should not timeout");
         }
 
         group.throughput(Throughput::Elements(SAMPLE_SIZE));
@@ -195,8 +198,11 @@ pub fn rm_hybrid_benchmark(c: &mut Criterion) {
                 email: None,
             };
 
-            rm.send_single_statement(Statement::Add(person.clone()))
-                .expect("Should not timeout");
+            rm.send_single_statement(
+                Statement::Add(person.clone()),
+                TransactionContext::default(),
+            )
+            .expect("Should not timeout");
         }
 
         group.throughput(Throughput::Elements(SAMPLE_SIZE));

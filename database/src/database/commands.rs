@@ -1,4 +1,7 @@
-use crate::model::statement::{Statement, StatementResult};
+use crate::{
+    consts::consts::TransactionId,
+    model::statement::{Statement, StatementResult},
+};
 
 /// Database commands are how we interact with the database, they are how we ask the database to run a transaction, shutdown, etc
 ///
@@ -57,6 +60,8 @@ pub enum DatabaseCommandControlResponse {
     Success(String),
     /// Command has failed, returns a message for why it failed
     Error(String),
+    /// Returns a tuple, used for database information
+    Info(Vec<(String, String)>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +74,12 @@ impl DatabaseCommandResponse {
     pub fn control_success(message: &str) -> Self {
         DatabaseCommandResponse::DatabaseCommandControlResponse(
             DatabaseCommandControlResponse::Success(message.to_string()),
+        )
+    }
+
+    pub fn control_info(info: Vec<(String, String)>) -> Self {
+        DatabaseCommandResponse::DatabaseCommandControlResponse(
+            DatabaseCommandControlResponse::Info(info),
         )
     }
 
@@ -115,9 +126,39 @@ pub enum Control {
     ResetDatabase,
     /// Pauses the database so that we can perform certain operations
     PauseDatabase(flume::Receiver<()>),
+    /// Provides the caller some KV information on database stats
+    DatabaseStats,
+}
+
+pub enum SnapshotTimestamp {
+    /// The transaction id that the statement is running on
+    AtTransactionId(TransactionId),
+    /// Use the latest transaction id
+    Latest,
+}
+
+/// Information about the transaction that is being run
+pub struct TransactionContext {
+    /// The snapshot id that the transaction is running on. If none, use the latest transaction id
+    pub snapshot_timestamp: SnapshotTimestamp,
+}
+
+impl TransactionContext {
+    pub fn new(snapshot_timestamp: SnapshotTimestamp) -> Self {
+        TransactionContext { snapshot_timestamp }
+    }
+}
+
+impl Default for TransactionContext {
+    fn default() -> Self {
+        TransactionContext {
+            snapshot_timestamp: SnapshotTimestamp::Latest,
+        }
+    }
 }
 
 pub struct DatabaseCommandRequest {
     pub resolver: oneshot::Sender<DatabaseCommandResponse>,
     pub command: DatabaseCommand,
+    pub transaction_context: TransactionContext,
 }

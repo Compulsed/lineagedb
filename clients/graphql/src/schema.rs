@@ -1,6 +1,7 @@
 use database::{
     consts::consts::EntityId,
     database::{
+        commands::{SnapshotTimestamp, TransactionContext},
         request_manager::RequestManager,
         table::{
             query::{QueryMatch, QueryPersonData},
@@ -10,11 +11,10 @@ use database::{
     model::{person::Person, statement::Statement},
 };
 use juniper::{EmptySubscription, FieldResult, Nullable, RootNode};
-use std::sync::Mutex;
 use uuid::Uuid;
 
 pub struct GraphQLContext {
-    pub request_manager: Mutex<RequestManager>,
+    pub request_manager: RequestManager,
 }
 
 // https://graphql-rust.github.io/juniper/master/types/objects/using_contexts.html
@@ -78,15 +78,23 @@ impl QueryRoot {
     fn human(
         id: String,
         version_id: Option<i32>,
+        snapshot_id: Nullable<i32>,
         context: &'db GraphQLContext,
     ) -> FieldResult<Option<Human>> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
 
         let entity_id = EntityId(id);
 
+        let snapshot_timestamp = match snapshot_id {
+            Nullable::ImplicitNull | Nullable::ExplicitNull => SnapshotTimestamp::Latest,
+            Nullable::Some(t) => SnapshotTimestamp::AtTransactionId(t.into()),
+        };
+
+        let tx_context = TransactionContext::new(snapshot_timestamp);
+
         let optional_person = match version_id {
-            Some(v) => database.send_get_version(entity_id, v.try_into()?)?,
-            None => database.send_get(entity_id)?,
+            Some(v) => request_manager.send_get_version(entity_id, v.try_into()?, tx_context)?,
+            None => request_manager.send_get(entity_id, tx_context)?,
         };
 
         Ok(optional_person.and_then(|p| Some(Human::from_person(p))))
@@ -94,9 +102,17 @@ impl QueryRoot {
 
     fn list_human(
         query: Nullable<QueryHumanData>,
+        snapshot_id: Nullable<i32>,
         context: &'db GraphQLContext,
     ) -> FieldResult<Vec<Human>> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
+
+        let snapshot_timestamp = match snapshot_id {
+            Nullable::ImplicitNull | Nullable::ExplicitNull => SnapshotTimestamp::Latest,
+            Nullable::Some(t) => SnapshotTimestamp::AtTransactionId(t.into()),
+        };
+
+        let tx_context = TransactionContext::new(snapshot_timestamp);
 
         let list_query = match query {
             Nullable::ImplicitNull => None,
@@ -118,13 +134,25 @@ impl QueryRoot {
             }
         };
 
-        let result = database
-            .send_list(list_query)?
+        let result = request_manager
+            .send_list(list_query, tx_context)?
             .into_iter()
             .map(Human::from_person)
             .collect();
 
         return Ok(result);
+    }
+
+    fn database_info(context: &'db GraphQLContext) -> FieldResult<Vec<String>> {
+        let request_manager = &context.request_manager;
+
+        let database_info = request_manager
+            .send_info_request()?
+            .into_iter()
+            .map(|r| format!("[{}] {}", r.0, r.1))
+            .collect();
+
+        return Ok(database_info);
     }
 }
 
@@ -133,10 +161,12 @@ pub struct MutationRoot;
 #[juniper::graphql_object(context = GraphQLContext)]
 impl MutationRoot {
     fn create_human(new_human: NewHuman, context: &'db GraphQLContext) -> FieldResult<Human> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
+
+        let transaction_context = TransactionContext::default();
 
         // Might seem a bit weird, but this is to ensure that the id is unique
-        let new_person = database.send_add(new_human.to_person())?;
+        let new_person = request_manager.send_add(new_human.to_person(), transaction_context)?;
 
         Ok(Human::from_person(new_person))
     }
@@ -145,7 +175,9 @@ impl MutationRoot {
         new_humans: Vec<NewHuman>,
         context: &'db GraphQLContext,
     ) -> FieldResult<Vec<Human>> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
+
+        let transaction_context = TransactionContext::default();
 
         let add_people = new_humans
             .into_iter()
@@ -155,8 +187,8 @@ impl MutationRoot {
 
         // TODO: In this context we can use single, but, because it can panic an exception
         //  we probably shouldn't
-        let humans = database
-            .send_transaction(add_people)?
+        let humans = request_manager
+            .send_transaction(add_people, transaction_context)?
             .into_iter()
             .map(|r| Human::from_person(r.single()))
             .collect();
@@ -169,7 +201,9 @@ impl MutationRoot {
         update_human: UpdateHumanData,
         context: &'db GraphQLContext,
     ) -> FieldResult<Human> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
+
+        let transaction_context = TransactionContext::default();
 
         let full_name_update = match update_human.full_name {
             Nullable::ImplicitNull => UpdateStatement::NoChanges,
@@ -188,23 +222,24 @@ impl MutationRoot {
             email: email_update,
         };
 
-        let person = database.send_update(EntityId(id), update_person_date)?;
+        let person =
+            request_manager.send_update(EntityId(id), update_person_date, transaction_context)?;
 
         Ok(Human::from_person(person))
     }
 
     fn snapshot(context: &'db GraphQLContext) -> FieldResult<String> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
 
-        let shutdown_status = database.send_snapshot_request()?;
+        let shutdown_status = request_manager.send_snapshot_request()?;
 
         return Ok(shutdown_status);
     }
 
     fn reset(context: &'db GraphQLContext) -> FieldResult<String> {
-        let database = context.request_manager.lock().unwrap();
+        let request_manager = &context.request_manager;
 
-        let reset_status = database.send_reset_request()?;
+        let reset_status = request_manager.send_reset_request()?;
 
         return Ok(reset_status);
     }

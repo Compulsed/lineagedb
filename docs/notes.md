@@ -127,3 +127,18 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
         SearchMethod::RequiresFullScan
     };
 ```
+
+
+Ideas:
+1. Snapshot isolation
+    1. Unsure if we're technically there (are we encoding that value somewhere?)
+        1. Which timestamps are there and what do they mean? tx start, and tx commit? -- look into whitepaper
+    1. Query at any clock time
+1. Review transaction lifecycle (as described in the white paper)
+1. Long lived transactions
+    1. Setting up the Infrastructure w/ GraphQL (transaction identifier, clock time)
+    1. Query at a point in time
+1. Database write lock barrier sync poorman's serializable writes
+1. Indexes
+    1. Uniqueness
+    2. Query performance

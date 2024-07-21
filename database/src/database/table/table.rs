@@ -15,8 +15,7 @@ use crate::{
 use super::{
     query::{filter, query},
     row::{
-        ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion,
-        PersonVersionState, UpdateStatement,
+        ApplyDeleteResult, ApplyUpdateResult, DropRow, PersonRow, PersonVersion, PersonVersionState,
     },
 };
 
@@ -81,7 +80,11 @@ impl PersonTable {
         let action_result = match statement {
             Statement::Get(id) => {
                 let person = match &self.person_rows.get(&id) {
-                    Some(person_data) => person_data.value().read().unwrap().current_state(),
+                    Some(person_data) => person_data
+                        .value()
+                        .read()
+                        .unwrap()
+                        .at_transaction_id(&transaction_id),
                     None => return Err(ApplyErrors::CannotGetDoesNotExist(id)),
                 };
 
@@ -93,7 +96,7 @@ impl PersonTable {
                         .value()
                         .read()
                         .unwrap()
-                        .person_at_version(version),
+                        .person_at_version(version, transaction_id),
 
                     None => return Err(ApplyErrors::CannotGetAtVersionDoesNotExist(id, version)),
                 };
@@ -271,7 +274,7 @@ fn sort_list(people: &mut Vec<Person>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::table::row::UpdatePersonData;
+    use crate::database::table::row::{UpdatePersonData, UpdateStatement};
 
     // TODO:
     //  - There should be a better way of comparing lists of a default sort (sort_list)
@@ -423,7 +426,10 @@ mod tests {
         }
 
         mod update {
-            use crate::database::table::query::{QueryMatch, QueryPersonData};
+            use crate::database::table::{
+                query::{QueryMatch, QueryPersonData},
+                row::UpdateStatement,
+            };
 
             use super::*;
 
@@ -555,111 +561,286 @@ mod tests {
         }
     }
 
-    pub fn list_test(
-        statements: Vec<Statement>,
-        list_statement: Statement,
-        compare_to: Vec<Person>,
-    ) -> () {
-        let table = PersonTable::new();
-        let mut next_transaction_id = TransactionId::new_first_transaction();
+    mod versioning {
+        use super::*;
 
-        for statement in statements {
-            table.apply(statement, next_transaction_id.clone()).unwrap();
-            next_transaction_id = next_transaction_id.increment();
+        /// Tests are broken up into three categories:
+        /// - Get Statement
+        /// - Row data, normally would not depend on private fields, though MVCC has complex logic so this makes it easier to test
+        mod row_data {
+            #[allow(
+                unused_imports,
+                reason = "I think there is a bug here where it thinks the imports are unused, but they are required"
+            )]
+            use super::*;
+
+            #[test]
+            fn adding_item_creates_version_at_v1() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, _) = add_test_person_to_empty_database(&mut table);
+
+                // Then we should have: one version, at version 1, with transaction id 1
+                let person_row = table.get_version_row_test(&person.id);
+
+                assert_eq!(person_row.version_count(), 1);
+
+                assert_eq!(
+                    person_row.at_version(VersionId(1), &TransactionId::new_highest_transaction()),
+                    Some(PersonVersion {
+                        id: person.id.clone(),
+                        state: PersonVersionState::State(person),
+                        version: VersionId(1),
+                        transaction_id: TransactionId(1),
+                    })
+                );
+            }
+
+            #[test]
+            fn adding_then_updating_creates_version_v2() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+
+                // And we update the item
+                let (updated_person, _) =
+                    update_test_person(&mut table, &person, next_transaction_id);
+
+                // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
+                let person_row = table.get_version_row_test(&person.id);
+
+                assert_eq!(person_row.version_count(), 2);
+
+                assert_eq!(
+                    person_row.at_version(VersionId(1), &TransactionId::new_highest_transaction()),
+                    Some(PersonVersion {
+                        id: person.id.clone(),
+                        state: PersonVersionState::State(person),
+                        version: VersionId(1),
+                        transaction_id: TransactionId(1),
+                    })
+                );
+
+                assert_eq!(
+                    person_row.at_version(VersionId(2), &TransactionId::new_highest_transaction()),
+                    Some(PersonVersion {
+                        id: updated_person.id.clone(),
+                        state: PersonVersionState::State(updated_person),
+                        version: VersionId(2),
+                        transaction_id: TransactionId(2),
+                    })
+                );
+            }
+
+            #[test]
+            fn adding_then_updating_then_deleting_creates_version_v3() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (add_person, next_transaction_id) =
+                    add_test_person_to_empty_database(&mut table);
+
+                // And we update the item
+                let (updated_person, next_transaction_id) =
+                    update_test_person(&mut table, &add_person, next_transaction_id);
+
+                // And we delete the item
+                let _ = delete_test_person(&mut table, &updated_person.id, next_transaction_id);
+
+                // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
+                let person_row = table.get_version_row_test(&updated_person.id);
+
+                assert_eq!(person_row.version_count(), 3);
+
+                assert_eq!(
+                    person_row.at_version(VersionId(1), &TransactionId::new_highest_transaction()),
+                    Some(PersonVersion {
+                        id: add_person.id.clone(),
+                        state: PersonVersionState::State(add_person),
+                        version: VersionId(1),
+                        transaction_id: TransactionId(1),
+                    })
+                );
+
+                assert_eq!(
+                    person_row.at_version(VersionId(2), &TransactionId::new_highest_transaction()),
+                    Some(PersonVersion {
+                        id: updated_person.id.clone(),
+                        state: PersonVersionState::State(updated_person.clone()),
+                        version: VersionId(2),
+                        transaction_id: TransactionId(2),
+                    })
+                );
+
+                assert_eq!(
+                    person_row.at_version(VersionId(3), &TransactionId::new_highest_transaction()),
+                    Some(PersonVersion {
+                        id: updated_person.id.clone(),
+                        state: PersonVersionState::Delete,
+                        version: VersionId(3),
+                        transaction_id: TransactionId(3),
+                    })
+                );
+            }
         }
 
-        let mut list_results = table
-            .apply(list_statement, next_transaction_id)
-            .unwrap()
-            .list();
+        mod get_statement {
+            #[allow(
+                unused_imports,
+                reason = "I think there is a bug here where it thinks the imports are unused, but they are required"
+            )]
+            use super::*;
 
-        let mut sort_compare_to = compare_to;
+            #[test]
+            fn add_then_get_person_at_version() {
+                // Given an empty table
+                let mut table = PersonTable::new();
 
-        sort_list(&mut list_results);
-        sort_list(&mut sort_compare_to);
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
 
-        assert_eq!(&list_results, &sort_compare_to);
+                // Then we should be able to get the item at version 1
+                let person_v1 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(1),
+                    next_transaction_id,
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v1, &person);
+            }
+
+            #[test]
+            fn add_update_then_get_person_at_version() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+
+                // And we update the item
+                let (updated_person, next_transaction_id) =
+                    update_test_person(&mut table, &person, next_transaction_id);
+
+                // Then we should be able to get the item at version 1
+                let person_v1 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(1),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v1, &person);
+
+                // Then we should be able to get the item at version 2
+                let person_v2 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(2),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v2, &updated_person);
+            }
+
+            #[test]
+            fn add_update_delete_then_get_person_at_version() {
+                // Given an empty table
+                let mut table = PersonTable::new();
+
+                // When we add an item
+                let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+
+                // And we update the item
+                let (updated_person, next_transaction_id) =
+                    update_test_person(&mut table, &person, next_transaction_id);
+
+                // And we delete the item
+                let next_transaction_id =
+                    delete_test_person(&mut table, &person.id, next_transaction_id);
+
+                // Then we should be able to get the item at version 1
+                let person_v1 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(1),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v1, &person);
+
+                // Then we should be able to get the item at version 2
+                let person_v2 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(2),
+                    next_transaction_id.clone(),
+                )
+                .expect("should have person");
+
+                assert_eq!(&person_v2, &updated_person);
+
+                // Then we should NOT be able to get the item at version 3
+                let person_v3 = get_test_person_at_version(
+                    &mut table,
+                    &person.id,
+                    &VersionId(3),
+                    next_transaction_id.clone(),
+                );
+
+                assert!(person_v3.is_none());
+            }
+        }
     }
-}
 
-mod versioning {
-    use crate::database::table::row::UpdatePersonData;
-
-    use super::*;
-
-    /// Tests are broken up into three categories:
-    /// - Get Statement
-    /// - Row data, normally would not depend on private fields, though MVCC has complex logic so this makes it easier to test
-    mod row_data {
-        #[allow(
-            unused_imports,
-            reason = "I think there is a bug here where it thinks the imports are unused, but they are required"
-        )]
+    mod snapshots {
         use super::*;
 
         #[test]
-        fn adding_item_creates_version_at_v1() {
+        pub fn get_right_item_returned_for_snapshot_id() {
             // Given an empty table
             let mut table = PersonTable::new();
 
             // When we add an item
-            let (person, _) = add_test_person_to_empty_database(&mut table);
-
-            // Then we should have: one version, at version 1, with transaction id 1
-            let person_row = table.get_version_row_test(&person.id);
-
-            assert_eq!(person_row.version_count(), 1);
-
-            assert_eq!(
-                person_row.at_version(VersionId(1)),
-                Some(PersonVersion {
-                    id: person.id.clone(),
-                    state: PersonVersionState::State(person),
-                    version: VersionId(1),
-                    transaction_id: TransactionId(1),
-                })
-            );
-        }
-
-        #[test]
-        fn adding_then_updating_creates_version_v2() {
-            // Given an empty table
-            let mut table = PersonTable::new();
-
-            // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (expected_added_person, next_transaction_id) =
+                add_test_person_to_empty_database(&mut table);
 
             // And we update the item
-            let (updated_person, _) = update_test_person(&mut table, &person, next_transaction_id);
-
-            // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
-            let person_row = table.get_version_row_test(&person.id);
-
-            assert_eq!(person_row.version_count(), 2);
-
-            assert_eq!(
-                person_row.at_version(VersionId(1)),
-                Some(PersonVersion {
-                    id: person.id.clone(),
-                    state: PersonVersionState::State(person),
-                    version: VersionId(1),
-                    transaction_id: TransactionId(1),
-                })
+            let (expected_updated_person, _) = update_test_person(
+                &mut table,
+                &expected_added_person,
+                next_transaction_id.clone(),
             );
 
-            assert_eq!(
-                person_row.at_version(VersionId(2)),
-                Some(PersonVersion {
-                    id: updated_person.id.clone(),
-                    state: PersonVersionState::State(updated_person),
-                    version: VersionId(2),
-                    transaction_id: TransactionId(2),
-                })
-            );
+            // We should be able to query the person we added
+            let actual_added_person = get_test_person(
+                &mut table,
+                &expected_added_person.id,
+                TransactionId::new_first_transaction(),
+            )
+            .expect("should have person");
+
+            assert_eq!(&expected_added_person, &actual_added_person);
+
+            // When we query v2 at snapshot 1, we should not get a result because the update happened after the snapshot
+            let actual_updated_person =
+                get_test_person(&mut table, &actual_added_person.id, next_transaction_id)
+                    .expect("should have person");
+
+            assert_eq!(&expected_updated_person, &actual_updated_person);
         }
 
         #[test]
-        fn adding_then_updating_then_deleting_creates_version_v3() {
+        pub fn get_version_right_item_returned_for_snapshot_id() {
             // Given an empty table
             let mut table = PersonTable::new();
 
@@ -667,158 +848,55 @@ mod versioning {
             let (add_person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
 
             // And we update the item
-            let (updated_person, next_transaction_id) =
-                update_test_person(&mut table, &add_person, next_transaction_id);
+            let _ = update_test_person(&mut table, &add_person, next_transaction_id);
 
-            // And we delete the item
-            let _ = delete_test_person(&mut table, &updated_person.id, next_transaction_id);
-
-            // Then we should have: two versions, at version 1 and 2, with transaction id 1 and 2
-            let person_row = table.get_version_row_test(&updated_person.id);
-
-            assert_eq!(person_row.version_count(), 3);
-
-            assert_eq!(
-                person_row.at_version(VersionId(1)),
-                Some(PersonVersion {
-                    id: add_person.id.clone(),
-                    state: PersonVersionState::State(add_person),
-                    version: VersionId(1),
-                    transaction_id: TransactionId(1),
-                })
-            );
-
-            assert_eq!(
-                person_row.at_version(VersionId(2)),
-                Some(PersonVersion {
-                    id: updated_person.id.clone(),
-                    state: PersonVersionState::State(updated_person.clone()),
-                    version: VersionId(2),
-                    transaction_id: TransactionId(2),
-                })
-            );
-
-            assert_eq!(
-                person_row.at_version(VersionId(3)),
-                Some(PersonVersion {
-                    id: updated_person.id.clone(),
-                    state: PersonVersionState::Delete,
-                    version: VersionId(3),
-                    transaction_id: TransactionId(3),
-                })
-            );
-        }
-    }
-
-    mod get_statement {
-        #[allow(
-            unused_imports,
-            reason = "I think there is a bug here where it thinks the imports are unused, but they are required"
-        )]
-        use super::*;
-
-        #[test]
-        fn add_then_get_person_at_version() {
-            // Given an empty table
-            let mut table = PersonTable::new();
-
-            // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
-
-            // Then we should be able to get the item at version 1
-            let person_v1 = get_test_person_at_version(
+            // When we query v1 at snapshot 1, we should get a result
+            let _ = get_test_person_at_version(
                 &mut table,
-                &person.id,
+                &add_person.id,
                 &VersionId(1),
-                next_transaction_id,
+                TransactionId::new_first_transaction(),
             )
             .expect("should have person");
 
-            assert_eq!(&person_v1, &person);
+            // When we query v2 at snapshot 1, we should not get a result because the update happened after the snapshot
+            assert_eq!(
+                get_test_person_at_version(
+                    &mut table,
+                    &add_person.id,
+                    &VersionId(2),
+                    TransactionId::new_first_transaction(),
+                ),
+                None
+            );
         }
 
         #[test]
-        fn add_update_then_get_person_at_version() {
+        pub fn list_right_item_returned_for_snapshot_id() {
             // Given an empty table
             let mut table = PersonTable::new();
 
             // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
+            let (expected_added_person, next_transaction_id) =
+                add_test_person_to_empty_database(&mut table);
 
             // And we update the item
-            let (updated_person, next_transaction_id) =
-                update_test_person(&mut table, &person, next_transaction_id);
-
-            // Then we should be able to get the item at version 1
-            let person_v1 = get_test_person_at_version(
+            let (expected_updated_person, _) = update_test_person(
                 &mut table,
-                &person.id,
-                &VersionId(1),
-                next_transaction_id.clone(),
-            )
-            .expect("should have person");
-
-            assert_eq!(&person_v1, &person);
-
-            // Then we should be able to get the item at version 2
-            let person_v2 = get_test_person_at_version(
-                &mut table,
-                &person.id,
-                &VersionId(2),
-                next_transaction_id.clone(),
-            )
-            .expect("should have person");
-
-            assert_eq!(&person_v2, &updated_person);
-        }
-
-        #[test]
-        fn add_update_delete_then_get_person_at_version() {
-            // Given an empty table
-            let mut table = PersonTable::new();
-
-            // When we add an item
-            let (person, next_transaction_id) = add_test_person_to_empty_database(&mut table);
-
-            // And we update the item
-            let (updated_person, next_transaction_id) =
-                update_test_person(&mut table, &person, next_transaction_id);
-
-            // And we delete the item
-            let next_transaction_id =
-                delete_test_person(&mut table, &person.id, next_transaction_id);
-
-            // Then we should be able to get the item at version 1
-            let person_v1 = get_test_person_at_version(
-                &mut table,
-                &person.id,
-                &VersionId(1),
-                next_transaction_id.clone(),
-            )
-            .expect("should have person");
-
-            assert_eq!(&person_v1, &person);
-
-            // Then we should be able to get the item at version 2
-            let person_v2 = get_test_person_at_version(
-                &mut table,
-                &person.id,
-                &VersionId(2),
-                next_transaction_id.clone(),
-            )
-            .expect("should have person");
-
-            assert_eq!(&person_v2, &updated_person);
-
-            // Then we should NOT be able to get the item at version 3
-            let person_v3 = get_test_person_at_version(
-                &mut table,
-                &person.id,
-                &VersionId(3),
+                &expected_added_person,
                 next_transaction_id.clone(),
             );
 
-            assert!(person_v3.is_none());
+            // We should be able to query the person we added
+            let actual_added_person_list =
+                get_test_list_person(&mut table, TransactionId::new_first_transaction());
+
+            assert_eq!(&vec![expected_added_person], &actual_added_person_list);
+
+            // When we query v2 at snapshot 1, we should not get a result because the update happened after the snapshot
+            let actual_added_person_list = get_test_list_person(&mut table, next_transaction_id);
+
+            assert_eq!(&vec![expected_updated_person], &actual_added_person_list);
         }
     }
 
@@ -897,5 +975,68 @@ mod versioning {
                 None
             }
         }
+    }
+
+    #[allow(dead_code)]
+    fn get_test_list_person(
+        table: &mut PersonTable,
+        next_transaction_id: TransactionId,
+    ) -> Vec<Person> {
+        let statement = Statement::List(None);
+        let result = table.apply(statement, next_transaction_id).unwrap();
+
+        match result {
+            StatementResult::List(people) => people,
+            _ => {
+                // Note: Unsure why but cannot panic here, just assert false
+                assert!(false, "should be a list of people");
+                vec![]
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn get_test_person(
+        table: &mut PersonTable,
+        id: &EntityId,
+        next_transaction_id: TransactionId,
+    ) -> Option<Person> {
+        let statement = Statement::Get(id.clone());
+        let result = table.apply(statement, next_transaction_id).unwrap();
+
+        match result {
+            StatementResult::GetSingle(person) => person,
+            _ => {
+                // Note: Unsure why but cannot panic here, just assert false
+                assert!(false, "should be a single person");
+                None
+            }
+        }
+    }
+
+    pub fn list_test(
+        statements: Vec<Statement>,
+        list_statement: Statement,
+        compare_to: Vec<Person>,
+    ) -> () {
+        let table = PersonTable::new();
+        let mut next_transaction_id = TransactionId::new_first_transaction();
+
+        for statement in statements {
+            table.apply(statement, next_transaction_id.clone()).unwrap();
+            next_transaction_id = next_transaction_id.increment();
+        }
+
+        let mut list_results = table
+            .apply(list_statement, next_transaction_id)
+            .unwrap()
+            .list();
+
+        let mut sort_compare_to = compare_to;
+
+        sort_list(&mut list_results);
+        sort_list(&mut sort_compare_to);
+
+        assert_eq!(&list_results, &sort_compare_to);
     }
 }

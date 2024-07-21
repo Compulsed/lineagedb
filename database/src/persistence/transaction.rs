@@ -189,6 +189,10 @@ impl TransactionWAL {
         Ok(flushed_size)
     }
 
+    pub fn get_wal_size(&self) -> usize {
+        self.size.load(Ordering::SeqCst)
+    }
+
     pub fn get_increment_current_transaction_id(&self) -> TransactionId {
         self.current_transaction_id.get_timestamp()
     }

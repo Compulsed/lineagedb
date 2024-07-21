@@ -5,6 +5,7 @@ use std::thread;
 
 use clap::Parser;
 use database::consts::consts::EntityId;
+use database::database::commands::TransactionContext;
 use database::database::database::{Database, DatabaseOptions};
 use database::database::table::row::{UpdatePersonData, UpdateStatement};
 use database::model::person::Person;
@@ -82,7 +83,7 @@ fn main() {
 
                             if let Some(statement) = statement {
                                 let response = request_manager
-                                    .send_single_statement(statement)
+                                    .send_single_statement(statement, TransactionContext::default())
                                     .expect("Should not timeout");
 
                                 writeln!(stream, "{:#?}", response).unwrap();

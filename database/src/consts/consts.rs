@@ -18,8 +18,18 @@ impl TransactionId {
         TransactionId(1)
     }
 
+    pub fn new_highest_transaction() -> TransactionId {
+        TransactionId(usize::MAX)
+    }
+
     pub fn increment(&self) -> TransactionId {
         TransactionId(self.0 + 1)
+    }
+}
+
+impl From<i32> for TransactionId {
+    fn from(transaction_id: i32) -> TransactionId {
+        TransactionId(transaction_id.try_into().unwrap())
     }
 }
 

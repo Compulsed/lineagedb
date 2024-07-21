@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use database::{
     consts::consts::{EntityId, TransactionId},
-    database::database::{ApplyMode, Database},
+    database::database::{test_utils::apply_transaction_at_next_timestamp, Database},
     model::{person::Person, statement::Statement},
 };
 use std::sync::{mpsc::channel, Arc};
@@ -45,7 +45,7 @@ pub fn database_add_benchmark(c: &mut Criterion) {
 
                                 let statements = vec![Statement::Add(person.clone())];
 
-                                database.apply_transaction(statements, ApplyMode::Restore);
+                                let _ = apply_transaction_at_next_timestamp(&database, statements);
                             }
 
                             test_tx.send(1).expect("Should not timeout");
@@ -81,7 +81,7 @@ pub fn database_get_benchmark(c: &mut Criterion) {
 
             let statements = vec![Statement::Add(person.clone())];
 
-            let _ = database.apply_transaction(statements, ApplyMode::Restore);
+            let _ = apply_transaction_at_next_timestamp(&database, statements);
         }
 
         group.throughput(Throughput::Elements(SAMPLE_SIZE));
