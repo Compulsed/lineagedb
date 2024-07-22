@@ -12,7 +12,7 @@ use crate::{
     model::statement::{Statement, StatementResult},
     persistence::{
         persistence::Persistence,
-        storage::{postgres::PostgresOptions, StorageEngine},
+        storage::StorageEngine,
         transaction::{TransactionFileWriteMode, TransactionWriteMode},
     },
 };
@@ -112,23 +112,11 @@ impl Database {
         }
     }
 
-    pub fn new_test() -> Self {
-        Database::new(DatabaseOptions::new_test())
-    }
-
-    pub fn new_test_other_storage() -> Self {
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
-            .set_restore(false)
-            .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
-
-        Self {
-            person_table: PersonTable::new(),
-            persistence: Persistence::new(options.clone()),
-            database_options: options,
-        }
-    }
-
+    /// Main control loop for database threads
+    ///
+    /// This loop is multi-threaded which means there can be multiple readers / writers
+    /// at the same time. This means operations must be implemented as atomic or implement
+    /// their own locks
     fn start_thread(
         thread_id: usize,
         receiver: flume::Receiver<DatabaseCommandRequest>,
@@ -458,6 +446,36 @@ impl Database {
                 DatabaseCommandTransactionResponse::Rollback(error_status)
             }
         }
+    }
+}
+
+#[cfg(test)]
+use crate::persistence::storage::postgres::PostgresOptions;
+
+#[cfg(test)]
+#[allow(dead_code)]
+impl Database {
+    pub fn new_test_other_storage() -> Self {
+        let options = DatabaseOptions::default()
+            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
+            .set_restore(false)
+            .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+
+        Self {
+            person_table: PersonTable::new(),
+            persistence: Persistence::new(options.clone()),
+            database_options: options,
+        }
+    }
+
+    pub fn new_test() -> Self {
+        Self::new(DatabaseOptions::new_test())
+    }
+}
+
+impl Database {
+    pub fn new_benchmark() -> Self {
+        Database::new(DatabaseOptions::new_test())
     }
 }
 
