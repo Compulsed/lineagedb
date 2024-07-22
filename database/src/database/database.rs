@@ -1,90 +1,20 @@
-use std::{path::PathBuf, sync::Arc, thread, time::Instant};
-
-use num_format::{Locale, ToFormattedString};
-use uuid::Uuid;
-
-use crate::{
-    consts::consts::TransactionId,
-    database::{
-        commands::{
-            Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest, SnapshotTimestamp,
-        },
-        orchestrator::DatabasePauseEvent,
-        utils::crash::{crash_database, DatabaseCrash},
-    },
-    model::statement::{Statement, StatementResult},
-    persistence::{
-        persistence::Persistence,
-        storage::{postgres::PostgresOptions, StorageEngine},
-        transaction::{TransactionFileWriteMode, TransactionWriteMode},
-    },
-};
-
 use super::{
     commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
+    options::DatabaseOptions,
     request_manager::RequestManager,
     table::table::PersonTable,
 };
-
-#[derive(Debug, Clone)]
-pub struct DatabaseOptions {
-    pub restore: bool,
-    pub write_mode: TransactionWriteMode,
-    pub storage_engine: StorageEngine,
-    pub threads: usize,
-}
-
-// Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
-impl DatabaseOptions {
-    pub fn new_test() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
-
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::File(database_dir))
-            .set_restore(false)
-            .set_threads(2)
-            .set_sync_file_write(TransactionWriteMode::Off);
-
-        return options;
-    }
-
-    /// Defines whether we should attempt to restore the database from a snapshot and transaction log
-    /// on startup
-    pub fn set_restore(mut self, restore: bool) -> Self {
-        self.restore = restore;
-        self
-    }
-
-    /// Defines whether we should sync the file write to disk before marking the
-    /// transaction as committed. This is useful for durability but can be slow ~3ms per sync
-    pub fn set_sync_file_write(mut self, write_mode: TransactionWriteMode) -> Self {
-        self.write_mode = write_mode;
-        self
-    }
-
-    pub fn set_storage_engine(mut self, storage_engine: StorageEngine) -> Self {
-        self.storage_engine = storage_engine;
-        self
-    }
-
-    pub fn set_threads(mut self, threads: usize) -> Self {
-        self.threads = threads;
-        self
-    }
-}
-
-impl Default for DatabaseOptions {
-    fn default() -> Self {
-        Self {
-            write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
-            storage_engine: StorageEngine::File(PathBuf::from("data")),
-            restore: true,
-            threads: 2,
-        }
-    }
-}
+use crate::{
+    consts::consts::TransactionId,
+    database::{
+        commands::{DatabaseCommand, DatabaseCommandResponse, SnapshotTimestamp},
+        control::{ControlContext, DatabaseControlAction},
+    },
+    model::statement::{Statement, StatementResult},
+    persistence::persistence::Persistence,
+};
+use num_format::{Locale, ToFormattedString};
+use std::{sync::Arc, thread, time::Instant};
 
 // TODO: This is a part of the transaction_wal, should be moved there
 enum CommitStatus {
@@ -101,9 +31,9 @@ pub enum ApplyMode {
 }
 
 pub struct Database {
-    person_table: PersonTable,
-    database_options: DatabaseOptions,
-    persistence: Persistence,
+    pub(super) person_table: PersonTable,
+    pub(super) database_options: DatabaseOptions,
+    pub(super) persistence: Persistence,
 }
 
 impl Database {
@@ -115,59 +45,11 @@ impl Database {
         }
     }
 
-    pub fn new_test() -> Self {
-        Database::new(DatabaseOptions::new_test())
-    }
-
-    pub fn new_test_other_storage() -> Self {
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
-            .set_restore(false)
-            .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
-
-        Self {
-            person_table: PersonTable::new(),
-            persistence: Persistence::new(options.clone()),
-            database_options: options,
-        }
-    }
-
-    /// Resets the filesystem and any in-memory state.
+    /// Main control loop for database threads
     ///
-    /// ⚠️ The caller is responsible for stopping the database or else
-    /// it may end up in an inconsistent state. If a reset happens
-    /// at the same time as a write it is possible that a part of the write is erased
-    pub fn reset_database_state(&self, database_pause: &DatabasePauseEvent) -> usize {
-        let row_count = self.person_table.person_rows.len();
-
-        // Resets tx id, scrubs wal
-        let flush_transactions_from_disk_result = self
-            .persistence
-            .transaction_wal
-            .flush_transactions(database_pause);
-
-        if let Err(e) = flush_transactions_from_disk_result {
-            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
-        }
-
-        // Reset the transaction id counter
-        self.persistence
-            .transaction_wal
-            .set_current_transaction_id(TransactionId::new_first_transaction());
-
-        // Clean out snapshot and transaction log
-        let result = self.persistence.reset();
-
-        if let Err(e) = result {
-            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
-        }
-
-        // Resets the in-memory persons table
-        self.person_table.reset(database_pause);
-
-        row_count
-    }
-
+    /// This loop is multi-threaded which means there can be multiple readers / writers
+    /// at the same time. This means operations must be implemented as atomic or implement
+    /// their own locks
     fn start_thread(
         thread_id: usize,
         receiver: flume::Receiver<DatabaseCommandRequest>,
@@ -204,186 +86,23 @@ impl Database {
                 command.log_format()
             );
 
-            // TODO: We assume that the send() commands are successful. This is likely okay? because if
-            //   if sender is disconnected that should not impact the database
             let transaction_statements = match command {
                 DatabaseCommand::Transaction(statements) => statements,
                 DatabaseCommand::Control(control) => {
-                    match control {
-                        Control::Sleep(duration) => {
-                            thread::sleep(duration);
+                    let control_context = ControlContext {
+                        resolver,
+                        thread_id,
+                        database_request_managers,
+                        database: &database,
+                        transaction_timestamp,
+                    };
 
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "[Thread - {}] Successfully slept thread for {} seconds",
-                                    thread_id,
-                                    duration.as_secs()
-                                )));
-
+                    match control_context.run(control) {
+                        DatabaseControlAction::Continue => {
                             continue;
                         }
-                        Control::DatabaseStats => {
-                            let current_transaction_id = (
-                                "CurrentTransactionID".to_string(),
-                                transaction_timestamp.to_string(),
-                            );
-
-                            let wal_size = (
-                                "WALSize".to_string(),
-                                database
-                                    .persistence
-                                    .transaction_wal
-                                    .get_wal_size()
-                                    .to_string(),
-                            );
-
-                            let row_count = (
-                                "RowCount".to_string(),
-                                database.person_table.person_rows.len().to_string(),
-                            );
-
-                            let database_threads = (
-                                "DatabaseThreads".to_string(),
-                                database.database_options.threads.to_string(),
-                            );
-
-                            let database_thread_index =
-                                ("DatabaseThreadIndex".to_string(), thread_id.to_string());
-
-                            let engine = database
-                                .database_options
-                                .storage_engine
-                                .get_engine_info_stats();
-
-                            let info = vec![
-                                row_count,
-                                wal_size,
-                                current_transaction_id,
-                                database_threads,
-                                database_thread_index,
-                            ]
-                            .into_iter()
-                            .chain(engine.into_iter())
-                            .collect::<Vec<(String, String)>>();
-
-                            let _ = resolver.send(DatabaseCommandResponse::control_info(info));
-
-                            continue;
-                        }
-                        Control::Shutdown(request) => {
-                            // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
-                            match request {
-                                ShutdownRequest::Coordinator => {
-                                    // Send request to every DB thread, telling them to shutdown / stop working,
-                                    //  'send_shutdown_request' is a blocking call, so we will wait for all threads to shutdown
-                                    for rm in database_request_managers {
-                                        let _ = rm
-                                            .send_shutdown_request(ShutdownRequest::Worker)
-                                            .expect("Should respond to shutdown request");
-                                    }
-
-                                    // Once we have successfully shutdown all threads, report success to the caller
-                                    let _ = resolver.send(
-                                        DatabaseCommandResponse::control_success(&format!(
-                                            "[Thread: {}] Successfully shutdown database",
-                                            thread_id
-                                        )),
-                                    );
-                                }
-                                ShutdownRequest::Worker => {
-                                    let _ = resolver.send(
-                                        DatabaseCommandResponse::control_success(&format!(
-                                            "[Thread: {}] Successfully shut down",
-                                            thread_id
-                                        )),
-                                    );
-                                }
-                            }
-
-                            // By returning we will exit the loop and the thread will exit
+                        DatabaseControlAction::Exit => {
                             return;
-                        }
-                        Control::PauseDatabase(resume) => {
-                            let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                &format!("[Thread - {}] Successfully paused thread", thread_id),
-                            ));
-
-                            // Blocking wait for `DatabasePauseEvent` to be dropped
-                            let _ = resume.recv();
-
-                            log::info!("[Thread - {}] Successfully resumed thread", thread_id);
-
-                            continue;
-                        }
-                        Control::ResetDatabase => {
-                            // Note, because we have paused the database we should not get ANY deadlocks
-                            //  concurrency issues
-                            let database_reset_guard =
-                                &DatabasePauseEvent::new(&database_request_managers);
-
-                            let dropped_row_count =
-                                database.reset_database_state(database_reset_guard);
-
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully reset database, dropped: {} rows",
-                                    dropped_row_count
-                                )));
-
-                            continue;
-                        }
-                        Control::SnapshotDatabase => {
-                            // Note, because we have paused the database we should not get ANY deadlocks
-                            //  concurrency issues
-                            let database_reset_guard =
-                                &DatabasePauseEvent::new(&database_request_managers);
-
-                            let table = &database.person_table;
-
-                            // Persist current state to disk
-                            let snapshot_request =
-                                database.persistence.snapshot_manager.create_snapshot(
-                                    database_reset_guard,
-                                    table,
-                                    transaction_timestamp,
-                                );
-
-                            if let Err(e) = snapshot_request {
-                                let _ = resolver.send(DatabaseCommandResponse::control_error(
-                                    &format!(
-                                    "Failed to create snapshot database is now inconsistent: {}",
-                                    e
-                                ),
-                                ));
-
-                                crash_database(DatabaseCrash::InconsistentStorageFromSnapshot(e));
-                            }
-
-                            let flush_transactions = database
-                                .persistence
-                                .transaction_wal
-                                .flush_transactions(database_reset_guard);
-
-                            let flush_transactions_count = match flush_transactions {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    let _ = resolver.send(DatabaseCommandResponse::control_error(
-                                        &format!("Failed to create snapshot database is now inconsistent: {}", e),
-                                    ));
-
-                                    crash_database(DatabaseCrash::InconsistentStorageFromSnapshot(
-                                        e,
-                                    ));
-                                }
-                            };
-
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully created snapshot: compressed {} txs",
-                                    flush_transactions_count
-                                )));
-
-                            continue;
                         }
                     }
                 }
@@ -660,6 +379,42 @@ impl Database {
                 DatabaseCommandTransactionResponse::Rollback(error_status)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test_struct_methods {
+    use super::*;
+    use crate::persistence::{
+        storage::{postgres::PostgresOptions, StorageEngine},
+        transaction::{TransactionFileWriteMode, TransactionWriteMode},
+    };
+
+    impl Database {
+        pub fn new_test_other_storage() -> Self {
+            let options = DatabaseOptions::default()
+                .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
+                .set_restore(false)
+                .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+
+            Self {
+                person_table: PersonTable::new(),
+                persistence: Persistence::new(options.clone()),
+                database_options: options,
+            }
+        }
+
+        pub fn new_test() -> Self {
+            Self::new(DatabaseOptions::new_test())
+        }
+    }
+}
+
+// Benchmarking requires that the functions are available as public create methods
+//  so we cannot use #[cfg(test)]
+impl Database {
+    pub fn new_benchmark() -> Self {
+        Database::new(DatabaseOptions::new_benchmark())
     }
 }
 
@@ -1104,7 +859,8 @@ pub mod test_utils {
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
     ) -> TestMetrics {
-        let rm = Database::new(DatabaseOptions::new_test().set_threads(database_threads)).run();
+        let rm =
+            Database::new(DatabaseOptions::new_benchmark().set_threads(database_threads)).run();
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 

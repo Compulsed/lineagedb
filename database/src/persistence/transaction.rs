@@ -6,7 +6,8 @@ use std::thread;
 
 use crate::consts::consts::TransactionId;
 use crate::database::commands::DatabaseCommandResponse;
-use crate::database::database::{ApplyMode, DatabaseOptions};
+use crate::database::database::ApplyMode;
+use crate::database::options::DatabaseOptions;
 use crate::database::orchestrator::DatabasePauseEvent;
 use crate::database::utils::crash::{crash_database, DatabaseCrash};
 use crate::model::statement::Statement;

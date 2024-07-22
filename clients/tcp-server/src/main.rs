@@ -6,7 +6,8 @@ use std::thread;
 use clap::Parser;
 use database::consts::consts::EntityId;
 use database::database::commands::TransactionContext;
-use database::database::database::{Database, DatabaseOptions};
+use database::database::database::Database;
+use database::database::options::DatabaseOptions;
 use database::database::table::row::{UpdatePersonData, UpdateStatement};
 use database::model::person::Person;
 use database::model::statement::Statement; // TCP Stream defines implementation

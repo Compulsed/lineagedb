@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::database::database::DatabaseOptions;
+use crate::database::options::DatabaseOptions;
 
 use super::{
     snapshot::SnapshotManager,

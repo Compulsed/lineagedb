@@ -116,8 +116,17 @@ By using MVCC we do not need to implement the more complicated 2PL (2 Phase Lock
   1. Results for issues with the network, supports propagation via ? and error type mapping
   1. Panics for logical errors / bugs in the code
 5. Prefer infallable logic, e.g. try not to create methods that hide unwraps 
-6. Lifetimes > (A)Rc > Clone
-7. Rust the ternary if / else can be very clean
+6. Lifetimes > (A)Rc > Clone (cost)
+7. Rust the ternary if let / else to unwrap rather than a match
+8. Struct to capture all common dependencies and a .run() method to execute them (Control)
+9. Deref trait to wrap items into an Arc so that there is only a single reference to something when cloning
+10. Nesting test impl under a mod, makes it easier to ensure that cfg deps are correctly scoped
+  1. This might be good for attempting to swap our implementations
+11. Avoid option, prefer an enum, so you can describe the use case
+12. 'static as a lifetype means that it runs for entire length of program, 'static for a trait means that it is not a ref type
+13. .then for accessing non-error, .map_err for accessing error, .map for the response
+14. Can use multi-line comments w/ panic to describe the why
+  1. If you have to unwrap the same reason in multiple places you should share a function OR a &str
 
 
 ```

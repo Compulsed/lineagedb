@@ -20,7 +20,7 @@ pub fn database_add_benchmark(c: &mut Criterion) {
     for size in POOL_SIZE.iter() {
         pool.set_num_threads(*size);
 
-        let database = Arc::new(Database::new_test());
+        let database = Arc::new(Database::new_benchmark());
 
         group.throughput(Throughput::Elements(SAMPLE_SIZE));
 
@@ -69,7 +69,7 @@ pub fn database_get_benchmark(c: &mut Criterion) {
     let mut pool = ThreadPool::new(1);
 
     for size in POOL_SIZE.iter() {
-        let database = Arc::new(Database::new_test());
+        let database = Arc::new(Database::new_benchmark());
         pool.set_num_threads(*size);
 
         for i in 0..SAMPLE_SIZE {
