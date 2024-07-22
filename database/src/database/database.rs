@@ -6,9 +6,8 @@ use uuid::Uuid;
 use crate::{
     consts::consts::TransactionId,
     database::{
-        commands::{
-            Control, DatabaseCommand, DatabaseCommandResponse, ShutdownRequest, SnapshotTimestamp,
-        },
+        commands::{DatabaseCommand, DatabaseCommandResponse, SnapshotTimestamp},
+        control::{ControlContext, DatabaseControlAction},
         orchestrator::DatabasePauseEvent,
         utils::crash::{crash_database, DatabaseCrash},
     },
@@ -101,9 +100,9 @@ pub enum ApplyMode {
 }
 
 pub struct Database {
-    person_table: PersonTable,
-    database_options: DatabaseOptions,
-    persistence: Persistence,
+    pub(super) person_table: PersonTable,
+    pub(super) database_options: DatabaseOptions,
+    pub(super) persistence: Persistence,
 }
 
 impl Database {
@@ -208,182 +207,22 @@ impl Database {
             //   if sender is disconnected that should not impact the database
             let transaction_statements = match command {
                 DatabaseCommand::Transaction(statements) => statements,
+                // TODO: There might be a way to reduce the boiler plate by creating a struct that contains common context
                 DatabaseCommand::Control(control) => {
-                    match control {
-                        Control::Sleep(duration) => {
-                            thread::sleep(duration);
+                    let control_context = ControlContext {
+                        resolver,
+                        thread_id,
+                        database_request_managers,
+                        database: &database,
+                        transaction_timestamp: &transaction_timestamp,
+                    };
 
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "[Thread - {}] Successfully slept thread for {} seconds",
-                                    thread_id,
-                                    duration.as_secs()
-                                )));
-
+                    match control_context.run(control) {
+                        DatabaseControlAction::Continue => {
                             continue;
                         }
-                        Control::DatabaseStats => {
-                            let current_transaction_id = (
-                                "CurrentTransactionID".to_string(),
-                                transaction_timestamp.to_string(),
-                            );
-
-                            let wal_size = (
-                                "WALSize".to_string(),
-                                database
-                                    .persistence
-                                    .transaction_wal
-                                    .get_wal_size()
-                                    .to_string(),
-                            );
-
-                            let row_count = (
-                                "RowCount".to_string(),
-                                database.person_table.person_rows.len().to_string(),
-                            );
-
-                            let database_threads = (
-                                "DatabaseThreads".to_string(),
-                                database.database_options.threads.to_string(),
-                            );
-
-                            let database_thread_index =
-                                ("DatabaseThreadIndex".to_string(), thread_id.to_string());
-
-                            let engine = database
-                                .database_options
-                                .storage_engine
-                                .get_engine_info_stats();
-
-                            let info = vec![
-                                row_count,
-                                wal_size,
-                                current_transaction_id,
-                                database_threads,
-                                database_thread_index,
-                            ]
-                            .into_iter()
-                            .chain(engine.into_iter())
-                            .collect::<Vec<(String, String)>>();
-
-                            let _ = resolver.send(DatabaseCommandResponse::control_info(info));
-
-                            continue;
-                        }
-                        Control::Shutdown(request) => {
-                            // The DB thread that received the shutdown request is responsible for ensuring all the other threads shutdown.
-                            match request {
-                                ShutdownRequest::Coordinator => {
-                                    // Send request to every DB thread, telling them to shutdown / stop working,
-                                    //  'send_shutdown_request' is a blocking call, so we will wait for all threads to shutdown
-                                    for rm in database_request_managers {
-                                        let _ = rm
-                                            .send_shutdown_request(ShutdownRequest::Worker)
-                                            .expect("Should respond to shutdown request");
-                                    }
-
-                                    // Once we have successfully shutdown all threads, report success to the caller
-                                    let _ = resolver.send(
-                                        DatabaseCommandResponse::control_success(&format!(
-                                            "[Thread: {}] Successfully shutdown database",
-                                            thread_id
-                                        )),
-                                    );
-                                }
-                                ShutdownRequest::Worker => {
-                                    let _ = resolver.send(
-                                        DatabaseCommandResponse::control_success(&format!(
-                                            "[Thread: {}] Successfully shut down",
-                                            thread_id
-                                        )),
-                                    );
-                                }
-                            }
-
-                            // By returning we will exit the loop and the thread will exit
+                        DatabaseControlAction::Exit => {
                             return;
-                        }
-                        Control::PauseDatabase(resume) => {
-                            let _ = resolver.send(DatabaseCommandResponse::control_success(
-                                &format!("[Thread - {}] Successfully paused thread", thread_id),
-                            ));
-
-                            // Blocking wait for `DatabasePauseEvent` to be dropped
-                            let _ = resume.recv();
-
-                            log::info!("[Thread - {}] Successfully resumed thread", thread_id);
-
-                            continue;
-                        }
-                        Control::ResetDatabase => {
-                            // Note, because we have paused the database we should not get ANY deadlocks
-                            //  concurrency issues
-                            let database_reset_guard =
-                                &DatabasePauseEvent::new(&database_request_managers);
-
-                            let dropped_row_count =
-                                database.reset_database_state(database_reset_guard);
-
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully reset database, dropped: {} rows",
-                                    dropped_row_count
-                                )));
-
-                            continue;
-                        }
-                        Control::SnapshotDatabase => {
-                            // Note, because we have paused the database we should not get ANY deadlocks
-                            //  concurrency issues
-                            let database_reset_guard =
-                                &DatabasePauseEvent::new(&database_request_managers);
-
-                            let table = &database.person_table;
-
-                            // Persist current state to disk
-                            let snapshot_request =
-                                database.persistence.snapshot_manager.create_snapshot(
-                                    database_reset_guard,
-                                    table,
-                                    transaction_timestamp,
-                                );
-
-                            if let Err(e) = snapshot_request {
-                                let _ = resolver.send(DatabaseCommandResponse::control_error(
-                                    &format!(
-                                    "Failed to create snapshot database is now inconsistent: {}",
-                                    e
-                                ),
-                                ));
-
-                                crash_database(DatabaseCrash::InconsistentStorageFromSnapshot(e));
-                            }
-
-                            let flush_transactions = database
-                                .persistence
-                                .transaction_wal
-                                .flush_transactions(database_reset_guard);
-
-                            let flush_transactions_count = match flush_transactions {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    let _ = resolver.send(DatabaseCommandResponse::control_error(
-                                        &format!("Failed to create snapshot database is now inconsistent: {}", e),
-                                    ));
-
-                                    crash_database(DatabaseCrash::InconsistentStorageFromSnapshot(
-                                        e,
-                                    ));
-                                }
-                            };
-
-                            let _ =
-                                resolver.send(DatabaseCommandResponse::control_success(&format!(
-                                    "Successfully created snapshot: compressed {} txs",
-                                    flush_transactions_count
-                                )));
-
-                            continue;
                         }
                     }
                 }

@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod control;
 pub mod database;
 pub mod orchestrator;
 pub mod request_manager;
