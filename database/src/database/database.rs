@@ -1,8 +1,9 @@
-use std::{path::PathBuf, sync::Arc, thread, time::Instant};
-
-use num_format::{Locale, ToFormattedString};
-use uuid::Uuid;
-
+use super::{
+    commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
+    options::DatabaseOptions,
+    request_manager::RequestManager,
+    table::table::PersonTable,
+};
 use crate::{
     consts::consts::TransactionId,
     database::{
@@ -10,64 +11,10 @@ use crate::{
         control::{ControlContext, DatabaseControlAction},
     },
     model::statement::{Statement, StatementResult},
-    persistence::{
-        persistence::Persistence,
-        storage::StorageEngine,
-        transaction::{TransactionFileWriteMode, TransactionWriteMode},
-    },
+    persistence::persistence::Persistence,
 };
-
-use super::{
-    commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
-    request_manager::RequestManager,
-    table::table::PersonTable,
-};
-
-#[derive(Debug, Clone)]
-pub struct DatabaseOptions {
-    pub restore: bool,
-    pub write_mode: TransactionWriteMode,
-    pub storage_engine: StorageEngine,
-    pub threads: usize,
-}
-
-// Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
-impl DatabaseOptions {
-    /// Defines whether we should attempt to restore the database from a snapshot and transaction log
-    /// on startup
-    pub fn set_restore(mut self, restore: bool) -> Self {
-        self.restore = restore;
-        self
-    }
-
-    /// Defines whether we should sync the file write to disk before marking the
-    /// transaction as committed. This is useful for durability but can be slow ~3ms per sync
-    pub fn set_sync_file_write(mut self, write_mode: TransactionWriteMode) -> Self {
-        self.write_mode = write_mode;
-        self
-    }
-
-    pub fn set_storage_engine(mut self, storage_engine: StorageEngine) -> Self {
-        self.storage_engine = storage_engine;
-        self
-    }
-
-    pub fn set_threads(mut self, threads: usize) -> Self {
-        self.threads = threads;
-        self
-    }
-}
-
-impl Default for DatabaseOptions {
-    fn default() -> Self {
-        Self {
-            write_mode: TransactionWriteMode::File(TransactionFileWriteMode::Sync),
-            storage_engine: StorageEngine::File(PathBuf::from("data")),
-            restore: true,
-            threads: 2,
-        }
-    }
-}
+use num_format::{Locale, ToFormattedString};
+use std::{sync::Arc, thread, time::Instant};
 
 // TODO: This is a part of the transaction_wal, should be moved there
 enum CommitStatus {
@@ -436,43 +383,30 @@ impl Database {
 }
 
 #[cfg(test)]
-use crate::persistence::storage::postgres::PostgresOptions;
+mod test_struct_methods {
+    use super::*;
+    use crate::persistence::{
+        storage::{postgres::PostgresOptions, StorageEngine},
+        transaction::{TransactionFileWriteMode, TransactionWriteMode},
+    };
 
-#[cfg(test)]
-#[allow(dead_code)]
-impl Database {
-    pub fn new_test_other_storage() -> Self {
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
-            .set_restore(false)
-            .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
+    impl Database {
+        pub fn new_test_other_storage() -> Self {
+            let options = DatabaseOptions::default()
+                .set_storage_engine(StorageEngine::Postgres(PostgresOptions::new_test()))
+                .set_restore(false)
+                .set_sync_file_write(TransactionWriteMode::File(TransactionFileWriteMode::Sync));
 
-        Self {
-            person_table: PersonTable::new(),
-            persistence: Persistence::new(options.clone()),
-            database_options: options,
+            Self {
+                person_table: PersonTable::new(),
+                persistence: Persistence::new(options.clone()),
+                database_options: options,
+            }
         }
-    }
 
-    pub fn new_test() -> Self {
-        Self::new(DatabaseOptions::new_test())
-    }
-}
-
-#[cfg(test)]
-impl DatabaseOptions {
-    pub fn new_test() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
-
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::File(database_dir))
-            .set_restore(false)
-            .set_threads(2)
-            .set_sync_file_write(TransactionWriteMode::Off);
-
-        return options;
+        pub fn new_test() -> Self {
+            Self::new(DatabaseOptions::new_test())
+        }
     }
 }
 
@@ -481,22 +415,6 @@ impl DatabaseOptions {
 impl Database {
     pub fn new_benchmark() -> Self {
         Database::new(DatabaseOptions::new_benchmark())
-    }
-}
-
-impl DatabaseOptions {
-    pub fn new_benchmark() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
-
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::File(database_dir))
-            .set_restore(false)
-            .set_threads(2)
-            .set_sync_file_write(TransactionWriteMode::Off);
-
-        return options;
     }
 }
 

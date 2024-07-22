@@ -11,8 +11,7 @@ use actix_web_lab::respond::Html;
 use clap::Parser;
 use database::{
     database::{
-        commands::ShutdownRequest,
-        database::{Database, DatabaseOptions},
+        commands::ShutdownRequest, database::Database, options::DatabaseOptions,
         request_manager::RequestManager,
     },
     persistence::storage::{

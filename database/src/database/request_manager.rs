@@ -662,7 +662,8 @@ mod tests {
         consts::consts::EntityId,
         database::{
             commands::{DatabaseCommand, DatabaseCommandResponse, TransactionContext},
-            database::{Database, DatabaseOptions},
+            database::Database,
+            options::DatabaseOptions,
         },
         model::{
             person::Person,
@@ -758,7 +759,7 @@ mod tests {
         use std::path::PathBuf;
 
         use crate::{
-            database::{commands::ShutdownRequest, database::DatabaseOptions},
+            database::commands::ShutdownRequest,
             persistence::{
                 storage::{
                     dynamodb::DynamoOptions, postgres::PostgresOptions, s3::S3Options,

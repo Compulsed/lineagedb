@@ -1,4 +1,3 @@
-use crate::database::database::DatabaseOptions;
 use std::{
     fs, io,
     path::PathBuf,
@@ -10,6 +9,8 @@ use file::FileStorage;
 use postgres::{PgStorage, PostgresOptions};
 use s3::{S3Options, S3Storage};
 use thiserror::Error;
+
+use crate::database::options::DatabaseOptions;
 
 pub mod dynamodb;
 pub mod file;

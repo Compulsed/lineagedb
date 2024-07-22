@@ -5,7 +5,8 @@ use database::{
     consts::consts::EntityId,
     database::{
         commands::{ShutdownRequest, TransactionContext},
-        database::{test_utils::run_action, Database, DatabaseOptions},
+        database::{test_utils::run_action, Database},
+        options::DatabaseOptions,
     },
     model::{
         person::Person,
