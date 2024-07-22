@@ -8,8 +8,6 @@ use crate::{
     database::{
         commands::{DatabaseCommand, DatabaseCommandResponse, SnapshotTimestamp},
         control::{ControlContext, DatabaseControlAction},
-        orchestrator::DatabasePauseEvent,
-        utils::crash::{crash_database, DatabaseCrash},
     },
     model::statement::{Statement, StatementResult},
     persistence::{
@@ -131,42 +129,6 @@ impl Database {
         }
     }
 
-    /// Resets the filesystem and any in-memory state.
-    ///
-    /// ⚠️ The caller is responsible for stopping the database or else
-    /// it may end up in an inconsistent state. If a reset happens
-    /// at the same time as a write it is possible that a part of the write is erased
-    pub fn reset_database_state(&self, database_pause: &DatabasePauseEvent) -> usize {
-        let row_count = self.person_table.person_rows.len();
-
-        // Resets tx id, scrubs wal
-        let flush_transactions_from_disk_result = self
-            .persistence
-            .transaction_wal
-            .flush_transactions(database_pause);
-
-        if let Err(e) = flush_transactions_from_disk_result {
-            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
-        }
-
-        // Reset the transaction id counter
-        self.persistence
-            .transaction_wal
-            .set_current_transaction_id(TransactionId::new_first_transaction());
-
-        // Clean out snapshot and transaction log
-        let result = self.persistence.reset();
-
-        if let Err(e) = result {
-            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
-        }
-
-        // Resets the in-memory persons table
-        self.person_table.reset(database_pause);
-
-        row_count
-    }
-
     fn start_thread(
         thread_id: usize,
         receiver: flume::Receiver<DatabaseCommandRequest>,
@@ -203,18 +165,15 @@ impl Database {
                 command.log_format()
             );
 
-            // TODO: We assume that the send() commands are successful. This is likely okay? because if
-            //   if sender is disconnected that should not impact the database
             let transaction_statements = match command {
                 DatabaseCommand::Transaction(statements) => statements,
-                // TODO: There might be a way to reduce the boiler plate by creating a struct that contains common context
                 DatabaseCommand::Control(control) => {
                     let control_context = ControlContext {
                         resolver,
                         thread_id,
                         database_request_managers,
                         database: &database,
-                        transaction_timestamp: &transaction_timestamp,
+                        transaction_timestamp,
                     };
 
                     match control_context.run(control) {

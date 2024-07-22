@@ -16,12 +16,17 @@ pub enum DatabaseControlAction {
     Exit,
 }
 
+/// Control commands are special commands that are used to operate on the database
+/// these control commands might require special synchronization (e.g. pausing the database)
+/// to be able to safely perform certain operations
+///
+/// Contains all the context required to run the various control commands
 pub struct ControlContext<'a> {
     pub resolver: Sender<DatabaseCommandResponse>,
     pub thread_id: usize,
     pub database: &'a Database,
     pub database_request_managers: &'a Vec<RequestManager>,
-    pub transaction_timestamp: &'a TransactionId,
+    pub transaction_timestamp: TransactionId,
 }
 
 impl<'a> ControlContext<'a> {
@@ -157,12 +162,44 @@ impl<'a> ControlContext<'a> {
         DatabaseControlAction::Continue
     }
 
+    /// Resets the filesystem and any in-memory state.
+    ///
+    /// ⚠️ The caller is responsible for stopping the database or else
+    /// it may end up in an inconsistent state. If a reset happens
+    /// at the same time as a write it is possible that a part of the write is erased
     pub fn reset(self) -> DatabaseControlAction {
         // Note, because we have paused the database we should not get ANY deadlocks
         //  concurrency issues
-        let database_reset_guard = &DatabasePauseEvent::new(self.database_request_managers);
+        let database_pause = &DatabasePauseEvent::new(self.database_request_managers);
 
-        let dropped_row_count = self.database.reset_database_state(database_reset_guard);
+        let dropped_row_count = self.database.person_table.person_rows.len();
+
+        // Resets tx id, scrubs wal
+        let flush_transactions_from_disk_result = self
+            .database
+            .persistence
+            .transaction_wal
+            .flush_transactions(database_pause);
+
+        if let Err(e) = flush_transactions_from_disk_result {
+            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
+        }
+
+        // Reset the transaction id counter
+        self.database
+            .persistence
+            .transaction_wal
+            .set_current_transaction_id(TransactionId::new_first_transaction());
+
+        // Clean out snapshot and transaction log
+        let result = self.database.persistence.reset();
+
+        if let Err(e) = result {
+            crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
+        }
+
+        // Resets the in-memory persons table
+        self.database.person_table.reset(database_pause);
 
         let response = DatabaseCommandResponse::control_success(&format!(
             "Successfully reset database, dropped: {} rows",
