@@ -56,7 +56,7 @@ pub fn rm_add_benchmark(c: &mut Criterion) {
     let pool = ThreadPool::new(POOL_SIZE);
 
     for database_write_threads in DATABASE_THREADS_WRITE.iter() {
-        let options = DatabaseOptions::new_test().set_threads(*database_write_threads);
+        let options = DatabaseOptions::new_benchmark().set_threads(*database_write_threads);
 
         let rm = Database::new(options).run();
 
@@ -120,7 +120,7 @@ pub fn rm_get_benchmark(c: &mut Criterion) {
     let pool = ThreadPool::new(POOL_SIZE);
 
     for database_read_threads in DATABASE_THREADS_READ.iter() {
-        let options = DatabaseOptions::new_test().set_threads(*database_read_threads);
+        let options = DatabaseOptions::new_benchmark().set_threads(*database_read_threads);
 
         let rm = Database::new(options).run();
 
@@ -193,7 +193,7 @@ pub fn rm_hybrid_benchmark(c: &mut Criterion) {
     let pool = ThreadPool::new(POOL_SIZE);
 
     for database_read_threads in DATABASE_THREADS_READ.iter() {
-        let options = DatabaseOptions::new_test().set_threads(*database_read_threads);
+        let options = DatabaseOptions::new_benchmark().set_threads(*database_read_threads);
 
         let rm = Database::new(options).run();
 

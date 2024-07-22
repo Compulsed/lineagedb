@@ -33,20 +33,6 @@ pub struct DatabaseOptions {
 
 // Implements: https://rust-unofficial.github.io/patterns/patterns/creational/builder.html
 impl DatabaseOptions {
-    pub fn new_test() -> Self {
-        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
-            .iter()
-            .collect();
-
-        let options = DatabaseOptions::default()
-            .set_storage_engine(StorageEngine::File(database_dir))
-            .set_restore(false)
-            .set_threads(2)
-            .set_sync_file_write(TransactionWriteMode::Off);
-
-        return options;
-    }
-
     /// Defines whether we should attempt to restore the database from a snapshot and transaction log
     /// on startup
     pub fn set_restore(mut self, restore: bool) -> Self {
@@ -473,9 +459,44 @@ impl Database {
     }
 }
 
+#[cfg(test)]
+impl DatabaseOptions {
+    pub fn new_test() -> Self {
+        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            .iter()
+            .collect();
+
+        let options = DatabaseOptions::default()
+            .set_storage_engine(StorageEngine::File(database_dir))
+            .set_restore(false)
+            .set_threads(2)
+            .set_sync_file_write(TransactionWriteMode::Off);
+
+        return options;
+    }
+}
+
+// Benchmarking requires that the functions are available as public create methods
+//  so we cannot use #[cfg(test)]
 impl Database {
     pub fn new_benchmark() -> Self {
-        Database::new(DatabaseOptions::new_test())
+        Database::new(DatabaseOptions::new_benchmark())
+    }
+}
+
+impl DatabaseOptions {
+    pub fn new_benchmark() -> Self {
+        let database_dir: PathBuf = ["/", "tmp", "lineagedb", &Uuid::new_v4().to_string()]
+            .iter()
+            .collect();
+
+        let options = DatabaseOptions::default()
+            .set_storage_engine(StorageEngine::File(database_dir))
+            .set_restore(false)
+            .set_threads(2)
+            .set_sync_file_write(TransactionWriteMode::Off);
+
+        return options;
     }
 }
 
@@ -920,7 +941,8 @@ pub mod test_utils {
         action_generator: fn(u32, u32) -> Statement,
         setup_generator: Option<fn(u32) -> Statement>,
     ) -> TestMetrics {
-        let rm = Database::new(DatabaseOptions::new_test().set_threads(database_threads)).run();
+        let rm =
+            Database::new(DatabaseOptions::new_benchmark().set_threads(database_threads)).run();
 
         let mut sender_threads: Vec<JoinHandle<()>> = vec![];
 
