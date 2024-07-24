@@ -1,11 +1,13 @@
 use actix_cors::Cors;
 use actix_web::{
+    body::MessageBody,
+    dev::{ServiceRequest, ServiceResponse},
     get,
     middleware::{self, Condition},
     route,
     rt::task::spawn_blocking,
     web::{self, Data},
-    App, HttpResponse, HttpServer, Responder,
+    App, Error, HttpResponse, HttpServer, Responder,
 };
 use actix_web_lab::respond::Html;
 use clap::Parser;
@@ -20,6 +22,8 @@ use database::{
 };
 use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::{io, sync::Arc};
+use tracing::Span;
+use tracing_actix_web::{DefaultRootSpanBuilder, RootSpanBuilder, TracingLogger};
 
 use crate::schema::{create_schema, GraphQLContext, Schema};
 
@@ -170,9 +174,24 @@ async fn main() -> io::Result<()> {
         args.port
     );
 
+    pub struct DomainRootSpanBuilder;
+
+    impl RootSpanBuilder for DomainRootSpanBuilder {
+        fn on_request_start(request: &ServiceRequest) -> Span {
+            tracing_actix_web::root_span!(request)
+        }
+
+        fn on_request_end<B: MessageBody>(span: Span, outcome: &Result<ServiceResponse<B>, Error>) {
+            DefaultRootSpanBuilder::on_request_end(span, outcome);
+        }
+    }
+
+    let tracing_middleware = TracingLogger::<DomainRootSpanBuilder>::new();
+
     // Start HTTP server
     HttpServer::new(move || {
         let app = App::new()
+            .wrap(tracing_middleware.clone())
             .app_data(Data::from(schema.clone()))
             .app_data(web::Data::new(request_manager.clone()))
             .service(graphql)
