@@ -146,6 +146,7 @@ impl Database {
     ///
     /// Note: Because this method is being called in the main thread, it is sufficient to just panic and the process
     ///     will exist
+    #[tracing::instrument(name = "database-run", skip(self))]
     pub fn run(self) -> RequestManager {
         log::info!(
             "Running database with the following options: {:#?}",
