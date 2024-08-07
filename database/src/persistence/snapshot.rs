@@ -13,6 +13,7 @@ use crate::{
 
 use super::storage::{ReadBlobState, Storage, StorageResult};
 
+#[derive(Debug)]
 enum FileType {
     Metadata,
     Snapshot,
@@ -49,6 +50,7 @@ impl SnapshotManager {
         Self { storage }
     }
 
+    #[tracing::instrument(skip(self, table))]
     pub fn restore_snapshot(&self, table: &PersonTable) -> StorageResult<(usize, Metadata)> {
         // -- Table
         let version_snapshots: Vec<PersonVersion> = self.read_file(FileType::Snapshot)?;
@@ -62,6 +64,7 @@ impl SnapshotManager {
         return Ok((snapshot_count, metadata_data));
     }
 
+    #[tracing::instrument(skip(self, table))]
     pub fn create_snapshot(
         &self,
         _: &DatabasePauseEvent,
@@ -86,6 +89,7 @@ impl SnapshotManager {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     fn read_file<T: DeserializeOwned + Default>(&self, file_path: FileType) -> StorageResult<T> {
         let result = self
             .storage
@@ -107,6 +111,7 @@ impl SnapshotManager {
         }
     }
 
+    #[tracing::instrument(skip(self, data))]
     fn write_file<T: Serialize>(&self, file_path: FileType, data: T) -> StorageResult<()> {
         let serialized_data = serde_json::to_string::<T>(&data).unwrap();
 

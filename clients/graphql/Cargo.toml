@@ -1,5 +1,5 @@
 [package]
-name = "graphql"
+name = "database-graphql-client"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,12 @@ edition = "2021"
 name = "lineagedb"
 path = "src/main.rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["tracing-log", "metrics"]
+# Enables support for exporting OpenTelemetry metrics
+metrics = ["opentelemetry/metrics", "opentelemetry_sdk/metrics"]
+# Enables experimental support for OpenTelemetry gauge metrics
+metrics_gauge_unstable = ["opentelemetry/otel_unstable"]
 
 [dependencies]
 database = { path = "../../database" }
@@ -23,3 +28,33 @@ ctrlc = "3.4.2"
 flume = "0.11.0"
 rand = "0.8.5"
 tokio-postgres = "0.7.10"
+
+# Dependencies for tracing
+tokio = { version = "1", features = ["full"] }
+opentelemetry = { version = "0.24", default-features = false, features = [
+    "trace",
+] }
+opentelemetry_sdk = { version = "0.24.1", default-features = false, features = [
+    "trace",
+    "rt-tokio",
+] }
+opentelemetry-otlp = { version = "0.17", features = [
+    "http-proto",
+    "reqwest-client",
+    "metrics",
+] }
+tracing = { version = "0.1.35", default-features = false, features = [
+    "std",
+    "attributes",
+] }
+tracing-core = "0.1.28"
+tracing-subscriber = { version = "0.3.0", default-features = false, features = [
+    "registry",
+    "std",
+    "fmt",
+] }
+tracing-log = { version = "0.2.0", default-features = false, optional = true }
+opentelemetry-semantic-conventions = "0.16"
+tracing-opentelemetry = "0.25"
+opentelemetry-stdout = { version = "0.5", features = ["trace", "metrics"] }
+reqwest = "0.12.5"
