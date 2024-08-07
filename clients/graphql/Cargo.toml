@@ -1,5 +1,5 @@
 [package]
-name = "graphql"
+name = "database-graphql-client"
 version = "0.1.0"
 edition = "2021"
 
@@ -38,7 +38,11 @@ opentelemetry_sdk = { version = "0.24.1", default-features = false, features = [
     "trace",
     "rt-tokio",
 ] }
-opentelemetry-otlp = { version = "0.17", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.17", features = [
+    "http-proto",
+    "reqwest-client",
+    "metrics",
+] }
 tracing = { version = "0.1.35", default-features = false, features = [
     "std",
     "attributes",
@@ -53,3 +57,4 @@ tracing-log = { version = "0.2.0", default-features = false, optional = true }
 opentelemetry-semantic-conventions = "0.16"
 tracing-opentelemetry = "0.25"
 opentelemetry-stdout = { version = "0.5", features = ["trace", "metrics"] }
+reqwest = "0.12.5"

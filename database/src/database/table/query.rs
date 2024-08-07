@@ -18,6 +18,7 @@ pub struct QueryPersonData {
     pub email: QueryMatch,
 }
 
+#[tracing::instrument(skip(table))]
 pub fn query(table: &PersonTable, transaction_id: &TransactionId) -> Vec<Person> {
     return table
         .person_rows
@@ -26,6 +27,7 @@ pub fn query(table: &PersonTable, transaction_id: &TransactionId) -> Vec<Person>
         .collect();
 }
 
+#[tracing::instrument(skip(people))]
 pub fn filter(people: Vec<Person>, query: QueryPersonData) -> Vec<Person> {
     let filtered_people = people
         .into_iter()

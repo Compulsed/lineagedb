@@ -15,6 +15,7 @@ use crate::{
 };
 use num_format::{Locale, ToFormattedString};
 use std::{sync::Arc, thread, time::Instant};
+use tracing::{field, span, Level};
 
 // TODO: This is a part of the transaction_wal, should be moved there
 enum CommitStatus {
@@ -23,6 +24,7 @@ enum CommitStatus {
 }
 
 /// Transactions can be created from a client submitting a request or from a restore operation
+#[derive(Debug)]
 pub enum ApplyMode {
     /// Return the result of the transaction to the client
     Request(oneshot::Sender<DatabaseCommandResponse>),
@@ -71,6 +73,11 @@ impl Database {
                 }
             };
 
+            // Create a root space for each command
+            let database_command_span = span!(Level::INFO, "root:database-command", command = ?command, contains_mutation = field::Empty);
+
+            let _enter = database_command_span.enter();
+
             // Clock time of the transaction, we include a transaction id in all requests
             //  this clock time is stored in an atomic so it is unique across threads
             let transaction_timestamp = database
@@ -113,6 +120,8 @@ impl Database {
                 .iter()
                 .any(|statement| statement.is_mutation());
 
+            database_command_span.record("contains_mutation", contains_mutation);
+
             match contains_mutation {
                 true => {
                     // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
@@ -146,7 +155,7 @@ impl Database {
     ///
     /// Note: Because this method is being called in the main thread, it is sufficient to just panic and the process
     ///     will exist
-    #[tracing::instrument(name = "database-run", skip(self))]
+    #[tracing::instrument(name = "root:database-run", skip(self))]
     pub fn run(self) -> RequestManager {
         log::info!(
             "Running database with the following options: {:#?}",
@@ -273,6 +282,7 @@ impl Database {
         return RequestManager::new(tx_channels);
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn query_transaction(
         &self,
         query_latest_transaction_id: &TransactionId,
@@ -299,6 +309,7 @@ impl Database {
         DatabaseCommandTransactionResponse::Commit(statement_results)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn apply_transaction(
         &self,
         applying_transaction_id: TransactionId,

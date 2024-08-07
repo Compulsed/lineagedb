@@ -56,12 +56,14 @@ impl PersonTable {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn reset(&self, _: &DatabasePauseEvent) {
         for row in &self.person_rows {
             row.remove();
         }
     }
 
+    #[tracing::instrument(skip(self, version_snapshots))]
     pub fn restore_table(&self, version_snapshots: Vec<PersonVersion>) {
         for version_snapshot in version_snapshots {
             let id = version_snapshot.id.clone();
@@ -72,6 +74,7 @@ impl PersonTable {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn query_statement(
         &self,
         statement: Statement,
@@ -141,6 +144,7 @@ impl PersonTable {
     //  - Verifying validity
     //  - Applying statement
     //  - Clean up
+    #[tracing::instrument(skip(self))]
     pub fn apply(
         &self,
         statement: Statement,
@@ -215,6 +219,7 @@ impl PersonTable {
         Ok(action_result)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn apply_rollback(&self, statement: Statement) {
         match statement {
             Statement::Add(person) => {
@@ -236,6 +241,7 @@ impl PersonTable {
     // TODO: Is there a way to centralize the logic for removing constraints? We could run into a situation
     //  where we update the logic here OR the row logic and it could get out of sync. This will likely be important
     //  for indexing as well.
+    #[tracing::instrument(skip(self))]
     fn remove_mutation(&self, id: EntityId) {
         let person_row = self
             .person_rows
