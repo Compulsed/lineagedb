@@ -68,6 +68,7 @@ pub struct PersonRow {
 }
 
 impl PersonRow {
+    #[tracing::instrument]
     pub fn new(person: Person, transaction_id: TransactionId) -> Self {
         PersonRow {
             versions: vec![PersonVersion {
@@ -87,6 +88,7 @@ impl PersonRow {
     }
 
     /// Handles the case of adding an item back after it was deleted
+    #[tracing::instrument(skip(self))]
     pub fn apply_add(
         &mut self,
         person: Person,
@@ -111,6 +113,7 @@ impl PersonRow {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn apply_update(
         &mut self,
         id: &EntityId,
@@ -158,6 +161,7 @@ impl PersonRow {
         })
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn apply_delete(
         &mut self,
         id: &EntityId,
@@ -181,6 +185,7 @@ impl PersonRow {
         })
     }
 
+    #[tracing::instrument(skip(self))]
     fn apply_new_version(
         &mut self,
         current_version: &PersonVersion,
@@ -208,6 +213,7 @@ impl PersonRow {
 
     /// Drop row means that we have rolled back to the point where there are no versions. We must clean up the row OR we
     ///    we will create bugs where we think a row exists when it does not
+    #[tracing::instrument(skip(self))]
     pub fn rollback_version(&mut self) -> (PersonVersion, DropRow) {
         let version = self
             .versions
@@ -222,6 +228,7 @@ impl PersonRow {
         return (version, drop_row);
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn person_at_version(
         &self,
         version_id: VersionId,
@@ -231,6 +238,7 @@ impl PersonRow {
             .and_then(|version| version.get_person())
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn at_version(
         &self,
         version_id: VersionId,

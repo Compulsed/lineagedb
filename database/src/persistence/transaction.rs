@@ -1,5 +1,6 @@
 use oneshot::Sender;
 use serde::{Deserialize, Serialize};
+use tracing::{event, field, span, Level};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -96,16 +97,20 @@ impl TransactionWAL {
                 let worker_storage = storage_thread;
 
                 loop {
+                    let storage_batch = span!(Level::INFO, "root:storage-batch", batch_size = field::Empty);
+
+                    let _enter = storage_batch.enter();
+
                     let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
                         vec![];
-
-                    log::debug!("Start");
 
                     // Receiver.recv() gives us a nice blocking call
                     let Ok(blocking_data) = receiver.recv() else {
                         // Error will be because the sender has been dropped, we can safely exit the thread
                         return
-                    };                    
+                    };
+
+                    event!(Level::INFO, "data_from_receiver");
 
                     // once the thread is token up we use `try_iter` to attempt to take a decent batch
                     let batched_data = vec![blocking_data].into_iter()
@@ -114,8 +119,6 @@ impl TransactionWAL {
 
                     // Then we can persist the transactions to disk
                     for transaction_data in batched_data.into_iter() {
-                        log::debug!("Processing Data");
-
                         let TransactionCommitData {
                             applied_transaction_id,
                             statements,
@@ -159,6 +162,8 @@ impl TransactionWAL {
 
                         batch.push((resolver, response));
                     }
+
+                    storage_batch.record("batch_size", batch.len() as u64);
 
                     // Performs an fsync on the transaction log, ensuring that the transaction is durable
                     // https://www.postgresql.org/docs/current/wal-reliability.html
@@ -214,6 +219,7 @@ impl TransactionWAL {
         self.current_transaction_id.get_timestamp()
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn commit(
         &self,
         applied_transaction_id: TransactionId,

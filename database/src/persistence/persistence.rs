@@ -31,10 +31,12 @@ impl Persistence {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn init(&self) -> StorageResult<()> {
         return self.storage.lock().unwrap().init();
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn reset(&self) -> StorageResult<()> {
         self.storage.lock().unwrap().reset_database()
     }

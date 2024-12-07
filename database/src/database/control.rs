@@ -30,6 +30,7 @@ pub struct ControlContext<'a> {
 }
 
 impl<'a> ControlContext<'a> {
+    #[tracing::instrument(skip(self))]
     pub fn run(self, control: Control) -> DatabaseControlAction {
         match control {
             Control::Sleep(d) => self.sleep(d),

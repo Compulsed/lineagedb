@@ -111,6 +111,56 @@ cargo bench --all
 cargo bench -- --save-baseline no-fsync # Saves the baseline to compare to another branch
 ```
 
+
+## Tracing
+
+Out of the box lineage DB supports Otel tracing via 2 providers, one is Jaeger and the other is Honeycomb.
+
+**Jaeger**
+
+Spin up the Jaeger
+
+```
+docker run -d -p4317:4317 -p16686:16686 jaegertracing/all-in-one:1.64.0
+
+```
+
+In the .env-example file set the 
+
+```
+OTEL_EXPORTER=http://localhost:4317
+```
+
+Then, run the database and you should now be able to see traces at:
+
+```
+http://localhost:16686/search
+```
+
+<p align="center">
+  <img src="images/jaeger.png" width="500px">
+</p>
+
+
+**Honeycomb**
+
+For Honeycomb you will need to sign up with an account. Once you do you will get an API Key. Set the API key /
+dataset as the following:
+
+```
+HONEYCOMB_API_KEY=xxx
+HONEYCOMB_DATA_SET=dev
+```
+
+You can call the dataset anything you would like
+
+Then, run the database and you should now be able to see traces at:
+
+```
+http://localhost:16686/search
+```
+
+
 ## Functionality and Limitations
 
 **Current functionality**
@@ -201,3 +251,4 @@ mutation dbReset {
   reset
 }
 ```
+
