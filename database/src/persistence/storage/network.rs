@@ -44,6 +44,7 @@ pub struct NetworkStorage {
 const RECEIVER_EXPECTED_TO_WORK: &str = "should not have issues with the receiver";
 
 impl Storage for NetworkStorage {
+    #[tracing::instrument(skip(self, bytes))]
     fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
@@ -60,6 +61,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
         let (sender, receiver) = oneshot::channel::<StorageResult<ReadBlobState>>();
 
@@ -74,6 +76,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn init(&mut self) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
@@ -84,6 +87,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn reset_database(&mut self) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
@@ -96,6 +100,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
@@ -111,6 +116,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
         let (sender, receiver) = oneshot::channel::<StorageResult<Vec<String>>>();
 
@@ -121,6 +127,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn transaction_flush(&mut self) -> StorageResult<()> {
         let (sender, receiver) = oneshot::channel::<StorageResult<()>>();
 
@@ -131,6 +138,7 @@ impl Storage for NetworkStorage {
         receiver.recv().expect(RECEIVER_EXPECTED_TO_WORK)
     }
 
+    #[tracing::instrument(skip(self))]
     fn transaction_sync(&self) -> StorageResult<()> {
         // For network we do not need a disk sync
         Ok(())

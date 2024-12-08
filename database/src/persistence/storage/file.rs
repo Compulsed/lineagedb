@@ -42,9 +42,8 @@ impl FileStorage {
 }
 
 impl Storage for FileStorage {
+    #[tracing::instrument(skip(self, bytes))]
     fn write_blob(&self, path: String, bytes: Vec<u8>) -> StorageResult<()> {
-        log::debug!("write_blob");
-
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -55,9 +54,8 @@ impl Storage for FileStorage {
             .map_err(|e| StorageError::UnableToWriteBlob(io_to_generic_error(e)))
     }
 
+    #[tracing::instrument(skip(self))]
     fn read_blob(&self, path: String) -> StorageResult<ReadBlobState> {
-        log::debug!("read_blob");
-
         let mut file = match File::open(self.get_path(&path)) {
             Ok(file) => file,
             Err(err) => match err.kind() {
@@ -74,9 +72,8 @@ impl Storage for FileStorage {
     }
 
     // Called on DB Start-up, should be idempotent
+    #[tracing::instrument(skip(self))]
     fn init(&mut self) -> StorageResult<()> {
-        log::debug!("init");
-
         std::fs::create_dir_all(&self.base_path)
             .map_err(|e| StorageError::UnableToInitializePersistence(io_to_generic_error(e)))?;
 
@@ -84,9 +81,8 @@ impl Storage for FileStorage {
     }
 
     // Called when the database gets cleared (via user)
+    #[tracing::instrument(skip(self))]
     fn reset_database(&mut self) -> StorageResult<()> {
-        log::debug!("reset_database");
-
         fs::remove_dir_all(&self.base_path)
             .map_err(|e| StorageError::UnableToInitializePersistence(io_to_generic_error(e)))?;
 
@@ -102,9 +98,8 @@ impl Storage for FileStorage {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, transaction))]
     fn transaction_write(&mut self, transaction: &[u8]) -> StorageResult<()> {
-        log::debug!("transaction_write");
-
         // Buffered OS write, is not 'durable' without the fsync
         let _ = self
             .log_file
@@ -116,9 +111,8 @@ impl Storage for FileStorage {
             .map_err(|e| StorageError::UnableToWriteTransaction(io_to_generic_error(e)))
     }
 
+    #[tracing::instrument(skip(self))]
     fn transaction_sync(&self) -> StorageResult<()> {
-        log::debug!("transaction_sync");
-
         self.log_file.sync_all().map_err(|e| {
             StorageError::UnableToSyncTransactionBufferToPersistentStorage(io_to_generic_error(e))
         })?;
@@ -126,9 +120,8 @@ impl Storage for FileStorage {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     fn transaction_flush(&mut self) -> StorageResult<()> {
-        log::debug!("transaction_flush");
-
         // TODO: When we are doing a dual reset, this could fail. Add
         //  the unwrap back and think this through
         let _ = fs::remove_file(self.transaction_file_path.clone())
@@ -144,9 +137,8 @@ impl Storage for FileStorage {
     }
 
     // File may or may not exist
+    #[tracing::instrument(skip(self))]
     fn transaction_load(&mut self) -> StorageResult<Vec<String>> {
-        log::debug!("transaction_load");
-
         let mut contents = String::new();
 
         let mut file = OpenOptions::new()

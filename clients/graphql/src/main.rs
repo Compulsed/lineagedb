@@ -22,8 +22,10 @@ use juniper::http::{graphiql::graphiql_source, GraphQLRequest};
 use std::{io, sync::Arc};
 
 use crate::schema::{create_schema, GraphQLContext, Schema};
+use crate::tracers::init_tracing_subscriber;
 
 mod schema;
+mod tracers;
 
 /// GraphiQL playground UI
 #[get("/graphiql")]
@@ -122,11 +124,9 @@ struct Cli {
     database_password: String,
 }
 
-#[actix_web::main]
-async fn main() -> io::Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-
-    let args = Cli::parse();
+#[tracing::instrument(name = "root:graphql-start")]
+async fn start_graphql() -> io::Result<()> {
+    let args: Cli = Cli::parse();
 
     let database_options = DatabaseOptions::default().set_storage_engine(to_storage_engine(&args));
 
@@ -186,4 +186,14 @@ async fn main() -> io::Result<()> {
     .bind((args.address, args.port))?
     .run()
     .await
+}
+
+#[actix_web::main]
+async fn main() -> io::Result<()> {
+    init_tracing_subscriber();
+
+    // TODO: Do we use this or just the tracing subscriber to export / manage logs
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+
+    start_graphql().await
 }
