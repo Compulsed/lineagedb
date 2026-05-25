@@ -266,23 +266,37 @@ impl PersonRow {
         version_id: VersionId,
         snapshot: &TransactionId,
     ) -> Option<PersonVersion> {
-        // Only versions committed at or before the reader's snapshot are visible. Rows
-        // contain committed versions only, appended in ascending commit_ts order.
-        let versions_at_snapshot = self
-            .versions
+        // Find the version by its version id rather than by Vec position, so this stays
+        // correct after vacuum has reclaimed older versions (positions shift, ids don't).
+        // The version must also be visible at the reader's snapshot. If it has been
+        // vacuumed away, this returns None.
+        self.versions
             .iter()
-            .filter(|version| &version.commit_ts <= snapshot)
-            .collect::<Vec<&PersonVersion>>();
-
-        // Versions are 1 indexed, subtract 1 to get the correct vector index
-        match versions_at_snapshot.get(version_id.to_number() - 1) {
-            Some(version) => Some((*version).clone()),
-            None => None,
-        }
+            .find(|version| version.version == version_id && &version.commit_ts <= snapshot)
+            .cloned()
     }
 
     pub fn version_count(&self) -> usize {
         self.versions.len()
+    }
+
+    /// Vacuum: removes versions strictly older than the floor -- the latest version visible
+    /// at `oldest` -- keeping the floor and everything after it. Returns the number removed.
+    /// Only safe when no transaction is reading at a snapshot below `oldest`.
+    pub fn reap_below_floor(&mut self, oldest: &TransactionId) -> usize {
+        match self.versions.iter().rposition(|v| &v.commit_ts <= oldest) {
+            Some(floor_idx) if floor_idx > 0 => {
+                self.versions.drain(0..floor_idx);
+                floor_idx
+            }
+            _ => 0,
+        }
+    }
+
+    /// True when the only remaining version is a delete tombstone, so the row holds no live
+    /// data and the whole row can be dropped.
+    pub fn is_tombstone(&self) -> bool {
+        self.versions.len() == 1 && matches!(self.versions[0].state, PersonVersionState::Delete)
     }
 
     pub fn at_transaction_id(&self, snapshot: &TransactionId) -> Option<Person> {
@@ -307,5 +321,74 @@ impl PersonRow {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn person(name: &str) -> Person {
+        Person {
+            id: EntityId("r".to_string()),
+            full_name: name.to_string(),
+            email: None,
+        }
+    }
+
+    /// A row with versions v1@ts1, v2@ts2, v3@ts3.
+    fn three_version_row() -> PersonRow {
+        let mut row = PersonRow::new(person("v1"), TransactionId(1));
+        row.append_committed(PersonVersionState::State(person("v2")), TransactionId(2));
+        row.append_committed(PersonVersionState::State(person("v3")), TransactionId(3));
+        row
+    }
+
+    #[test]
+    fn reap_keeps_floor_and_newer() {
+        let mut row = three_version_row();
+
+        // Oldest snapshot 2 -> floor is v2 (latest <= 2); v1 is reclaimed.
+        assert_eq!(row.reap_below_floor(&TransactionId(2)), 1);
+        assert_eq!(row.version_count(), 2);
+
+        // at_version finds surviving versions by id (not position) and reports v1 as gone.
+        let high = TransactionId(100);
+        assert!(row.at_version(VersionId(1), &high).is_none());
+        assert!(row.at_version(VersionId(2), &high).is_some());
+        assert!(row.at_version(VersionId(3), &high).is_some());
+    }
+
+    #[test]
+    fn reap_nothing_when_oldest_precedes_all_versions() {
+        let mut row = three_version_row();
+
+        // No version is <= 0, so there is no floor and nothing is reclaimable.
+        assert_eq!(row.reap_below_floor(&TransactionId(0)), 0);
+        assert_eq!(row.version_count(), 3);
+    }
+
+    #[test]
+    fn at_version_finds_by_id_after_reap_shifts_positions() {
+        let mut row = three_version_row();
+
+        // Floor at snapshot 3 is v3; v1 and v2 are reclaimed and v3 moves to position 0.
+        assert_eq!(row.reap_below_floor(&TransactionId(3)), 2);
+        assert_eq!(row.version_count(), 1);
+
+        let found = row
+            .at_version(VersionId(3), &TransactionId(100))
+            .expect("v3 should still be found by its version id");
+        assert_eq!(found.version, VersionId(3));
+    }
+
+    #[test]
+    fn delete_collapses_to_tombstone() {
+        let mut row = three_version_row();
+        row.append_committed(PersonVersionState::Delete, TransactionId(4));
+
+        // Floor at snapshot 4 is the delete; everything before collapses away.
+        assert_eq!(row.reap_below_floor(&TransactionId(4)), 3);
+        assert!(row.is_tombstone());
     }
 }

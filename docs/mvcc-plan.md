@@ -217,9 +217,34 @@ optimize.
   own piece of work (candidate future stage), at which point conflict detection here is the
   concurrency-safety prerequisite it can build on.
 
-### Stage 4 — Vacuum `[ ]`
-- [ ] Track the oldest live snapshot; reap versions with `commit_ts` older than it.
-- Needed before this is viable beyond toy sizes.
+### Stage 4 — Vacuum `[x]` (aggressive MVCC GC)
+- Decision: **aggressive MVCC GC** — reclaim every version no active transaction can still
+  see, keeping only each row's latest visible version. Trades away unbounded time-travel
+  (GetVersion / point-in-time) below a GC horizon, Postgres-style. (The other option,
+  keeping full lineage history, was considered and rejected for this stage.)
+- [x] **Stop-the-world** vacuum (`Control::VacuumDatabase`, `control.rs::vacuum`), using the
+      existing `DatabasePauseEvent` like snapshot/reset. Pausing guarantees no transaction is
+      mid-read, so a concurrent vacuum can't reap a version an in-flight reader captured at
+      an older snapshot. With nothing in flight, `oldest = current watermark`.
+- [x] `PersonTable::vacuum` / `PersonRow::reap_below_floor`: per row, drop every version
+      strictly older than the floor (latest version with `commit_ts <= oldest`); drop rows
+      that collapse to a delete tombstone. Returns the reclaimed count.
+- [x] **Snapshot-too-old**: vacuum advances `gc_horizon` (in `TransactionWAL`); the read
+      path rejects point-in-time reads at a snapshot below it. `Latest` reads use the
+      watermark (always `>=` the GC mark) so they're never affected.
+- [x] **Prereq fix (§3.7):** `at_version` now finds a version by its id, not by Vec
+      position, so `GetVersion` stays correct after reaping shifts positions (a reclaimed
+      version reads back as `None`).
+- [x] Tests: row-level reaping/tombstone/`at_version`-by-id unit tests (`row.rs`), and
+      `vacuum_reclaims_old_versions_and_rejects_too_old_reads` end-to-end.
+- **Why stop-the-world (not concurrent):** a correct concurrent GC needs every reader to
+  publish its snapshot before reading (a global registry or per-thread snapshot slots), which
+  would add a hot-path synchronization point and undercut the lock-free read concurrency the
+  engine showcases. Maintenance-style stop-the-world keeps reads fast and is obviously safe.
+- **Stage 5 hook:** `oldest = watermark` is only correct because all transactions are
+  short-lived today. Once long-lived transactions exist they hold a snapshot across the
+  pause, so `oldest` must become `min(watermark, oldest active transaction)` — i.e. the
+  active-snapshot registry deferred from here lands in Stage 5.
 
 ### Stage 5 — Long-lived read-write transactions `[ ]`
 - [ ] Introduce a real `Transaction` handle (begin-snapshot + write-set + state) and a

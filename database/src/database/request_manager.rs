@@ -287,6 +287,10 @@ impl RequestManager {
         return self.send_control(Control::SnapshotDatabase);
     }
 
+    pub fn send_vacuum_request(&self) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::VacuumDatabase);
+    }
+
     pub fn send_sleep_request(&self, duration: Duration) -> Result<String, RequestManagerError> {
         return self.send_control(Control::Sleep(duration));
     }

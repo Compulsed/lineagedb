@@ -71,6 +71,10 @@ pub struct TransactionWAL {
     /// visible only once it is durable. Shared (`Arc`) so the WAL thread can advance it.
     /// Advancement is monotonic because the WAL thread processes commits in commit-id order.
     committed_watermark: Arc<LocalClock>,
+    /// The oldest snapshot still answerable. Vacuum advances this to the snapshot it
+    /// reclaimed below; reads at a snapshot lower than this are rejected as "snapshot too
+    /// old" because their versions may have been reaped.
+    gc_horizon: LocalClock,
     database_options: DatabaseOptions,
     size: AtomicUsize,
     commit_sender: TransactionWalStatus,
@@ -85,6 +89,7 @@ impl TransactionWAL {
         Self {
             commit_id_sequence: LocalClock::new_with(1),
             committed_watermark: Arc::new(LocalClock::new_with(0)),
+            gc_horizon: LocalClock::new_with(0),
             size: AtomicUsize::new(0),
             database_options,
             commit_sender: TransactionWalStatus::Uninitialized,
@@ -257,10 +262,21 @@ impl TransactionWAL {
         self.committed_watermark.set(commit_ts.0);
     }
 
-    /// Resets both clocks to their empty-database state (no data committed).
+    /// The oldest snapshot still answerable; reads below it are "snapshot too old".
+    pub fn gc_low_water_mark(&self) -> TransactionId {
+        self.gc_horizon.current()
+    }
+
+    /// Records that vacuum has reclaimed versions below `oldest`.
+    pub fn set_gc_low_water_mark(&self, oldest: TransactionId) {
+        self.gc_horizon.set(oldest.0);
+    }
+
+    /// Resets the clocks to their empty-database state (no data committed, nothing GC'd).
     pub fn reset_clocks(&self) {
         self.committed_watermark.set(0);
         self.commit_id_sequence.set(1);
+        self.gc_horizon.set(0);
     }
 
     /// Seeds the clocks during restore: the watermark is the highest commit id restored so

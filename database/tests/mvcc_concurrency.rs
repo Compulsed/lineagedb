@@ -15,9 +15,9 @@ use std::sync::Arc;
 use std::thread;
 
 use database::{
-    consts::consts::EntityId,
+    consts::consts::{EntityId, TransactionId, VersionId},
     database::{
-        commands::TransactionContext,
+        commands::{SnapshotTimestamp, TransactionContext},
         database::Database,
         options::DatabaseOptions,
         request_manager::RequestManager,
@@ -234,6 +234,66 @@ fn committed_write_is_durable_and_then_visible() {
         expect_name(&read[0]),
         "committed-value",
         "a write that returned committed must be visible to a later read"
+    );
+}
+
+/// Stage 4 vacuum: aggressive MVCC GC reclaims superseded versions while preserving the
+/// latest state, and reads at a vacuumed-away snapshot are rejected as "snapshot too old".
+#[test]
+fn vacuum_reclaims_old_versions_and_rejects_too_old_reads() {
+    let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(2)).run();
+
+    let id = EntityId("v".to_string());
+
+    // Add (v1) then update three times (v2..v4); commit ids 1..4.
+    rm.send_transaction(
+        vec![Statement::Add(new_person("v", "n1"))],
+        TransactionContext::default(),
+    )
+    .expect("add should commit");
+    for n in 2..=4 {
+        rm.send_transaction(
+            vec![Statement::Update(id.clone(), set_name(format!("n{}", n)))],
+            TransactionContext::default(),
+        )
+        .expect("update should commit");
+    }
+
+    // Before vacuum, the original version is still readable.
+    let v1_before = rm
+        .send_get_version(id.clone(), VersionId(1), TransactionContext::default())
+        .expect("get_version should not error");
+    assert_eq!(v1_before.map(|p| p.full_name), Some("n1".to_string()));
+
+    // Vacuum (stop-the-world): collapse each row to its latest visible version.
+    rm.send_vacuum_request().expect("vacuum should succeed");
+
+    // The old version is reclaimed (row still exists, but v1 is gone).
+    let v1_after = rm
+        .send_get_version(id.clone(), VersionId(1), TransactionContext::default())
+        .expect("get_version should not error");
+    assert_eq!(v1_after, None, "v1 should have been reclaimed by vacuum");
+
+    // The latest version and current state survive and are correct.
+    let v4 = rm
+        .send_get_version(id.clone(), VersionId(4), TransactionContext::default())
+        .expect("get_version should not error");
+    assert_eq!(v4.map(|p| p.full_name), Some("n4".to_string()));
+
+    let latest = rm
+        .send_get(id.clone(), TransactionContext::default())
+        .expect("get should not error");
+    assert_eq!(latest.map(|p| p.full_name), Some("n4".to_string()));
+
+    // A point-in-time read below the GC low-water mark is rejected as snapshot-too-old.
+    let too_old = rm.send_get(
+        id.clone(),
+        TransactionContext::new(SnapshotTimestamp::AtTransactionId(TransactionId(1))),
+    );
+    assert!(
+        too_old.is_err(),
+        "a read at a vacuumed-away snapshot must be rejected, got {:?}",
+        too_old
     );
 }
 

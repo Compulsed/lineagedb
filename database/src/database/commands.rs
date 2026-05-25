@@ -124,6 +124,9 @@ pub enum Control {
     Shutdown(ShutdownRequest),
     /// Writes the current state of the database to disk, removes the need for a WAL replay on next startup
     SnapshotDatabase,
+    /// Reclaims row versions that no active transaction can still see (aggressive MVCC GC).
+    /// Stop-the-world: pauses worker threads so nothing is mid-read while versions are reaped.
+    VacuumDatabase,
     /// Resets the database to the initial state, removes all data from the database, resets transaction ids, etc
     ResetDatabase,
     /// Pauses the database so that we can perform certain operations

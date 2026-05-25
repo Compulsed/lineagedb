@@ -135,8 +135,20 @@ impl Database {
                         SnapshotTimestamp::Latest => snapshot_id,
                     };
 
-                    let response =
-                        database.query_transaction(&query_transaction_id, transaction_statements);
+                    // Reject point-in-time reads whose versions have been vacuumed away.
+                    //  ('Latest' reads use the current watermark, which is always >= the GC
+                    //  mark, so only old pinned snapshots can trip this.)
+                    let gc_low_water_mark =
+                        database.persistence.transaction_wal.gc_low_water_mark();
+
+                    let response = if query_transaction_id < gc_low_water_mark {
+                        DatabaseCommandTransactionResponse::Rollback(format!(
+                            "Snapshot too old: requested snapshot {} but the oldest retained snapshot is {}",
+                            query_transaction_id, gc_low_water_mark
+                        ))
+                    } else {
+                        database.query_transaction(&query_transaction_id, transaction_statements)
+                    };
 
                     let _ = resolver.send(
                         DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),

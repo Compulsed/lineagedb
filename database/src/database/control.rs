@@ -38,6 +38,7 @@ impl<'a> ControlContext<'a> {
             Control::PauseDatabase(r) => self.pause(r),
             Control::ResetDatabase => self.reset(),
             Control::SnapshotDatabase => self.snapshot(),
+            Control::VacuumDatabase => self.vacuum(),
         }
     }
 
@@ -204,6 +205,35 @@ impl<'a> ControlContext<'a> {
         let response = DatabaseCommandResponse::control_success(&format!(
             "Successfully reset database, dropped: {} rows",
             dropped_row_count
+        ));
+
+        self.send_response(response);
+
+        DatabaseControlAction::Continue
+    }
+
+    pub fn vacuum(self) -> DatabaseControlAction {
+        // Stop-the-world: pausing the other worker threads guarantees no transaction is
+        //  mid-read. With nothing in flight, the oldest snapshot anyone can read at is the
+        //  current watermark (`transaction_timestamp`).
+        //
+        //  NOTE (Stage 5): once long-lived transactions exist they hold a snapshot across
+        //  the pause, so `oldest` must become min(watermark, oldest active transaction).
+        let pause = &DatabasePauseEvent::new(self.database_request_managers);
+
+        let oldest = self.transaction_timestamp.clone();
+
+        let reclaimed = self.database.person_table.vacuum(pause, &oldest);
+
+        // Reads at a snapshot below this can no longer be answered correctly.
+        self.database
+            .persistence
+            .transaction_wal
+            .set_gc_low_water_mark(oldest.clone());
+
+        let response = DatabaseCommandResponse::control_success(&format!(
+            "Successfully vacuumed database: reclaimed {} versions, gc low-water mark now {}",
+            reclaimed, oldest
         ));
 
         self.send_response(response);

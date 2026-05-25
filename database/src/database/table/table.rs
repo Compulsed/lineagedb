@@ -62,6 +62,36 @@ impl PersonTable {
         }
     }
 
+    /// Aggressive MVCC GC: reclaims every version that no transaction reading at `oldest`
+    /// (or later) can still see -- i.e. everything strictly older than each row's floor.
+    /// Rows that collapse to a delete tombstone are dropped entirely. Returns the number of
+    /// versions reclaimed.
+    ///
+    /// Must be called under a `DatabasePauseEvent` (stop-the-world): a concurrent reader
+    /// could have captured a snapshot below `oldest` and still need a version we reap.
+    /// Pausing guarantees no transaction is in flight, so `oldest` (the current watermark)
+    /// is genuinely the oldest reachable snapshot.
+    pub fn vacuum(&self, _: &DatabasePauseEvent, oldest: &TransactionId) -> usize {
+        let mut reclaimed = 0;
+        let mut dead_rows = Vec::new();
+
+        for entry in &self.person_rows {
+            let mut row = entry.value().write().unwrap();
+            reclaimed += row.reap_below_floor(oldest);
+
+            if row.is_tombstone() {
+                dead_rows.push(entry.key().clone());
+            }
+        }
+
+        for id in dead_rows {
+            self.person_rows.remove(&id);
+            reclaimed += 1;
+        }
+
+        reclaimed
+    }
+
     /// Reads the committed person for an entity as visible at `snapshot`. Used by the
     /// write-set buffer to resolve the current state during statement execution.
     pub fn read_at_snapshot(&self, id: &EntityId, snapshot: &TransactionId) -> Option<Person> {
