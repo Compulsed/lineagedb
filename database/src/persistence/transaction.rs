@@ -65,10 +65,12 @@ pub struct TransactionWAL {
     /// Starts at 1: commit ids are always >= 1, the watermark starts at 0 (nothing
     /// committed), so a reader at the initial snapshot sees no data.
     commit_id_sequence: LocalClock,
-    /// The highest commit timestamp that has been published. Readers take this as their
-    /// snapshot ("read the latest committed state"). Advanced (monotonically, because
-    /// commits are serialized) once a transaction's versions are published.
-    committed_watermark: LocalClock,
+    /// The highest commit timestamp that is durable and therefore visible. Readers take
+    /// this as their snapshot ("read the latest committed state"). It is advanced by the
+    /// WAL thread *after* a transaction's WAL entry has been fsynced, so a version becomes
+    /// visible only once it is durable. Shared (`Arc`) so the WAL thread can advance it.
+    /// Advancement is monotonic because the WAL thread processes commits in commit-id order.
+    committed_watermark: Arc<LocalClock>,
     database_options: DatabaseOptions,
     size: AtomicUsize,
     commit_sender: TransactionWalStatus,
@@ -82,7 +84,7 @@ impl TransactionWAL {
     ) -> Self {
         Self {
             commit_id_sequence: LocalClock::new_with(1),
-            committed_watermark: LocalClock::new_with(0),
+            committed_watermark: Arc::new(LocalClock::new_with(0)),
             size: AtomicUsize::new(0),
             database_options,
             commit_sender: TransactionWalStatus::Uninitialized,
@@ -93,6 +95,7 @@ impl TransactionWAL {
     pub fn init(&mut self) {
         let sync_file_write = self.database_options.write_mode.clone();
         let storage_thread = self.storage.clone();
+        let committed_watermark = self.committed_watermark.clone();
 
         let (sender, receiver) = flume::unbounded::<TransactionCommitData>();
 
@@ -107,6 +110,11 @@ impl TransactionWAL {
                 loop {
                     let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
                         vec![];
+
+                    // The highest commit id in this batch. The channel delivers commits in
+                    //  commit-id order, so once this batch is durable we can advance the
+                    //  visibility watermark to this value and make them all visible at once.
+                    let mut highest_commit_in_batch: Option<TransactionId> = None;
 
                     log::debug!("Start");
 
@@ -131,6 +139,9 @@ impl TransactionWAL {
                             response,
                             resolver,
                         } = transaction_data;
+
+                        // Channel order is commit-id order, so the last seen is the highest.
+                        highest_commit_in_batch = Some(applied_transaction_id.clone());
 
                         if matches!(sync_file_write, TransactionWriteMode::File(_)) {
                             let transaction_json_line = format!(
@@ -192,9 +203,19 @@ impl TransactionWAL {
     
                                     continue;
                                 }
-    
+
                             }
                         }
+                    }
+
+                    // The batch is now durable, so make it visible by advancing the
+                    //  watermark to the highest commit id in the batch. This happens before
+                    //  replying, so a client that receives "committed" can immediately read
+                    //  its own write. On fsync failure above we `continue`d, leaving those
+                    //  versions published-but-invisible (the database is in a degraded state
+                    //  at that point regardless).
+                    if let Some(highest) = &highest_commit_in_batch {
+                        committed_watermark.set(highest.0);
                     }
 
                     for (resolver, response) in batch {

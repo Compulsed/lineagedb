@@ -344,12 +344,14 @@ impl Database {
         let response = DatabaseCommandTransactionResponse::Commit(results);
 
         // Commit critical section: ordered, in-memory, and fast. Holding the lock across
-        //  allocate -> publish -> advance_watermark -> WAL hand-off guarantees that commit
-        //  id order, visibility order, and WAL append order all agree (so a restore replays
-        //  in the original order). Nothing published is visible to readers until
-        //  `advance_watermark`, so publishing rows one at a time is still observed
-        //  atomically. The slow part -- the fsync -- happens off this lock, in the WAL
-        //  thread, which also sends the response once the transaction is durable.
+        //  allocate -> publish -> WAL hand-off guarantees that commit id order, publish
+        //  order, and WAL append order all agree (so a restore replays in the original
+        //  order, and the WAL thread can advance the watermark monotonically).
+        //
+        //  The published versions are NOT yet visible: the watermark is only advanced by
+        //  the WAL thread once this transaction's WAL entry has been fsynced, so a version
+        //  becomes visible only after it is durable. The slow part -- the fsync -- happens
+        //  off this lock, and the WAL thread also sends the client response.
         let commit_ts = {
             let _commit_guard = self.commit_lock.lock().unwrap();
 
@@ -359,13 +361,7 @@ impl Database {
                 self.person_table.publish(&id, state, commit_ts.clone());
             }
 
-            self.persistence
-                .transaction_wal
-                .advance_watermark(commit_ts.clone());
-
-            // Enqueues to the WAL thread (non-blocking, unbounded channel) -- the fsync and
-            //  client response happen off this lock. Nothing slower than in-memory pushes
-            //  and an atomic store runs while the lock is held.
+            // Enqueues to the WAL thread (non-blocking, unbounded channel).
             self.persistence.transaction_wal.commit(
                 commit_ts.clone(),
                 statements,
@@ -378,7 +374,7 @@ impl Database {
 
         // Logging is kept out of the critical section: under a configured logger this is a
         //  serialized write to stderr, which we don't want to hold the commit lock across.
-        log::info!("✅ Committed: [TX: {}]", commit_ts);
+        log::info!("📤 Sequenced commit: [TX: {}] (durable + visible once WAL fsyncs)", commit_ts);
     }
 
     /// Immediate-apply path used for restore (WAL replay) and tests. Unlike

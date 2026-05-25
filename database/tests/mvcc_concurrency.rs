@@ -9,6 +9,7 @@
 //! They are real concurrency tests (multiple writer and reader threads) and run in a few
 //! seconds. Each prints a short diagnostic so a regression is legible, not just a red bar.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -25,6 +26,7 @@ use database::{
         person::Person,
         statement::{Statement, StatementResult},
     },
+    persistence::storage::StorageEngine,
 };
 
 const DATABASE_THREADS: usize = 4;
@@ -168,6 +170,50 @@ fn multi_statement_transaction_is_atomically_visible() {
         "observed {} torn reads where A != B despite both being set in one transaction; \
          multi-statement transactions are not atomically visible",
         total_violations
+    );
+}
+
+/// INVARIANT: once a write transaction returns "committed", its data is durable AND
+/// visible to a subsequent read.
+///
+/// This exercises the real durability path (`File(Sync)` write mode, i.e. an actual
+/// fsync). The watermark is advanced by the WAL thread only after the fsync and before the
+/// client response, so a read issued after the commit response must see the write. A
+/// regression that advanced the watermark after replying (or that responded before fsync)
+/// would break this.
+#[test]
+fn committed_write_is_durable_and_then_visible() {
+    let database_dir: PathBuf = ["/", "tmp", "lineagedb-test", &uuid::Uuid::new_v4().to_string()]
+        .iter()
+        .collect();
+
+    // `DatabaseOptions::default()` uses File(Sync) -- a real fsync per commit batch.
+    let options = DatabaseOptions::default()
+        .set_storage_engine(StorageEngine::File(database_dir))
+        .set_restore(false)
+        .set_threads(2);
+
+    let rm = Database::new(options).run();
+
+    // The add returns only once the WAL thread has fsynced and advanced the watermark.
+    rm.send_transaction(
+        vec![Statement::Add(new_person("durable-1", "committed-value"))],
+        TransactionContext::default(),
+    )
+    .expect("add should commit");
+
+    // Therefore an immediate read at the latest snapshot must see it.
+    let read = rm
+        .send_transaction(
+            vec![Statement::Get(EntityId("durable-1".to_string()))],
+            TransactionContext::default(),
+        )
+        .expect("read should commit");
+
+    assert_eq!(
+        expect_name(&read[0]),
+        "committed-value",
+        "a write that returned committed must be visible to a later read"
     );
 }
 

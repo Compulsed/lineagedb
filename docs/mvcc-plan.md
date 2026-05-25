@@ -166,28 +166,34 @@ optimize.
       Because commits are serialized, a row's versions are appended in ascending
       `commit_ts` order, so the reverse-scan is correct again (kills the §2 causality leak).
 
-### Stage 2 — Atomic, ordered commit `[~]` (visibility done; durability ordering pending)
+### Stage 2 — Atomic, ordered commit `[x]`
 - [x] Added a `WriteSet` buffer (`table/write_set.rs`): a write transaction executes its
       statements against `snapshot ∪ its own buffer` without touching shared rows, so an
       error aborts with nothing to undo (fixes unsafe `pop()` rollback, §3.2, for the live
       path).
 - [x] Live commit path is `Database::commit_transaction` (`database.rs`): on success a
       single `commit_lock` critical section allocates one `commit_ts`, publishes every
-      buffered version, advances the watermark, and hands off to the WAL — all in commit-id
-      order, so commit order == visibility order == WAL append order (§3.5). Multi-statement
-      transactions are now atomically visible.
+      buffered version, and hands off to the WAL — all in commit-id order, so commit id
+      order == publish order == WAL append order (§3.5). Multi-statement transactions are
+      atomically visible. The slow fsync runs off the lock.
+- [x] **Watermark is advanced only after the WAL fsync** (§3.6): the WAL thread, after
+      fsyncing a batch, advances `committed_watermark` to the batch's highest commit id (in
+      channel order, so monotonic) *before* sending the client response. A version is
+      therefore visible only once durable, and a client that receives "committed" can
+      immediately read its own write. `committed_watermark` is an `Arc<LocalClock>` shared
+      with the WAL thread (`persistence/transaction.rs`).
 - [x] Both Stage 0 invariant tests pass with **zero** violations and are no longer
-      `#[ignore]`d — they gate CI now (`database/tests/mvcc_concurrency.rs`).
+      `#[ignore]`d — they gate CI now. Added `committed_write_is_durable_and_then_visible`
+      which exercises the real `File(Sync)` fsync path (`database/tests/mvcc_concurrency.rs`).
 - [x] Isolation level: **snapshot isolation** (readers see a consistent committed snapshot;
       writers read at their begin snapshot). Write-write conflict detection is Stage 3.
-- [ ] **Still open (§3.6): advance the watermark only after the WAL fsync.** Today the
-      watermark advances inside the commit lock, *before* the WAL thread fsyncs, so a commit
-      is visible slightly before it is durable — the original documented trade-off. Moving
-      the advance into the WAL thread (post-fsync, in channel order) closes this. The two
-      Stage 0 tests do not exercise durability, so this is tracked separately.
 - Note on the design fork (write-set vs. in-place invisible versions): chose the **write-set
   buffer**. It keeps shared rows containing only committed data and sets up Stage 3
   (validate before publish) and Stage 5 (a transaction handle that owns its write-set).
+- Known degraded-mode edge: if an fsync *fails*, the WAL thread leaves that batch's versions
+  published-but-invisible and reports "unsure if durable" (pre-existing handling). A later
+  successful batch would advance the watermark past it; treating fsync failure as fatal
+  (like a WAL write failure already is) would be cleaner — noted for a future hardening pass.
 
 ### Stage 3 — Conflict detection + safe rollback `[ ]`
 - [ ] At commit, for each written row check whether another transaction committed to it
