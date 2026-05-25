@@ -22,32 +22,50 @@ use super::{
 /// here and only published all-at-once, a reader can never observe a half-applied or
 /// rolled-back transaction (see `docs/mvcc-problem-and-solution.md`).
 pub struct WriteSet {
-    /// Writes in application order, for publishing at commit.
-    ordered: Vec<(EntityId, PersonVersionState)>,
-    /// Latest buffered state per entity, for read-your-writes resolution.
+    /// Entities written, in first-seen order. No duplicates: a transaction produces at most
+    /// one version per entity (its final state), so writing the same entity twice collapses
+    /// into a single published version.
+    order: Vec<EntityId>,
+    /// Final buffered state per entity, for read-your-writes resolution and publishing.
     latest: HashMap<EntityId, PersonVersionState>,
 }
 
 impl WriteSet {
     pub fn new() -> Self {
         Self {
-            ordered: Vec::new(),
+            order: Vec::new(),
             latest: HashMap::new(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ordered.is_empty()
+        self.order.is_empty()
     }
 
-    /// The buffered writes in application order, consumed for publishing.
-    pub fn into_ordered(self) -> Vec<(EntityId, PersonVersionState)> {
-        self.ordered
+    /// The entities this transaction wrote, used for write-write conflict detection.
+    pub fn written_entities(&self) -> &[EntityId] {
+        &self.order
+    }
+
+    /// The final state per written entity, in first-seen order, consumed for publishing.
+    pub fn into_publish_set(mut self) -> Vec<(EntityId, PersonVersionState)> {
+        self.order
+            .into_iter()
+            .map(|id| {
+                let state = self
+                    .latest
+                    .remove(&id)
+                    .expect("every ordered entity has a recorded state");
+                (id, state)
+            })
+            .collect()
     }
 
     fn record(&mut self, id: EntityId, state: PersonVersionState) {
-        self.latest.insert(id.clone(), state.clone());
-        self.ordered.push((id, state));
+        if !self.latest.contains_key(&id) {
+            self.order.push(id.clone());
+        }
+        self.latest.insert(id, state);
     }
 
     /// Resolves the entity as this transaction currently sees it: its own buffered writes

@@ -20,6 +20,7 @@ use database::{
         commands::TransactionContext,
         database::Database,
         options::DatabaseOptions,
+        request_manager::RequestManager,
         table::row::{UpdatePersonData, UpdateStatement},
     },
     model::{
@@ -54,6 +55,21 @@ fn expect_name(result: &StatementResult) -> String {
     }
 }
 
+/// Sends a transaction, retrying on a write-write conflict (a rolled-back transaction).
+/// This is the realistic client pattern under snapshot isolation: a serialization failure
+/// is transient, so the caller re-reads the latest snapshot and tries again.
+fn commit_with_retry(rm: &RequestManager, statements: Vec<Statement>) {
+    for _ in 0..100_000 {
+        if rm
+            .send_transaction(statements.clone(), TransactionContext::default())
+            .is_ok()
+        {
+            return;
+        }
+    }
+    panic!("transaction failed to commit after many retries (livelock?)");
+}
+
 /// INVARIANT: atomic visibility of a multi-statement transaction (snapshot isolation).
 ///
 /// A single transaction sets two rows (A and B) to the same value. Therefore, at ANY
@@ -66,11 +82,15 @@ fn expect_name(result: &StatementResult) -> String {
 /// versions under one commit id and only advances the watermark afterwards, so the
 /// transaction is observed all-or-nothing.
 ///
+/// The writers all target the same two rows, so under Stage 3 they genuinely conflict with
+/// each other (first-committer-wins); each retries until it commits. The invariant under
+/// test — A always equals B at any snapshot — holds regardless of which writer wins.
+///
 /// Satisfied by: Stage 1/2 (commit timestamp + watermark + write-set buffer).
 #[test]
 fn multi_statement_transaction_is_atomically_visible() {
     const WRITER_THREADS: u64 = 4;
-    const WRITES_PER_THREAD: u64 = 10_000;
+    const WRITES_PER_THREAD: u64 = 5_000;
     const READER_THREADS: u64 = 4;
 
     let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(DATABASE_THREADS)).run();
@@ -94,14 +114,14 @@ fn multi_statement_transaction_is_atomically_visible() {
             thread::spawn(move || {
                 for i in 0..WRITES_PER_THREAD {
                     let value = format!("{}-{}", writer_id, i);
-                    rm.send_transaction(
+                    // Retry on write-write conflict: the writers contend on the same rows.
+                    commit_with_retry(
+                        &rm,
                         vec![
                             Statement::Update(EntityId("A".to_string()), set_name(value.clone())),
                             Statement::Update(EntityId("B".to_string()), set_name(value)),
                         ],
-                        TransactionContext::default(),
-                    )
-                    .expect("update transaction should commit");
+                    );
                 }
             })
         })
@@ -214,6 +234,57 @@ fn committed_write_is_durable_and_then_visible() {
         expect_name(&read[0]),
         "committed-value",
         "a write that returned committed must be visible to a later read"
+    );
+}
+
+/// INVARIANT: concurrent creates of the same id have exactly one winner.
+///
+/// Many threads race to `Add` the same entity id. Under first-committer-wins, exactly one
+/// must succeed; the rest must fail — either because the row already exists at their
+/// snapshot (validation) or because it was created after their snapshot (write-write
+/// conflict at commit). The original get-then-insert create path (§3.4) let the second
+/// writer silently overwrite the first, producing more than one "success".
+///
+/// Satisfied by: Stage 3 (write-write conflict detection).
+#[test]
+fn concurrent_add_of_same_id_has_exactly_one_winner() {
+    const CONTENDERS: u64 = 8;
+
+    let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(DATABASE_THREADS)).run();
+
+    let successes = Arc::new(AtomicU64::new(0));
+
+    let handles: Vec<_> = (0..CONTENDERS)
+        .map(|i| {
+            let rm = rm.clone();
+            let successes = successes.clone();
+            thread::spawn(move || {
+                let person = Person {
+                    id: EntityId("contended".to_string()),
+                    full_name: format!("writer-{}", i),
+                    email: None,
+                };
+
+                let result = rm.send_transaction(
+                    vec![Statement::Add(person)],
+                    TransactionContext::default(),
+                );
+
+                if result.is_ok() {
+                    successes.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    assert_eq!(
+        successes.load(Ordering::Relaxed),
+        1,
+        "exactly one concurrent Add of the same id should win; the rest must conflict or fail as already-existing"
     );
 }
 

@@ -71,6 +71,36 @@ impl PersonTable {
         }
     }
 
+    /// The commit timestamp of the most recent version of a row, regardless of visibility
+    /// (i.e. including versions published but not yet durable). `None` if the row has never
+    /// existed. Used for write-write conflict detection.
+    pub fn latest_commit_ts(&self, id: &EntityId) -> Option<TransactionId> {
+        self.person_rows
+            .get(id)
+            .map(|row| row.value().read().unwrap().current_version().commit_ts.clone())
+    }
+
+    /// First-committer-wins conflict detection. Returns the first written entity that some
+    /// other transaction committed to *after* this transaction's snapshot — meaning this
+    /// transaction read a now-stale version (or tried to create a row that now exists).
+    /// Must be called inside the commit critical section so the answer is stable through
+    /// publishing.
+    pub fn find_write_conflict(
+        &self,
+        entities: &[EntityId],
+        snapshot: &TransactionId,
+    ) -> Option<EntityId> {
+        for id in entities {
+            if let Some(latest) = self.latest_commit_ts(id) {
+                if &latest > snapshot {
+                    return Some(id.clone());
+                }
+            }
+        }
+
+        None
+    }
+
     /// Publishes a committed version produced by a transaction's write-set. Called only
     /// from within the commit critical section, so the mutation has already been validated
     /// and no other writer can interleave. A brand new row is created only by an `Add`
@@ -926,6 +956,61 @@ mod tests {
             let actual_added_person_list = get_test_list_person(&mut table, next_transaction_id);
 
             assert_eq!(&vec![expected_updated_person], &actual_added_person_list);
+        }
+    }
+
+    mod conflict_detection {
+        use super::*;
+
+        #[test]
+        fn no_conflict_when_row_never_existed() {
+            let table = PersonTable::new();
+
+            // A brand new entity has no committed version, so nothing to conflict with.
+            assert_eq!(
+                table.find_write_conflict(&[EntityId("absent".to_string())], &TransactionId(5)),
+                None
+            );
+        }
+
+        #[test]
+        fn conflict_when_committed_after_snapshot() {
+            let table = PersonTable::new();
+            let person = Person::new_test();
+
+            // Someone committed this row at commit_ts 10.
+            table
+                .apply(Statement::Add(person.clone()), TransactionId(10))
+                .unwrap();
+
+            // A transaction whose snapshot predates 10 read a stale version -> conflict.
+            assert_eq!(
+                table.find_write_conflict(&[person.id.clone()], &TransactionId(5)),
+                Some(person.id)
+            );
+        }
+
+        #[test]
+        fn no_conflict_when_snapshot_at_or_after_latest() {
+            let table = PersonTable::new();
+            let person = Person::new_test();
+
+            table
+                .apply(Statement::Add(person.clone()), TransactionId(10))
+                .unwrap();
+
+            // Snapshot exactly at the version's commit_ts: it was visible to us, no writer
+            // committed after us.
+            assert_eq!(
+                table.find_write_conflict(&[person.id.clone()], &TransactionId(10)),
+                None
+            );
+
+            // Snapshot strictly after: definitely no conflict.
+            assert_eq!(
+                table.find_write_conflict(&[person.id], &TransactionId(15)),
+                None
+            );
         }
     }
 

@@ -5,7 +5,7 @@ use super::{
     table::{table::PersonTable, write_set::WriteSet},
 };
 use crate::{
-    consts::consts::TransactionId,
+    consts::consts::{EntityId, TransactionId},
     database::{
         commands::{DatabaseCommand, DatabaseCommandResponse, SnapshotTimestamp},
         control::{ControlContext, DatabaseControlAction},
@@ -343,38 +343,73 @@ impl Database {
 
         let response = DatabaseCommandTransactionResponse::Commit(results);
 
+        // The result of the commit critical section: either a sequenced commit id, or a
+        //  write-write conflict carrying the resolver back out so we can reply off-lock.
+        enum CommitOutcome {
+            Sequenced(TransactionId),
+            Conflict(oneshot::Sender<DatabaseCommandResponse>, EntityId),
+        }
+
         // Commit critical section: ordered, in-memory, and fast. Holding the lock across
-        //  allocate -> publish -> WAL hand-off guarantees that commit id order, publish
-        //  order, and WAL append order all agree (so a restore replays in the original
-        //  order, and the WAL thread can advance the watermark monotonically).
+        //  conflict-check -> allocate -> publish -> WAL hand-off guarantees that commit id
+        //  order, publish order, and WAL append order all agree (so a restore replays in the
+        //  original order, and the WAL thread can advance the watermark monotonically).
         //
         //  The published versions are NOT yet visible: the watermark is only advanced by
         //  the WAL thread once this transaction's WAL entry has been fsynced, so a version
         //  becomes visible only after it is durable. The slow part -- the fsync -- happens
         //  off this lock, and the WAL thread also sends the client response.
-        let commit_ts = {
+        let outcome = {
             let _commit_guard = self.commit_lock.lock().unwrap();
 
-            let commit_ts = self.persistence.transaction_wal.allocate_commit_id();
+            // First-committer-wins: if another transaction committed to any row we wrote
+            //  after our snapshot, abort. Checked under the lock so it is stable through
+            //  publishing. Nothing has been published yet, so the abort touches no shared
+            //  state -- there is nothing to roll back.
+            match self
+                .person_table
+                .find_write_conflict(write_set.written_entities(), &snapshot)
+            {
+                Some(conflict_id) => CommitOutcome::Conflict(resolver, conflict_id),
+                None => {
+                    let commit_ts = self.persistence.transaction_wal.allocate_commit_id();
 
-            for (id, state) in write_set.into_ordered() {
-                self.person_table.publish(&id, state, commit_ts.clone());
+                    for (id, state) in write_set.into_publish_set() {
+                        self.person_table.publish(&id, state, commit_ts.clone());
+                    }
+
+                    // Enqueues to the WAL thread (non-blocking, unbounded channel).
+                    self.persistence.transaction_wal.commit(
+                        commit_ts.clone(),
+                        statements,
+                        DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
+                        ApplyMode::Request(resolver),
+                    );
+
+                    CommitOutcome::Sequenced(commit_ts)
+                }
             }
-
-            // Enqueues to the WAL thread (non-blocking, unbounded channel).
-            self.persistence.transaction_wal.commit(
-                commit_ts.clone(),
-                statements,
-                DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
-                ApplyMode::Request(resolver),
-            );
-
-            commit_ts
         };
 
-        // Logging is kept out of the critical section: under a configured logger this is a
-        //  serialized write to stderr, which we don't want to hold the commit lock across.
-        log::info!("📤 Sequenced commit: [TX: {}] (durable + visible once WAL fsyncs)", commit_ts);
+        // Logging and the conflict reply are kept out of the critical section.
+        match outcome {
+            CommitOutcome::Sequenced(commit_ts) => {
+                log::info!(
+                    "📤 Sequenced commit: [TX: {}] (durable + visible once WAL fsyncs)",
+                    commit_ts
+                );
+            }
+            CommitOutcome::Conflict(resolver, conflict_id) => {
+                log::info!(
+                    "⚠️  Write-write conflict on entity {}, rolled back",
+                    conflict_id
+                );
+                let _ = resolver.send(DatabaseCommandResponse::transaction_rollback(&format!(
+                    "Write-write conflict: entity {} was modified by a concurrent transaction",
+                    conflict_id
+                )));
+            }
+        }
     }
 
     /// Immediate-apply path used for restore (WAL replay) and tests. Unlike

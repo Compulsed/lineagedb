@@ -195,16 +195,27 @@ optimize.
   successful batch would advance the watermark past it; treating fsync failure as fatal
   (like a WAL write failure already is) would be cleaner — noted for a future hardening pass.
 
-### Stage 3 — Conflict detection + safe rollback `[ ]`
-- [ ] At commit, for each written row check whether another transaction committed to it
-      after this transaction's begin-snapshot; if so abort with a write-conflict
-      (first-committer-wins). Restores constraints (§3.3); un-`#[ignore]` those tests.
-- [ ] Replace `pop()`-based rollback with abort-by-marking: an aborted transaction's
-      versions are never given a commit_ts and are skipped/reaped — never pop someone
-      else's write (§3.2).
-- [ ] Fix the create race (§3.4): make Add a compare-and-insert
-      (`SkipMap::get_or_insert` / entry API) under the row's logical existence check,
-      not get-then-insert.
+### Stage 3 — Conflict detection + safe rollback `[x]`
+- [x] First-committer-wins (§3.3): `PersonTable::find_write_conflict` checks, under the
+      commit lock, whether any written entity has a latest committed `commit_ts` greater
+      than the transaction's snapshot; if so the transaction aborts with a write-conflict
+      and publishes nothing (`table/table.rs`, `database.rs::commit_transaction`).
+- [x] Safe rollback / abort-by-discard (§3.2): in the write-set model an aborted
+      transaction never published, so abort just drops the buffer — there is nothing to
+      pop and no other transaction's writes can be disturbed. (The legacy `pop()` path in
+      `apply_transaction` only runs single-threaded during restore.)
+- [x] Create race (§3.4): two concurrent `Add`s of the same id now resolve to exactly one
+      winner — the loser either sees the row already exists at its snapshot (validation) or
+      is caught by the conflict check at commit. Covered by
+      `concurrent_add_of_same_id_has_exactly_one_winner`.
+- [x] Tests: unit tests for `find_write_conflict` (`table.rs`), the create-race integration
+      test, and the atomic-visibility test updated so contending writers retry on conflict
+      (the realistic snapshot-isolation client pattern).
+- **Scope correction:** the `#[ignore]`d tests at `database.rs:525/564/585` assert **email
+  uniqueness**, which needs a *unique secondary index* feature — separate from MVCC
+  write-write conflict detection. They stay ignored; a unique-index feature would be its
+  own piece of work (candidate future stage), at which point conflict detection here is the
+  concurrency-safety prerequisite it can build on.
 
 ### Stage 4 — Vacuum `[ ]`
 - [ ] Track the oldest live snapshot; reap versions with `commit_ts` older than it.
