@@ -185,11 +185,11 @@ impl<'a> ControlContext<'a> {
             crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
         }
 
-        // Reset the transaction id counter
+        // Reset the commit-id allocator and visibility watermark to the empty state
         self.database
             .persistence
             .transaction_wal
-            .set_current_transaction_id(TransactionId::new_first_transaction());
+            .reset_clocks();
 
         // Clean out snapshot and transaction log
         let result = self.database.persistence.reset();

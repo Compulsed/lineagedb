@@ -2,7 +2,7 @@ use super::{
     commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
     options::DatabaseOptions,
     request_manager::RequestManager,
-    table::table::PersonTable,
+    table::{table::PersonTable, write_set::WriteSet},
 };
 use crate::{
     consts::consts::TransactionId,
@@ -14,7 +14,11 @@ use crate::{
     persistence::persistence::Persistence,
 };
 use num_format::{Locale, ToFormattedString};
-use std::{sync::Arc, thread, time::Instant};
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    time::Instant,
+};
 
 // TODO: This is a part of the transaction_wal, should be moved there
 enum CommitStatus {
@@ -34,6 +38,11 @@ pub struct Database {
     pub(super) person_table: PersonTable,
     pub(super) database_options: DatabaseOptions,
     pub(super) persistence: Persistence,
+    /// Serializes the commit critical section (allocate commit id -> publish write-set ->
+    /// advance watermark). Statement execution and reads run outside this lock, so multiple
+    /// writers and readers still proceed concurrently; only the final, fast publish step is
+    /// ordered. This is what gives every version a well-ordered commit timestamp.
+    pub(super) commit_lock: Mutex<()>,
 }
 
 impl Database {
@@ -42,6 +51,7 @@ impl Database {
             person_table: PersonTable::new(),
             persistence: Persistence::new(options.clone()),
             database_options: options,
+            commit_lock: Mutex::new(()),
         }
     }
 
@@ -71,18 +81,15 @@ impl Database {
                 }
             };
 
-            // Clock time of the transaction, we include a transaction id in all requests
-            //  this clock time is stored in an atomic so it is unique across threads
-            let transaction_timestamp = database
-                .persistence
-                .transaction_wal
-                .get_increment_current_transaction_id()
-                .clone();
+            // The snapshot this request reads at: the latest committed state. Writers also
+            //  read at this snapshot while building their write-set; a fresh commit id is
+            //  only allocated later, in the commit critical section.
+            let snapshot_id = database.persistence.transaction_wal.current_snapshot_id();
 
             log::info!(
-                "[Thread: {}. TxId: {}] Received request: {}",
+                "[Thread: {}. Snapshot: {}] Received request: {}",
                 thread_id,
-                transaction_timestamp,
+                snapshot_id,
                 command.log_format()
             );
 
@@ -94,7 +101,7 @@ impl Database {
                         thread_id,
                         database_request_managers,
                         database: &database,
-                        transaction_timestamp,
+                        transaction_timestamp: snapshot_id,
                     };
 
                     match control_context.run(control) {
@@ -115,12 +122,9 @@ impl Database {
 
             match contains_mutation {
                 true => {
-                    // Runs in 'async' mode, once the transaction is committed to the WAL the response database response is sent
-                    let _ = database.apply_transaction(
-                        transaction_timestamp,
-                        transaction_statements,
-                        ApplyMode::Request(resolver),
-                    );
+                    // Buffers writes, publishes them atomically at commit, then the WAL
+                    //  thread responds to the client once the transaction is durable.
+                    database.commit_transaction(transaction_statements, resolver);
                 }
                 false => {
                     // By default we run a single statement transaction, this would just use the 'latest' timestamp
@@ -128,7 +132,7 @@ impl Database {
                     //  the transaction begin
                     let query_transaction_id = match transaction_context.snapshot_timestamp {
                         SnapshotTimestamp::AtTransactionId(snapshot_id) => snapshot_id,
-                        SnapshotTimestamp::Latest => transaction_timestamp,
+                        SnapshotTimestamp::Latest => snapshot_id,
                     };
 
                     let response =
@@ -169,23 +173,20 @@ impl Database {
                     r#"Once persistence has been initialized there should be no issues restoring state from storage"#,
                 );
 
-            // If there was a snapshot to restore from we update the transaction log
+            // Seed the clocks from the snapshot's commit timestamp. Replaying each WAL
+            //  transaction below advances the watermark to that transaction's commit id.
             self.persistence
                 .transaction_wal
-                .set_current_transaction_id(metadata.current_transaction_id.clone());
+                .restore_clocks(metadata.current_transaction_id.clone());
 
             let restored_transactions = self.persistence.transaction_wal.restore()
                 .expect(r#"Once persistence has been initialized there should be no issues restoring state from storage"#);
 
             let restored_transaction_count = restored_transactions.len();
 
-            // Then add states from the transaction log
+            // Then add states from the transaction log. The WAL is ordered by commit id, so
+            //  replaying in order reproduces the committed state.
             for transaction in restored_transactions {
-                // Set the current transaction id to the transaction id we are applying
-                self.persistence
-                    .transaction_wal
-                    .set_current_transaction_id(transaction.id.clone());
-
                 let apply_transaction_result = self.apply_transaction(
                     transaction.id,
                     transaction.statements,
@@ -202,6 +203,11 @@ impl Database {
                 }
             }
 
+            // Ensure the next live commit id is past the highest restored commit id.
+            self.persistence
+                .transaction_wal
+                .restore_clocks(self.persistence.transaction_wal.current_snapshot_id());
+
             log::info!(
                 "✅ Successful Restore [Duration: {}ms]",
                 now.elapsed().as_millis(),
@@ -212,7 +218,7 @@ impl Database {
                 snapshot_count,
                 restored_transaction_count,
                 self.persistence.transaction_wal
-                    .get_increment_current_transaction_id()
+                    .current_snapshot_id()
                     .to_number()
                     .to_formatted_string(&Locale::en)
             );
@@ -298,6 +304,86 @@ impl Database {
         DatabaseCommandTransactionResponse::Commit(statement_results)
     }
 
+    /// Commits a transaction containing at least one mutation (the live request path).
+    ///
+    /// Statements are executed against the transaction's snapshot into a private write-set,
+    /// so no shared state is touched during execution and an error simply aborts with
+    /// nothing to undo. If every statement succeeds, the commit critical section allocates a
+    /// single commit id, publishes all buffered versions atomically, and advances the
+    /// visibility watermark -- making the whole transaction become visible at once.
+    /// Durability and the client response are then handled by the WAL thread.
+    pub fn commit_transaction(
+        &self,
+        statements: Vec<Statement>,
+        resolver: oneshot::Sender<DatabaseCommandResponse>,
+    ) {
+        let snapshot = self.persistence.transaction_wal.current_snapshot_id();
+
+        let mut write_set = WriteSet::new();
+        let mut results: Vec<StatementResult> = Vec::new();
+
+        for statement in &statements {
+            let outcome = if statement.is_mutation() {
+                write_set.apply_mutation(&self.person_table, &snapshot, statement.clone())
+            } else {
+                write_set.query(&self.person_table, &snapshot, statement.clone())
+            };
+
+            match outcome {
+                Ok(result) => results.push(result),
+                Err(err) => {
+                    // Nothing has been published yet, so there is nothing to roll back.
+                    log::info!("⚠️  Rolled back: [Snapshot: {}] {}", snapshot, err);
+                    let _ = resolver
+                        .send(DatabaseCommandResponse::transaction_rollback(&format!("{}", err)));
+                    return;
+                }
+            }
+        }
+
+        let response = DatabaseCommandTransactionResponse::Commit(results);
+
+        // Commit critical section: ordered, in-memory, and fast. Holding the lock across
+        //  allocate -> publish -> advance_watermark -> WAL hand-off guarantees that commit
+        //  id order, visibility order, and WAL append order all agree (so a restore replays
+        //  in the original order). Nothing published is visible to readers until
+        //  `advance_watermark`, so publishing rows one at a time is still observed
+        //  atomically. The slow part -- the fsync -- happens off this lock, in the WAL
+        //  thread, which also sends the response once the transaction is durable.
+        let commit_ts = {
+            let _commit_guard = self.commit_lock.lock().unwrap();
+
+            let commit_ts = self.persistence.transaction_wal.allocate_commit_id();
+
+            for (id, state) in write_set.into_ordered() {
+                self.person_table.publish(&id, state, commit_ts.clone());
+            }
+
+            self.persistence
+                .transaction_wal
+                .advance_watermark(commit_ts.clone());
+
+            // Enqueues to the WAL thread (non-blocking, unbounded channel) -- the fsync and
+            //  client response happen off this lock. Nothing slower than in-memory pushes
+            //  and an atomic store runs while the lock is held.
+            self.persistence.transaction_wal.commit(
+                commit_ts.clone(),
+                statements,
+                DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
+                ApplyMode::Request(resolver),
+            );
+
+            commit_ts
+        };
+
+        // Logging is kept out of the critical section: under a configured logger this is a
+        //  serialized write to stderr, which we don't want to hold the commit lock across.
+        log::info!("✅ Committed: [TX: {}]", commit_ts);
+    }
+
+    /// Immediate-apply path used for restore (WAL replay) and tests. Unlike
+    /// `commit_transaction` it mutates rows as it goes and rolls back by popping on error.
+    /// This is safe here because it only runs single-threaded (startup replay / unit tests).
     pub fn apply_transaction(
         &self,
         applying_transaction_id: TransactionId,
@@ -343,6 +429,11 @@ impl Database {
                     .collect();
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
+
+                // Make the replayed/applied transaction visible by advancing the watermark.
+                self.persistence
+                    .transaction_wal
+                    .advance_watermark(applying_transaction_id.clone());
 
                 // Send the TX off, and increment the transaction id -- Refactor this out
                 self.persistence.transaction_wal.commit(
@@ -401,6 +492,7 @@ mod test_struct_methods {
                 person_table: PersonTable::new(),
                 persistence: Persistence::new(options.clone()),
                 database_options: options,
+                commit_lock: std::sync::Mutex::new(()),
             }
         }
 
@@ -936,10 +1028,7 @@ pub mod test_utils {
         database: &Database,
         statements: Vec<Statement>,
     ) -> DatabaseCommandTransactionResponse {
-        let next_timestamp = database
-            .persistence
-            .transaction_wal
-            .get_increment_current_transaction_id();
+        let next_timestamp = database.persistence.transaction_wal.allocate_commit_id();
 
         database.apply_transaction(next_timestamp, statements, ApplyMode::Restore)
     }

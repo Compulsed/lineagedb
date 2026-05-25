@@ -60,7 +60,15 @@ pub enum TransactionWalStatus {
 // By decoupling init from thread start we are able to initialize anything (files, directories, etc). that is needed for the WAL to start
 //  without immediately starting it.
 pub struct TransactionWAL {
-    current_transaction_id: LocalClock,
+    /// Allocates commit timestamps. Read under the database commit lock so that the order
+    /// in which transactions are assigned a commit id matches the order they are published.
+    /// Starts at 1: commit ids are always >= 1, the watermark starts at 0 (nothing
+    /// committed), so a reader at the initial snapshot sees no data.
+    commit_id_sequence: LocalClock,
+    /// The highest commit timestamp that has been published. Readers take this as their
+    /// snapshot ("read the latest committed state"). Advanced (monotonically, because
+    /// commits are serialized) once a transaction's versions are published.
+    committed_watermark: LocalClock,
     database_options: DatabaseOptions,
     size: AtomicUsize,
     commit_sender: TransactionWalStatus,
@@ -73,7 +81,8 @@ impl TransactionWAL {
         storage: Arc<Mutex<dyn Storage + Sync + Send>>,
     ) -> Self {
         Self {
-            current_transaction_id: LocalClock::new(),
+            commit_id_sequence: LocalClock::new_with(1),
+            committed_watermark: LocalClock::new_with(0),
             size: AtomicUsize::new(0),
             database_options,
             commit_sender: TransactionWalStatus::Uninitialized,
@@ -210,8 +219,34 @@ impl TransactionWAL {
         self.size.load(Ordering::SeqCst)
     }
 
-    pub fn get_increment_current_transaction_id(&self) -> TransactionId {
-        self.current_transaction_id.get_timestamp()
+    /// Allocates the next commit timestamp. Must be called inside the commit critical
+    /// section so allocation order matches publish order.
+    pub fn allocate_commit_id(&self) -> TransactionId {
+        self.commit_id_sequence.get_timestamp()
+    }
+
+    /// The snapshot a new transaction should read at: the latest committed state.
+    pub fn current_snapshot_id(&self) -> TransactionId {
+        self.committed_watermark.current()
+    }
+
+    /// Makes a committed transaction's writes visible by advancing the watermark. Called
+    /// inside the commit critical section, after the versions have been published.
+    pub fn advance_watermark(&self, commit_ts: TransactionId) {
+        self.committed_watermark.set(commit_ts.0);
+    }
+
+    /// Resets both clocks to their empty-database state (no data committed).
+    pub fn reset_clocks(&self) {
+        self.committed_watermark.set(0);
+        self.commit_id_sequence.set(1);
+    }
+
+    /// Seeds the clocks during restore: the watermark is the highest commit id restored so
+    /// far, and the next allocated commit id is one past it.
+    pub fn restore_clocks(&self, committed: TransactionId) {
+        self.committed_watermark.set(committed.0);
+        self.commit_id_sequence.set(committed.0 + 1);
     }
 
     pub fn commit(
@@ -258,9 +293,6 @@ impl TransactionWAL {
         Ok(transactions)
     }
 
-    pub fn set_current_transaction_id(&self, transaction_id: TransactionId) {
-        self.current_transaction_id.set(transaction_id.0)
-    }
 }
 
 // TODO: Usize seems odd, but that's what transaction id uses. Should change to u64
@@ -271,8 +303,12 @@ pub struct LocalClock {
 
 impl LocalClock {
     pub fn new() -> Self {
+        Self::new_with(0)
+    }
+
+    pub fn new_with(start: usize) -> Self {
         Self {
-            ts_sequence: AtomicUsize::new(0),
+            ts_sequence: AtomicUsize::new(start),
         }
     }
 }
@@ -283,12 +319,16 @@ impl LocalClock {
         TransactionId(self.ts_sequence.fetch_add(1, Ordering::SeqCst))
     }
 
+    /// Reads the current value without advancing it.
+    fn current(&self) -> TransactionId {
+        TransactionId(self.ts_sequence.load(Ordering::SeqCst))
+    }
+
     #[allow(dead_code)]
     fn reset(&self) {
         self.ts_sequence.store(0, Ordering::SeqCst);
     }
 
-    #[allow(dead_code)]
     fn set(&self, value: usize) {
         self.ts_sequence.store(value, Ordering::SeqCst);
     }

@@ -49,7 +49,11 @@ pub struct PersonVersion {
     pub id: EntityId,
     pub state: PersonVersionState,
     pub version: VersionId, // Version Ids are re-indexed back to 1 on a restore
-    pub transaction_id: TransactionId,
+    /// The commit timestamp of the transaction that produced this version. A version is
+    /// visible to a reader only once a transaction has committed (i.e. this value is set
+    /// when the version is published) and `commit_ts <= reader_snapshot`. Because commits
+    /// are serialized, versions within a row are appended in ascending `commit_ts` order.
+    pub commit_ts: TransactionId,
 }
 
 impl PersonVersion {
@@ -67,16 +71,58 @@ pub struct PersonRow {
     versions: Vec<PersonVersion>,
 }
 
+/// Computes the new person produced by applying an update to a previous person. Pure: it
+/// does not touch any row state, so it can be reused both by the immediate row apply path
+/// (restore / tests) and by the buffered write-set commit path.
+pub fn apply_update_to_person(
+    previous: &Person,
+    update: &UpdatePersonData,
+) -> Result<Person, ApplyErrors> {
+    let mut current_person = previous.clone();
+
+    match &update.full_name {
+        UpdateStatement::Set(full_name) => current_person.full_name = full_name.clone(),
+        UpdateStatement::Unset => {
+            return Err(ApplyErrors::NotNullConstraintViolation(
+                "Full Name".to_string(),
+            ))
+        }
+        UpdateStatement::NoChanges => {}
+    }
+
+    match &update.email {
+        UpdateStatement::Set(email) => current_person.email = Some(email.clone()),
+        UpdateStatement::Unset => current_person.email = None,
+        UpdateStatement::NoChanges => {}
+    }
+
+    Ok(current_person)
+}
+
 impl PersonRow {
-    pub fn new(person: Person, transaction_id: TransactionId) -> Self {
+    pub fn new(person: Person, commit_ts: TransactionId) -> Self {
         PersonRow {
             versions: vec![PersonVersion {
                 id: person.id.clone(),
                 state: PersonVersionState::State(person),
                 version: VersionId::new_first_version(),
-                transaction_id,
+                commit_ts,
             }],
         }
+    }
+
+    /// Appends an already-computed committed state as the next version. Used by the
+    /// write-set publish path, which has already validated the mutation, so this only
+    /// needs to stamp the version number and commit timestamp.
+    pub fn append_committed(&mut self, state: PersonVersionState, commit_ts: TransactionId) {
+        let current_version = self.current_version();
+
+        self.versions.push(PersonVersion {
+            id: current_version.id.clone(),
+            state,
+            version: current_version.version.increment(),
+            commit_ts,
+        });
     }
 
     /// Used when restoring from a snapshot
@@ -127,23 +173,7 @@ impl PersonRow {
             PersonVersionState::State(s) => s,
         };
 
-        let mut current_person = previous_person.clone();
-
-        match &update.full_name {
-            UpdateStatement::Set(full_name) => current_person.full_name = full_name.clone(),
-            UpdateStatement::Unset => {
-                return Err(ApplyErrors::NotNullConstraintViolation(
-                    "Full Name".to_string(),
-                ))
-            }
-            UpdateStatement::NoChanges => {}
-        }
-
-        match &update.email {
-            UpdateStatement::Set(email) => current_person.email = Some(email.clone()),
-            UpdateStatement::Unset => current_person.email = None,
-            UpdateStatement::NoChanges => {}
-        }
+        let current_person = apply_update_to_person(&previous_person, &update)?;
 
         // Apply
         self.apply_new_version(
@@ -185,13 +215,13 @@ impl PersonRow {
         &mut self,
         current_version: &PersonVersion,
         new_state: PersonVersionState,
-        transaction_id: TransactionId,
+        commit_ts: TransactionId,
     ) {
         self.versions.push(PersonVersion {
             id: current_version.id.clone(),
             state: new_state,
             version: current_version.version.increment(),
-            transaction_id,
+            commit_ts,
         });
     }
 
@@ -234,13 +264,14 @@ impl PersonRow {
     pub fn at_version(
         &self,
         version_id: VersionId,
-        transaction_id: &TransactionId,
+        snapshot: &TransactionId,
     ) -> Option<PersonVersion> {
-        // TODO: Filter out the versions that are not committed?
+        // Only versions committed at or before the reader's snapshot are visible. Rows
+        // contain committed versions only, appended in ascending commit_ts order.
         let versions_at_snapshot = self
             .versions
             .iter()
-            .filter(|version| &version.transaction_id <= transaction_id)
+            .filter(|version| &version.commit_ts <= snapshot)
             .collect::<Vec<&PersonVersion>>();
 
         // Versions are 1 indexed, subtract 1 to get the correct vector index
@@ -254,11 +285,11 @@ impl PersonRow {
         self.versions.len()
     }
 
-    pub fn at_transaction_id(&self, transaction_id: &TransactionId) -> Option<Person> {
+    pub fn at_transaction_id(&self, snapshot: &TransactionId) -> Option<Person> {
         // TODO: Can optimize this with a binary search
         for version in self.versions.iter().rev() {
-            // May contain newer uncommited versions, we want to find the closest committed version
-            if &version.transaction_id <= transaction_id {
+            // Find the latest version visible at the reader's snapshot
+            if &version.commit_ts <= snapshot {
                 return version.get_person();
             }
         }
@@ -266,14 +297,11 @@ impl PersonRow {
         None
     }
 
-    pub fn version_at_transaction_id(
-        &self,
-        transaction_id: &TransactionId,
-    ) -> Option<PersonVersion> {
+    pub fn version_at_transaction_id(&self, snapshot: &TransactionId) -> Option<PersonVersion> {
         // Can optimize this with a binary search
         for version in self.versions.iter().rev() {
-            // May contain newer uncommited versions, we want to find the closest committed version
-            if &version.transaction_id <= transaction_id {
+            // Find the latest version visible at the reader's snapshot
+            if &version.commit_ts <= snapshot {
                 return Some(version.clone());
             }
         }

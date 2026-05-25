@@ -62,6 +62,35 @@ impl PersonTable {
         }
     }
 
+    /// Reads the committed person for an entity as visible at `snapshot`. Used by the
+    /// write-set buffer to resolve the current state during statement execution.
+    pub fn read_at_snapshot(&self, id: &EntityId, snapshot: &TransactionId) -> Option<Person> {
+        match self.person_rows.get(id) {
+            Some(row) => row.value().read().unwrap().at_transaction_id(snapshot),
+            None => None,
+        }
+    }
+
+    /// Publishes a committed version produced by a transaction's write-set. Called only
+    /// from within the commit critical section, so the mutation has already been validated
+    /// and no other writer can interleave. A brand new row is created only by an `Add`
+    /// (`Update`/`Remove` require the row to already exist, verified during execution).
+    pub fn publish(&self, id: &EntityId, state: PersonVersionState, commit_ts: TransactionId) {
+        match self.person_rows.get(id) {
+            Some(existing) => existing
+                .value()
+                .write()
+                .unwrap()
+                .append_committed(state, commit_ts),
+            None => {
+                if let PersonVersionState::State(person) = state {
+                    self.person_rows
+                        .insert(id.clone(), RwLock::new(PersonRow::new(person, commit_ts)));
+                }
+            }
+        }
+    }
+
     pub fn restore_table(&self, version_snapshots: Vec<PersonVersion>) {
         for version_snapshot in version_snapshots {
             let id = version_snapshot.id.clone();
@@ -593,7 +622,7 @@ mod tests {
                         id: person.id.clone(),
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
-                        transaction_id: TransactionId(1),
+                        commit_ts: TransactionId(1),
                     })
                 );
             }
@@ -621,7 +650,7 @@ mod tests {
                         id: person.id.clone(),
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
-                        transaction_id: TransactionId(1),
+                        commit_ts: TransactionId(1),
                     })
                 );
 
@@ -631,7 +660,7 @@ mod tests {
                         id: updated_person.id.clone(),
                         state: PersonVersionState::State(updated_person),
                         version: VersionId(2),
-                        transaction_id: TransactionId(2),
+                        commit_ts: TransactionId(2),
                     })
                 );
             }
@@ -663,7 +692,7 @@ mod tests {
                         id: add_person.id.clone(),
                         state: PersonVersionState::State(add_person),
                         version: VersionId(1),
-                        transaction_id: TransactionId(1),
+                        commit_ts: TransactionId(1),
                     })
                 );
 
@@ -673,7 +702,7 @@ mod tests {
                         id: updated_person.id.clone(),
                         state: PersonVersionState::State(updated_person.clone()),
                         version: VersionId(2),
-                        transaction_id: TransactionId(2),
+                        commit_ts: TransactionId(2),
                     })
                 );
 
@@ -683,7 +712,7 @@ mod tests {
                         id: updated_person.id.clone(),
                         state: PersonVersionState::Delete,
                         version: VersionId(3),
-                        transaction_id: TransactionId(3),
+                        commit_ts: TransactionId(3),
                     })
                 );
             }

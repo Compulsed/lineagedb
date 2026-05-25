@@ -1,0 +1,222 @@
+# MVCC Multi-Reader / Multi-Writer Transaction Plan
+
+> Long-term working document. Goal: evolve the current per-row-locked store into a
+> correct multi-reader / multi-writer MVCC engine with well-defined isolation
+> semantics. Smallest-correct-first; get the model right before optimizing.
+
+Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
+
+---
+
+## 1. How the system works today
+
+- N worker threads pull `DatabaseCommandRequest`s off flume channels, round-robin
+  load-balanced (`database/src/database/database.rs:53`, `request_manager.rs:119`).
+- Every request grabs a `TransactionId` from one global atomic counter **at receipt
+  time** (`database.rs:76`, `persistence/transaction.rs:282`).
+- Mutations → `apply_transaction` applies each statement into the `PersonTable`
+  (a `SkipMap<EntityId, RwLock<PersonRow>>`), pushing a new `PersonVersion` onto that
+  row's `Vec`, then ships the transaction to a single WAL thread which fsyncs and only
+  then replies to the client (`database.rs:301`, `persistence/transaction.rs:84`).
+- Reads → `query_transaction` reads at a snapshot id using `at_transaction_id`,
+  scanning versions in reverse for `tx_id <= snapshot` (`database.rs:275`,
+  `table/row.rs:257`).
+
+The per-row `RwLock` + lock-free `SkipMap` is a reasonable foundation for "concurrent
+readers/writers don't corrupt the heap." The **transaction semantics on top of it are
+not yet correct.**
+
+---
+
+## 2. The central bug: timestamp assignment is decoupled from visibility order
+
+The transaction id is assigned **before** the row lock is acquired (`database.rs:76`
+vs. the `.write()` inside `table/table.rs:185`). So the order in which versions get
+pushed onto a row is **lock-acquisition order, not transaction-id order**. Version
+*numbers* stay monotonic (each push does `current_version().version.increment()`,
+`table/row.rs:193`), but the `tx_id` stamped on each version can zig-zag.
+
+This breaks the read path, which assumes versions are ordered by tx_id. Concrete
+corruption:
+
+1. `T(id=6)` acquires the lock first, reads current state, writes `v2` stamped `tx6`.
+2. `T(id=5)` acquires next. `apply_update` reads `current_version()` = `v2` (tx6's
+   data, `table/row.rs:120`), builds `v3` **on top of tx6's value**, stamps it `tx5`.
+3. A reader at snapshot **5** calls `at_transaction_id(5)`, scans in reverse, hits
+   `v3 (tx5)` → `5 <= 5` → returns it. It just observed tx6's changes even though tx6
+   should be invisible to snapshot 5.
+
+A causality / isolation violation. It is masked today because every benchmark that
+mutates uses `WRITE_THREADS = 1` (`database.rs:635`) — with a single writer, id order
+== lock order and everything lines up. With two concurrent writers, snapshot isolation
+is wrong.
+
+---
+
+## 3. Correctness issues, by severity
+
+### 3.1 No commit timestamp → no atomic visibility; reads see uncommitted/partial/rolled-back data
+A version becomes visible the instant it is pushed under the row lock — before the rest
+of the transaction's statements run, before the WAL fsync, and before any rollback
+decision. So:
+- Multi-statement transactions are observable half-applied (row A updated, row B not).
+- A reader can read data that is not yet durable (`persistence/transaction.rs:144`
+  documents this).
+- A reader can read versions that later get rolled back.
+
+`at_version` even carries the telling `// TODO: Filter out the versions that are not
+committed?` (`table/row.rs:239`). This is **read uncommitted**, not the "read committed"
+the notes claim. Proper MVCC needs **two stamps per version**: the writer's id and a
+*commit* timestamp; a version is visible only once `commit_ts` is set and
+`commit_ts <= reader_snapshot`.
+
+### 3.2 Rollback can corrupt other transactions
+`apply_rollback` → `rollback_version` just does `versions.pop()` (`table/row.rs:211`).
+The lock is released between statements, so if another writer pushed a newer version on
+that row in the meantime, the pop removes *their* version, not yours. Combined with the
+out-of-order tx_ids (§2), "pop the last" does not reliably mean "undo my write."
+
+### 3.3 No write-write conflict detection (lost updates)
+Two transactions updating the same entity just stack versions; whoever locks last wins,
+silently. No first-committer-wins check. This is why the uniqueness/constraint tests are
+`#[ignore]`d (`database.rs:525`, `:564`, `:585`).
+
+### 3.4 Concurrent create of the same id races
+In `apply` for `Add` (`table/table.rs:156`): `get(&id)` returns `None`, then `insert(...)`.
+Two threads adding the same id both see `None` and both insert — the second
+`SkipMap::insert` silently overwrites the first. No error, lost write.
+
+### 3.5 WAL order ≠ tx-id order → restore may not reproduce live state
+Transactions reach the single WAL thread in `commit()`-call order (lock order), not id
+order, and are appended in that order (`persistence/transaction.rs:116`). On restore we
+replay in file order (`database.rs:183`). With concurrent writers the replay order can
+differ from the original apply order, so restore is not guaranteed to reconstruct the
+same state.
+
+### 3.6 Durability vs. visibility hole
+`T2` can read `T1`'s in-memory write and be told "committed/durable" after its own
+fsync, while `T1`'s WAL write has not landed. If `T1`'s WAL write then fails (DB
+crashes, `persistence/transaction.rs:150`), restore replays `T2`-without-`T1` →
+inconsistent. Consequence of §3.1 + §3.5.
+
+### 3.7 `at_version` positional indexing is fragile
+`table/row.rs:247` filters to visible versions then indexes by `version_id - 1`. This
+only works while nothing is pruned and tx_ids are in order. With GC, or with the
+out-of-order issue, "version N" stops meaning the Nth element. `GetVersion` is really
+"Nth visible version," not "version literally numbered N."
+
+### 3.8 Off-by-one in the clock
+Clock starts at 0 (`persistence/transaction.rs:269`), `fetch_add` hands out 0 first, but
+`new_first_transaction()` is 1 (`consts/consts.rs:17`, with its own TODO). The first
+live transaction gets an id below the declared "first." Minor, but it bites snapshot
+comparisons at the boundary.
+
+---
+
+## 4. What's missing for a correct MVCC system
+
+- **A transaction object** with begin-snapshot and commit-timestamp. Today a
+  "transaction" is just an id passed around — no write-set, no state machine
+  (active → committed/aborted), no place to detect conflicts.
+- **A global "last committed" watermark** separate from the id allocator, so readers
+  take a consistent snapshot (everything with `commit_ts <= watermark`) and never see
+  in-flight writers.
+- **Conflict detection** at commit (write-write for snapshot isolation; read-set
+  validation if serializable is ever wanted).
+- **Atomic commit**: stamp all of a transaction's versions with one commit_ts and
+  publish them together.
+- **Version GC / vacuum**: versions accumulate forever in the `Vec` until a
+  snapshot+flush. Prune versions older than the oldest live reader's snapshot.
+- **True long-lived read-write transactions** (BEGIN/COMMIT sessions). Point-in-time
+  *reads* exist via `TransactionContext` (`commands.rs:137`), but writers always use a
+  fresh id and there is no session holding a write-set.
+
+---
+
+## 5. Staged plan (smallest-correct-first)
+
+Resist jumping straight to lock-free cleverness. Get the *model* right first, then
+optimize.
+
+### Stage 0 — Make the failure visible `[x]`
+- [x] Write a test with 2+ writer threads hammering the same entity, plus a concurrent
+      reader asserting snapshot invariants. It should fail today (exposes §2 / §3.1 / §3.3).
+      → `database/tests/mvcc_concurrency.rs`. Two invariants:
+      `multi_statement_transaction_is_atomically_visible` (cross-row atomicity, target:
+      Stage 2) and `rolled_back_writes_are_never_visible` (no dirty reads, target:
+      Stage 2/3). Both `#[ignore]`d so CI stays green; run with
+      `cargo test -p database --test mvcc_concurrency -- --ignored --nocapture`.
+      Confirmed failing today: ~5k torn reads / ~32k dirty reads per run.
+- [ ] (Deferred to Stage 3) Re-enable the `#[ignore]`d constraint tests
+      (`database.rs:525`, `:564`, `:585`). These assert a uniqueness *feature* that was
+      removed when going multi-writer; conflict detection (Stage 3) is the prerequisite,
+      so they stay ignored until then rather than being re-enabled now as a red test.
+- This is the regression harness for everything below. As each stage lands, remove the
+  `#[ignore]` from the test it satisfies.
+
+### Stage 1 — Separate the two clocks and add a commit timestamp `[x]`
+- [x] Renamed `PersonVersion.transaction_id` → `commit_ts`; rows now only ever contain
+      committed versions, so a single timestamp suffices (uncommitted writes live in the
+      write-set, not the row). `database/src/database/table/row.rs`.
+- [x] Added two clocks in `TransactionWAL` (`persistence/transaction.rs`):
+      `commit_id_sequence` (allocates commit ids, starts at 1) and `committed_watermark`
+      (last published commit id, starts at 0). `SnapshotTimestamp::Latest` readers snapshot
+      at the watermark via `current_snapshot_id()`.
+- [x] Visibility (`at_transaction_id` / `at_version`) filters on `commit_ts <= snapshot`.
+      Because commits are serialized, a row's versions are appended in ascending
+      `commit_ts` order, so the reverse-scan is correct again (kills the §2 causality leak).
+
+### Stage 2 — Atomic, ordered commit `[~]` (visibility done; durability ordering pending)
+- [x] Added a `WriteSet` buffer (`table/write_set.rs`): a write transaction executes its
+      statements against `snapshot ∪ its own buffer` without touching shared rows, so an
+      error aborts with nothing to undo (fixes unsafe `pop()` rollback, §3.2, for the live
+      path).
+- [x] Live commit path is `Database::commit_transaction` (`database.rs`): on success a
+      single `commit_lock` critical section allocates one `commit_ts`, publishes every
+      buffered version, advances the watermark, and hands off to the WAL — all in commit-id
+      order, so commit order == visibility order == WAL append order (§3.5). Multi-statement
+      transactions are now atomically visible.
+- [x] Both Stage 0 invariant tests pass with **zero** violations and are no longer
+      `#[ignore]`d — they gate CI now (`database/tests/mvcc_concurrency.rs`).
+- [x] Isolation level: **snapshot isolation** (readers see a consistent committed snapshot;
+      writers read at their begin snapshot). Write-write conflict detection is Stage 3.
+- [ ] **Still open (§3.6): advance the watermark only after the WAL fsync.** Today the
+      watermark advances inside the commit lock, *before* the WAL thread fsyncs, so a commit
+      is visible slightly before it is durable — the original documented trade-off. Moving
+      the advance into the WAL thread (post-fsync, in channel order) closes this. The two
+      Stage 0 tests do not exercise durability, so this is tracked separately.
+- Note on the design fork (write-set vs. in-place invisible versions): chose the **write-set
+  buffer**. It keeps shared rows containing only committed data and sets up Stage 3
+  (validate before publish) and Stage 5 (a transaction handle that owns its write-set).
+
+### Stage 3 — Conflict detection + safe rollback `[ ]`
+- [ ] At commit, for each written row check whether another transaction committed to it
+      after this transaction's begin-snapshot; if so abort with a write-conflict
+      (first-committer-wins). Restores constraints (§3.3); un-`#[ignore]` those tests.
+- [ ] Replace `pop()`-based rollback with abort-by-marking: an aborted transaction's
+      versions are never given a commit_ts and are skipped/reaped — never pop someone
+      else's write (§3.2).
+- [ ] Fix the create race (§3.4): make Add a compare-and-insert
+      (`SkipMap::get_or_insert` / entry API) under the row's logical existence check,
+      not get-then-insert.
+
+### Stage 4 — Vacuum `[ ]`
+- [ ] Track the oldest live snapshot; reap versions with `commit_ts` older than it.
+- Needed before this is viable beyond toy sizes.
+
+### Stage 5 — Long-lived read-write transactions `[ ]`
+- [ ] Introduce a real `Transaction` handle (begin-snapshot + write-set + state) and a
+      BEGIN/COMMIT API. Reads already pin a snapshot; extend it to writers.
+- Where the GraphQL session work in `docs/notes.md` plugs in.
+
+---
+
+## 6. References
+
+- **tihku** — MVCC database in Rust (already bookmarked in `docs/notes.md`):
+  https://github.com/penberg/tihku
+- **CMU 15-445** MVCC lectures (two-timestamp model, visibility, GC, conflict detection).
+- Wu et al., *An Empirical Evaluation of In-Memory MVCC* — survey of version storage /
+  GC / conflict-detection trade-offs.
+- Postgres WAL reliability (already referenced in `persistence/transaction.rs`):
+  https://www.postgresql.org/docs/current/wal-reliability.html
