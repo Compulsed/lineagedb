@@ -4,5 +4,6 @@ pub mod database;
 pub mod options;
 pub mod orchestrator;
 pub mod request_manager;
+pub mod snapshot_registry;
 pub mod table;
 pub mod utils;

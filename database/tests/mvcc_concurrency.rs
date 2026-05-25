@@ -237,6 +237,173 @@ fn committed_write_is_durable_and_then_visible() {
     );
 }
 
+/// Stage 5: an interactive (long-lived) transaction reads a stable snapshot and its own
+/// buffered writes, while staying isolated from concurrently-committed changes.
+#[test]
+fn interactive_transaction_snapshot_isolation_and_read_your_writes() {
+    let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(2)).run();
+    let id = EntityId("p".to_string());
+
+    rm.send_transaction(
+        vec![Statement::Add(new_person("p", "v0"))],
+        TransactionContext::default(),
+    )
+    .expect("seed should commit");
+
+    // Open a transaction; its snapshot sees v0.
+    let tx = rm.send_begin_transaction().expect("begin");
+
+    // A concurrent one-shot commits p = "v1" after the transaction's snapshot.
+    rm.send_transaction(
+        vec![Statement::Update(id.clone(), set_name("v1".to_string()))],
+        TransactionContext::default(),
+    )
+    .expect("concurrent update should commit");
+
+    // The interactive transaction still reads its begin snapshot: "v0", not "v1".
+    let read = rm
+        .send_transaction_statements(tx, vec![Statement::Get(id.clone())])
+        .expect("interactive read");
+    assert_eq!(
+        expect_name(&read[0]),
+        "v0",
+        "interactive read must see its begin snapshot, not a later commit"
+    );
+
+    // It writes p = "tx" and then reads its own write (read-your-writes).
+    rm.send_transaction_statements(tx, vec![Statement::Update(id.clone(), set_name("tx".to_string()))])
+        .expect("interactive update");
+    let read_own = rm
+        .send_transaction_statements(tx, vec![Statement::Get(id.clone())])
+        .expect("interactive read");
+    assert_eq!(
+        expect_name(&read_own[0]),
+        "tx",
+        "interactive read must see its own buffered write"
+    );
+
+    // Until it commits, everyone else still sees the committed "v1".
+    let outside = rm
+        .send_get(id.clone(), TransactionContext::default())
+        .expect("outside read");
+    assert_eq!(outside.map(|p| p.full_name), Some("v1".to_string()));
+
+    rm.send_rollback_transaction(tx).expect("rollback");
+}
+
+/// Stage 5: two interactive transactions writing the same row -> first-committer-wins.
+#[test]
+fn interactive_write_conflict_aborts_second_committer() {
+    let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(2)).run();
+    let id = EntityId("p".to_string());
+
+    rm.send_transaction(
+        vec![Statement::Add(new_person("p", "v0"))],
+        TransactionContext::default(),
+    )
+    .expect("seed should commit");
+
+    let tx1 = rm.send_begin_transaction().expect("begin tx1");
+    let tx2 = rm.send_begin_transaction().expect("begin tx2");
+
+    rm.send_transaction_statements(tx1, vec![Statement::Update(id.clone(), set_name("a".to_string()))])
+        .expect("tx1 update");
+    rm.send_transaction_statements(tx2, vec![Statement::Update(id.clone(), set_name("b".to_string()))])
+        .expect("tx2 update");
+
+    rm.send_commit_transaction(tx1).expect("tx1 should commit");
+
+    let tx2_commit = rm.send_commit_transaction(tx2);
+    assert!(
+        tx2_commit.is_err(),
+        "tx2 should abort with a write-write conflict, got {:?}",
+        tx2_commit
+    );
+
+    let final_state = rm
+        .send_get(id.clone(), TransactionContext::default())
+        .expect("read");
+    assert_eq!(final_state.map(|p| p.full_name), Some("a".to_string()));
+}
+
+/// Stage 5: rolling back an interactive transaction discards its buffered writes.
+#[test]
+fn interactive_rollback_discards_writes() {
+    let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(2)).run();
+    let id = EntityId("p".to_string());
+
+    rm.send_transaction(
+        vec![Statement::Add(new_person("p", "v0"))],
+        TransactionContext::default(),
+    )
+    .expect("seed should commit");
+
+    let tx = rm.send_begin_transaction().expect("begin");
+    rm.send_transaction_statements(tx, vec![Statement::Update(id.clone(), set_name("rolled".to_string()))])
+        .expect("update");
+    rm.send_rollback_transaction(tx).expect("rollback");
+
+    let state = rm
+        .send_get(id.clone(), TransactionContext::default())
+        .expect("read");
+    assert_eq!(
+        state.map(|p| p.full_name),
+        Some("v0".to_string()),
+        "rolled-back write must not be visible"
+    );
+}
+
+/// Stage 4 + 5: vacuum preserves versions an open transaction's snapshot still needs, then
+/// reclaims them once the transaction closes.
+#[test]
+fn vacuum_respects_open_transaction_then_reclaims() {
+    let rm = Database::new(DatabaseOptions::new_benchmark().set_threads(2)).run();
+    let id = EntityId("p".to_string());
+
+    rm.send_transaction(
+        vec![Statement::Add(new_person("p", "v0"))],
+        TransactionContext::default(),
+    )
+    .expect("seed should commit"); // version 1 @ commit_ts 1
+
+    // Open a transaction pinned at the seed snapshot.
+    let tx = rm.send_begin_transaction().expect("begin");
+
+    // Commit newer versions on top.
+    for n in 1..=3 {
+        rm.send_transaction(
+            vec![Statement::Update(id.clone(), set_name(format!("v{}", n)))],
+            TransactionContext::default(),
+        )
+        .expect("update should commit");
+    }
+
+    // Vacuum while the transaction is open: its snapshot is registered, so v0 must survive.
+    rm.send_vacuum_request().expect("vacuum");
+    let pinned_read = rm
+        .send_transaction_statements(tx, vec![Statement::Get(id.clone())])
+        .expect("interactive read");
+    assert_eq!(
+        expect_name(&pinned_read[0]),
+        "v0",
+        "an open transaction's snapshot must survive vacuum"
+    );
+
+    // Close the transaction and vacuum again: now the old versions can be reclaimed.
+    rm.send_rollback_transaction(tx).expect("rollback");
+    rm.send_vacuum_request().expect("vacuum");
+
+    let too_old = rm.send_get(
+        id.clone(),
+        TransactionContext::new(SnapshotTimestamp::AtTransactionId(TransactionId(1))),
+    );
+    assert!(
+        too_old.is_err(),
+        "once the transaction closes and vacuum runs, snapshot 1 is too old, got {:?}",
+        too_old
+    );
+}
+
 /// Stage 4 vacuum: aggressive MVCC GC reclaims superseded versions while preserving the
 /// latest state, and reads at a vacuumed-away snapshot are rejected as "snapshot too old".
 #[test]

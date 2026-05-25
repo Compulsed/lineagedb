@@ -213,15 +213,17 @@ impl<'a> ControlContext<'a> {
     }
 
     pub fn vacuum(self) -> DatabaseControlAction {
-        // Stop-the-world: pausing the other worker threads guarantees no transaction is
-        //  mid-read. With nothing in flight, the oldest snapshot anyone can read at is the
-        //  current watermark (`transaction_timestamp`).
-        //
-        //  NOTE (Stage 5): once long-lived transactions exist they hold a snapshot across
-        //  the pause, so `oldest` must become min(watermark, oldest active transaction).
+        // Stop-the-world: pausing the other worker threads guarantees no one-shot
+        //  transaction is mid-read. Long-lived (interactive) transactions DO survive the
+        //  pause, so the oldest reachable snapshot is the minimum of the current watermark
+        //  and the oldest snapshot held by an open interactive transaction.
         let pause = &DatabasePauseEvent::new(self.database_request_managers);
 
-        let oldest = self.transaction_timestamp.clone();
+        let watermark = self.transaction_timestamp.clone();
+        let oldest = match self.database.active_snapshots.oldest() {
+            Some(active) if active < watermark => active,
+            _ => watermark,
+        };
 
         let reclaimed = self.database.person_table.vacuum(pause, &oldest);
 

@@ -1,7 +1,8 @@
 use super::{
-    commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse},
+    commands::{DatabaseCommandRequest, DatabaseCommandTransactionResponse, InteractiveCommand},
     options::DatabaseOptions,
     request_manager::RequestManager,
+    snapshot_registry::ActiveSnapshots,
     table::{table::PersonTable, write_set::WriteSet},
 };
 use crate::{
@@ -13,12 +14,14 @@ use crate::{
     model::statement::{Statement, StatementResult},
     persistence::persistence::Persistence,
 };
+use crossbeam_skiplist::SkipMap;
 use num_format::{Locale, ToFormattedString};
 use std::{
     sync::{Arc, Mutex},
     thread,
     time::Instant,
 };
+use uuid::Uuid;
 
 // TODO: This is a part of the transaction_wal, should be moved there
 enum CommitStatus {
@@ -34,6 +37,17 @@ pub enum ApplyMode {
     Restore,
 }
 
+/// Server-side state of an open interactive (long-lived) transaction. Held in
+/// `Database::interactive_transactions` between `Begin` and `Commit`/`Rollback`.
+pub(super) struct InteractiveTransaction {
+    /// The begin-snapshot: all reads in this transaction see this committed view.
+    snapshot: TransactionId,
+    /// Buffered, not-yet-published writes (read-your-writes + the publish set at commit).
+    write_set: WriteSet,
+    /// The mutation statements issued, in order, recorded for the WAL on commit.
+    mutations: Vec<Statement>,
+}
+
 pub struct Database {
     pub(super) person_table: PersonTable,
     pub(super) database_options: DatabaseOptions,
@@ -43,6 +57,10 @@ pub struct Database {
     /// writers and readers still proceed concurrently; only the final, fast publish step is
     /// ordered. This is what gives every version a well-ordered commit timestamp.
     pub(super) commit_lock: Mutex<()>,
+    /// Snapshots held by open interactive transactions, so vacuum preserves what they need.
+    pub(super) active_snapshots: ActiveSnapshots,
+    /// Open interactive transactions, keyed by the handle returned from `Begin`.
+    pub(super) interactive_transactions: SkipMap<Uuid, Mutex<InteractiveTransaction>>,
 }
 
 impl Database {
@@ -52,6 +70,8 @@ impl Database {
             persistence: Persistence::new(options.clone()),
             database_options: options,
             commit_lock: Mutex::new(()),
+            active_snapshots: ActiveSnapshots::new(),
+            interactive_transactions: SkipMap::new(),
         }
     }
 
@@ -112,6 +132,10 @@ impl Database {
                             return;
                         }
                     }
+                }
+                DatabaseCommand::Interactive(interactive) => {
+                    database.run_interactive(interactive, resolver);
+                    continue;
                 }
             };
 
@@ -353,24 +377,42 @@ impl Database {
             }
         }
 
-        let response = DatabaseCommandTransactionResponse::Commit(results);
+        // All statements succeeded; finalize the commit (conflict check + publish + WAL).
+        self.finalize_commit(
+            snapshot,
+            write_set,
+            statements,
+            DatabaseCommandTransactionResponse::Commit(results),
+            resolver,
+        );
+    }
 
-        // The result of the commit critical section: either a sequenced commit id, or a
-        //  write-write conflict carrying the resolver back out so we can reply off-lock.
+    /// The commit critical section, shared by one-shot and interactive transactions.
+    ///
+    /// Holding the commit lock across conflict-check -> allocate -> publish -> WAL hand-off
+    /// guarantees that commit id order, publish order, and WAL append order all agree (so a
+    /// restore replays in the original order, and the WAL thread advances the watermark
+    /// monotonically). Published versions are NOT visible until the WAL thread advances the
+    /// watermark after fsync, so a version becomes visible only once durable. The slow fsync
+    /// and the client response happen off this lock.
+    ///
+    /// `wal_statements` are logged to the WAL (and replayed on restore); `success_response`
+    /// is what the client receives once the commit is durable.
+    fn finalize_commit(
+        &self,
+        snapshot: TransactionId,
+        write_set: WriteSet,
+        wal_statements: Vec<Statement>,
+        success_response: DatabaseCommandTransactionResponse,
+        resolver: oneshot::Sender<DatabaseCommandResponse>,
+    ) {
+        // Either a sequenced commit id, or a write-write conflict carrying the resolver back
+        //  out so we can reply off-lock.
         enum CommitOutcome {
             Sequenced(TransactionId),
             Conflict(oneshot::Sender<DatabaseCommandResponse>, EntityId),
         }
 
-        // Commit critical section: ordered, in-memory, and fast. Holding the lock across
-        //  conflict-check -> allocate -> publish -> WAL hand-off guarantees that commit id
-        //  order, publish order, and WAL append order all agree (so a restore replays in the
-        //  original order, and the WAL thread can advance the watermark monotonically).
-        //
-        //  The published versions are NOT yet visible: the watermark is only advanced by
-        //  the WAL thread once this transaction's WAL entry has been fsynced, so a version
-        //  becomes visible only after it is durable. The slow part -- the fsync -- happens
-        //  off this lock, and the WAL thread also sends the client response.
         let outcome = {
             let _commit_guard = self.commit_lock.lock().unwrap();
 
@@ -393,8 +435,10 @@ impl Database {
                     // Enqueues to the WAL thread (non-blocking, unbounded channel).
                     self.persistence.transaction_wal.commit(
                         commit_ts.clone(),
-                        statements,
-                        DatabaseCommandResponse::DatabaseCommandTransactionResponse(response),
+                        wal_statements,
+                        DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                            success_response,
+                        ),
                         ApplyMode::Request(resolver),
                     );
 
@@ -420,6 +464,133 @@ impl Database {
                     "Write-write conflict: entity {} was modified by a concurrent transaction",
                     conflict_id
                 )));
+            }
+        }
+    }
+
+    /// Drives one step of an interactive (long-lived) transaction. The transaction's
+    /// snapshot and write-set live in `interactive_transactions` between `Begin` and
+    /// `Commit`/`Rollback`, so the work spans multiple requests / worker threads.
+    pub fn run_interactive(
+        &self,
+        command: InteractiveCommand,
+        resolver: oneshot::Sender<DatabaseCommandResponse>,
+    ) {
+        match command {
+            InteractiveCommand::Begin => {
+                // The begin-snapshot is the latest committed state. Register it so vacuum
+                //  preserves the versions this transaction will read for its whole lifetime.
+                let snapshot = self.persistence.transaction_wal.current_snapshot_id();
+                self.active_snapshots.register(snapshot.clone());
+
+                let handle = Uuid::new_v4();
+                self.interactive_transactions.insert(
+                    handle,
+                    Mutex::new(InteractiveTransaction {
+                        snapshot,
+                        write_set: WriteSet::new(),
+                        mutations: Vec::new(),
+                    }),
+                );
+
+                let _ = resolver.send(DatabaseCommandResponse::transaction_began(handle));
+            }
+            InteractiveCommand::Execute(handle, statements) => {
+                let entry = match self.interactive_transactions.get(&handle) {
+                    Some(entry) => entry,
+                    None => {
+                        let _ = resolver.send(DatabaseCommandResponse::transaction_rollback(
+                            &format!("Unknown or closed transaction: {}", handle),
+                        ));
+                        return;
+                    }
+                };
+
+                let mut transaction = entry.value().lock().unwrap();
+                let snapshot = transaction.snapshot.clone();
+                let mut results: Vec<StatementResult> = Vec::new();
+
+                for statement in statements {
+                    let outcome = if statement.is_mutation() {
+                        let result = transaction.write_set.apply_mutation(
+                            &self.person_table,
+                            &snapshot,
+                            statement.clone(),
+                        );
+                        // Record successful mutations for the WAL (replayed on restore).
+                        if result.is_ok() {
+                            transaction.mutations.push(statement);
+                        }
+                        result
+                    } else {
+                        transaction
+                            .write_set
+                            .query(&self.person_table, &snapshot, statement)
+                    };
+
+                    match outcome {
+                        Ok(result) => results.push(result),
+                        Err(err) => {
+                            // The statement failed; the caller should roll back. Buffered
+                            //  writes are never published unless the caller commits.
+                            let _ = resolver.send(DatabaseCommandResponse::transaction_rollback(
+                                &format!("{}", err),
+                            ));
+                            return;
+                        }
+                    }
+                }
+
+                let _ = resolver.send(
+                    DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                        DatabaseCommandTransactionResponse::Commit(results),
+                    ),
+                );
+            }
+            InteractiveCommand::Commit(handle) => {
+                let entry = match self.interactive_transactions.remove(&handle) {
+                    Some(entry) => entry,
+                    None => {
+                        let _ = resolver.send(DatabaseCommandResponse::transaction_rollback(
+                            &format!("Unknown or closed transaction: {}", handle),
+                        ));
+                        return;
+                    }
+                };
+
+                // Take ownership of the buffered state out of the removed entry.
+                let (snapshot, write_set, mutations) = {
+                    let mut transaction = entry.value().lock().unwrap();
+                    (
+                        transaction.snapshot.clone(),
+                        std::mem::replace(&mut transaction.write_set, WriteSet::new()),
+                        std::mem::take(&mut transaction.mutations),
+                    )
+                };
+
+                // The transaction's snapshot reads are done; it no longer pins history.
+                self.active_snapshots.unregister(snapshot.clone());
+
+                self.finalize_commit(
+                    snapshot,
+                    write_set,
+                    mutations,
+                    DatabaseCommandTransactionResponse::Commit(vec![]),
+                    resolver,
+                );
+            }
+            InteractiveCommand::Rollback(handle) => {
+                if let Some(entry) = self.interactive_transactions.remove(&handle) {
+                    let snapshot = entry.value().lock().unwrap().snapshot.clone();
+                    self.active_snapshots.unregister(snapshot);
+                }
+
+                // Nothing was published, so there is nothing to undo.
+                let _ = resolver.send(
+                    DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                        DatabaseCommandTransactionResponse::Commit(vec![]),
+                    ),
+                );
             }
         }
     }
@@ -536,6 +707,8 @@ mod test_struct_methods {
                 persistence: Persistence::new(options.clone()),
                 database_options: options,
                 commit_lock: std::sync::Mutex::new(()),
+                active_snapshots: super::ActiveSnapshots::new(),
+                interactive_transactions: crossbeam_skiplist::SkipMap::new(),
             }
         }
 

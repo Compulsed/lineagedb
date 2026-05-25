@@ -246,10 +246,41 @@ optimize.
   pause, so `oldest` must become `min(watermark, oldest active transaction)` — i.e. the
   active-snapshot registry deferred from here lands in Stage 5.
 
-### Stage 5 — Long-lived read-write transactions `[ ]`
-- [ ] Introduce a real `Transaction` handle (begin-snapshot + write-set + state) and a
-      BEGIN/COMMIT API. Reads already pin a snapshot; extend it to writers.
-- Where the GraphQL session work in `docs/notes.md` plugs in.
+### Stage 5 — Long-lived read-write transactions `[x]`
+- [x] Session protocol: `DatabaseCommand::Interactive(InteractiveCommand)` with
+      `Begin` / `Execute(handle, statements)` / `Commit(handle)` / `Rollback(handle)`
+      (`commands.rs`), exposed via `RequestManager::send_begin_transaction` /
+      `send_transaction_statements` / `send_commit_transaction` / `send_rollback_transaction`.
+      `Begin` returns a `Uuid` handle.
+- [x] Server-side `InteractiveTransaction` (begin-snapshot + `WriteSet` + recorded mutation
+      statements for the WAL) held in `Database::interactive_transactions`
+      (`SkipMap<Uuid, Mutex<..>>`), so the snapshot and write-set persist across requests and
+      worker threads. `run_interactive` drives each step.
+- [x] Reads inside the transaction see its begin-snapshot + its own buffered writes
+      (read-your-writes); mutations are buffered and invisible to others until commit.
+- [x] Commit reuses the shared `finalize_commit` (first-committer-wins conflict check +
+      atomic publish + WAL), so a long-lived transaction that lost a write race aborts and
+      the client retries. Rollback just discards the buffer.
+- [x] **Active-snapshot registry** (`snapshot_registry.rs`, deferred from Stage 4): an
+      interactive transaction registers its snapshot at `Begin` and unregisters at
+      `Commit`/`Rollback`. Vacuum now reaps below `min(watermark, oldest active snapshot)`,
+      so it preserves exactly the history an open transaction can still read. Only
+      interactive transactions register (one-shot work is never in flight during a
+      stop-the-world vacuum), so the read/write hot path is untouched.
+- [x] Tests: snapshot isolation + read-your-writes, interactive write-write conflict,
+      rollback discards writes, and `vacuum_respects_open_transaction_then_reclaims` (vacuum
+      preserves the open transaction's snapshot, then reclaims once it closes). Plus
+      `ActiveSnapshots` unit tests.
+- **Known limitations / follow-ups:**
+  - No idle/abandoned-transaction reaper: a client that `Begin`s and never commits/rolls
+    back leaks a registered snapshot and pins the GC horizon forever. A real system needs a
+    transaction timeout.
+  - A failed `Execute` statement leaves the transaction open with partial buffered writes;
+    the client is expected to roll back (no automatic abort-on-error yet).
+  - `List` / `GetVersion` inside a write transaction read the committed snapshot only and do
+    not overlay the transaction's own buffered writes (only `Get` does); see the note in
+    `write_set.rs`.
+- This is where the GraphQL session work in `docs/notes.md` plugs in.
 
 ---
 

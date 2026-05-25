@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use uuid::Uuid;
+
 use crate::{
     consts::consts::TransactionId,
     model::statement::{Statement, StatementResult},
@@ -11,11 +13,31 @@ use crate::{
 /// to control the database (e.g. shutdown, snapshot, etc).
 #[derive(Debug)]
 pub enum DatabaseCommand {
-    /// Sends a set of statements to the database and returns the results
+    /// Sends a set of statements to the database as a single one-shot transaction and
+    /// returns the results
     Transaction(Vec<Statement>),
 
     /// Commands that control the database
     Control(Control),
+
+    /// Drives a long-lived (interactive / session) transaction across multiple requests
+    Interactive(InteractiveCommand),
+}
+
+/// A step in a long-lived transaction's lifecycle. Unlike a one-shot `Transaction`, the
+/// snapshot and write-set are held server-side (keyed by the handle returned from `Begin`)
+/// and persist across requests until `Commit` or `Rollback`.
+#[derive(Debug)]
+pub enum InteractiveCommand {
+    /// Open a transaction; the response carries its handle.
+    Begin,
+    /// Run statements within the open transaction (reads see its snapshot + its own buffered
+    /// writes; mutations are buffered, not yet visible to anyone else).
+    Execute(Uuid, Vec<Statement>),
+    /// Validate (first-committer-wins) and durably commit the transaction's buffered writes.
+    Commit(Uuid),
+    /// Discard the transaction's buffered writes.
+    Rollback(Uuid),
 }
 
 impl DatabaseCommand {
@@ -70,9 +92,15 @@ pub enum DatabaseCommandControlResponse {
 pub enum DatabaseCommandResponse {
     DatabaseCommandTransactionResponse(DatabaseCommandTransactionResponse),
     DatabaseCommandControlResponse(DatabaseCommandControlResponse),
+    /// The handle of a newly-opened interactive transaction (response to `Begin`).
+    TransactionBegan(Uuid),
 }
 
 impl DatabaseCommandResponse {
+    pub fn transaction_began(handle: Uuid) -> Self {
+        DatabaseCommandResponse::TransactionBegan(handle)
+    }
+
     pub fn control_success(message: &str) -> Self {
         DatabaseCommandResponse::DatabaseCommandControlResponse(
             DatabaseCommandControlResponse::Success(message.to_string()),
