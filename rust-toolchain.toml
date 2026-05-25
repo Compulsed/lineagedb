@@ -1,2 +1,5 @@
 [toolchain]
-channel = "nightly-2024-07-02"
+# Pinned to a recent stable. (Was nightly-2024-07-02, which predated the edition-2024
+# stabilization in 1.85 that some current deps — e.g. pgwire's transitive chain — require.)
+# The codebase uses no nightly-only features; only the lint `reason` field, stable since 1.81.
+channel = "1.95.0"
