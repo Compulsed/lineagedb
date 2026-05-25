@@ -14,6 +14,8 @@
 
 use std::sync::Arc;
 
+mod catalog;
+
 use async_trait::async_trait;
 use clap::Parser as ClapParser;
 use futures::{stream, StreamExt};
@@ -385,6 +387,12 @@ impl SimpleQueryHandler for LineageHandler {
         C::PortalStore: PortalStore,
     {
         log::info!("query: {}", query);
+
+        // System-catalog / introspection queries (from GUI clients) are answered with canned
+        // responses so the `person` table shows up in their schema browser.
+        if let Some(responses) = catalog::intercept(query) {
+            return Ok(responses);
+        }
 
         let statements = match SqlParser::parse_sql(&PostgreSqlDialect {}, query) {
             Ok(statements) => statements,
