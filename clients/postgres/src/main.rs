@@ -23,7 +23,7 @@ use pgwire::api::auth::noop::NoopStartupHandler;
 use pgwire::api::auth::StartupHandler;
 use pgwire::api::query::SimpleQueryHandler;
 use pgwire::api::results::{
-    DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response,
+    DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag,
 };
 use pgwire::api::store::PortalStore;
 use pgwire::api::{ClientInfo, ClientPortalStore, PgWireServerHandlers, Type};
@@ -34,10 +34,11 @@ use sqlparser::ast;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser as SqlParser;
 
+use database::consts::consts::EntityId;
 use database::database::commands::TransactionContext;
 use database::database::database::Database;
 use database::database::options::DatabaseOptions;
-use database::database::request_manager::RequestManager;
+use database::database::request_manager::{RequestManager, RequestManagerError};
 use database::model::person::Person;
 use database::model::statement::{Statement, StatementResult};
 use database::persistence::storage::StorageEngine;
@@ -65,6 +66,8 @@ struct Cli {
 enum Planned {
     /// `SELECT * FROM person`
     ListPerson,
+    /// `INSERT INTO person (...) VALUES (...)`
+    AddPerson(Person),
 }
 
 fn feature_not_supported(message: impl Into<String>) -> ErrorInfo {
@@ -88,6 +91,36 @@ fn syntax_error(message: impl Into<String>) -> ErrorInfo {
 
 fn internal_error(message: impl Into<String>) -> ErrorInfo {
     ErrorInfo::new("ERROR".to_string(), "XX000".to_string(), message.into())
+}
+
+fn not_null_violation(column: &str) -> ErrorInfo {
+    // SQLSTATE 23502 = not_null_violation
+    ErrorInfo::new(
+        "ERROR".to_string(),
+        "23502".to_string(),
+        format!("null value in column \"{}\" violates not-null constraint", column),
+    )
+}
+
+fn undefined_column(column: &str) -> ErrorInfo {
+    // SQLSTATE 42703 = undefined_column
+    ErrorInfo::new(
+        "ERROR".to_string(),
+        "42703".to_string(),
+        format!("column \"{}\" of relation \"person\" does not exist", column),
+    )
+}
+
+/// Maps an engine error (channel/timeout, or a logical rollback like "already exists") to a
+/// Postgres error. Logical conflicts map to unique_violation; everything else is internal.
+fn engine_error(error: RequestManagerError) -> ErrorInfo {
+    let message = error.to_string();
+    let code = if message.contains("already exists") {
+        "23505" // unique_violation
+    } else {
+        "XX000"
+    };
+    ErrorInfo::new("ERROR".to_string(), code.to_string(), message)
 }
 
 /// The (only) table this server exposes mirrors the engine's single `Person` entity.
@@ -117,10 +150,116 @@ fn table_name(relation: &ast::TableFactor) -> Result<String, ErrorInfo> {
 fn plan(statement: ast::Statement) -> Result<Planned, ErrorInfo> {
     match statement {
         ast::Statement::Query(query) => plan_select(*query),
+        ast::Statement::Insert(insert) => plan_insert(insert),
         _ => Err(feature_not_supported(
             "only SELECT * FROM person and INSERT INTO person are supported",
         )),
     }
+}
+
+/// Extracts the (last) identifier of a column reference, e.g. `email` or `person.email`.
+fn column_name(name: &ast::ObjectName) -> Result<String, ErrorInfo> {
+    name.0
+        .last()
+        .and_then(|part| part.as_ident())
+        .map(|ident| ident.value.clone())
+        .ok_or_else(|| syntax_error("invalid column reference"))
+}
+
+/// A single VALUES literal -> `Some(text)` or `None` for SQL NULL. Numbers are accepted and
+/// stored as text (the person columns are all text).
+fn literal_value(expr: &ast::Expr) -> Result<Option<String>, ErrorInfo> {
+    match expr {
+        ast::Expr::Value(value) => match &value.value {
+            ast::Value::SingleQuotedString(s) => Ok(Some(s.clone())),
+            ast::Value::Number(n, _) => Ok(Some(n.to_string())),
+            ast::Value::Null => Ok(None),
+            other => Err(feature_not_supported(format!(
+                "unsupported value literal: {other:?}"
+            ))),
+        },
+        _ => Err(feature_not_supported(
+            "only literal values are supported in VALUES",
+        )),
+    }
+}
+
+fn plan_insert(insert: ast::Insert) -> Result<Planned, ErrorInfo> {
+    let name = match &insert.table {
+        ast::TableObject::TableName(object_name) => object_name
+            .0
+            .last()
+            .and_then(|part| part.as_ident())
+            .map(|ident| ident.value.clone())
+            .ok_or_else(|| feature_not_supported("unsupported INSERT target"))?,
+        _ => return Err(feature_not_supported("unsupported INSERT target")),
+    };
+    if name.to_lowercase() != "person" {
+        return Err(undefined_table(&name));
+    }
+
+    // Column list defaults to the full person schema, in order, when omitted.
+    let columns: Vec<String> = if insert.columns.is_empty() {
+        vec![
+            "id".to_string(),
+            "full_name".to_string(),
+            "email".to_string(),
+        ]
+    } else {
+        insert
+            .columns
+            .iter()
+            .map(column_name)
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let source = insert
+        .source
+        .ok_or_else(|| feature_not_supported("INSERT requires a VALUES clause"))?;
+    let values = match *source.body {
+        ast::SetExpr::Values(values) => values,
+        _ => {
+            return Err(feature_not_supported(
+                "only INSERT ... VALUES is supported (no INSERT ... SELECT)",
+            ))
+        }
+    };
+
+    if values.rows.len() != 1 {
+        return Err(feature_not_supported("only single-row INSERT is supported"));
+    }
+    let row = &values.rows[0].content;
+    if row.len() != columns.len() {
+        return Err(syntax_error(format!(
+            "INSERT has {} target columns but {} values were supplied",
+            columns.len(),
+            row.len()
+        )));
+    }
+
+    let mut id: Option<String> = None;
+    let mut full_name: Option<String> = None;
+    let mut email: Option<String> = None;
+
+    for (column, expr) in columns.iter().zip(row.iter()) {
+        let value = literal_value(expr)?;
+        match column.to_lowercase().as_str() {
+            "id" => id = value,
+            "full_name" => full_name = value,
+            "email" => email = value,
+            other => return Err(undefined_column(other)),
+        }
+    }
+
+    // full_name is NOT NULL; id is generated when absent/NULL; email is nullable.
+    let full_name = full_name.ok_or_else(|| not_null_violation("full_name"))?;
+    let id = id.map(EntityId).unwrap_or_else(EntityId::new);
+
+    Ok(Planned::AddPerson(Person {
+        id,
+        full_name,
+        email,
+    }))
 }
 
 fn plan_select(query: ast::Query) -> Result<Planned, ErrorInfo> {
@@ -180,6 +319,11 @@ impl LineageHandler {
                 Ok(people) => Response::Query(person_query_response(people)),
                 Err(info) => Response::Error(Box::new(info)),
             },
+            Planned::AddPerson(person) => match self.add_person(person).await {
+                // Postgres reports inserts as `INSERT <oid> <rows>`; oid is 0 for our table.
+                Ok(()) => Response::Execution(Tag::new("INSERT").with_oid(0).with_rows(1)),
+                Err(info) => Response::Error(Box::new(info)),
+            },
         }
     }
 
@@ -194,12 +338,25 @@ impl LineageHandler {
         .await
         .map_err(|_| internal_error("query task panicked"))?;
 
-        let statement_results = result.map_err(|e| internal_error(e.to_string()))?;
+        let statement_results = result.map_err(engine_error)?;
 
         match statement_results.into_iter().next() {
             Some(StatementResult::List(people)) => Ok(people),
             _ => Err(internal_error("unexpected engine result for SELECT")),
         }
+    }
+
+    async fn add_person(&self, person: Person) -> Result<(), ErrorInfo> {
+        let request_manager = self.request_manager.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            request_manager
+                .send_transaction(vec![Statement::Add(person)], TransactionContext::default())
+        })
+        .await
+        .map_err(|_| internal_error("insert task panicked"))?;
+
+        result.map(|_| ()).map_err(engine_error)
     }
 }
 
