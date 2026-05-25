@@ -36,13 +36,14 @@
 1. **There are TWO transaction-apply paths. Don't confuse them.**
    - `commit_transaction` → `finalize_commit` is the real MVCC path (write-set buffer,
      conflict detection, atomic publish). All live writes go here.
-   - `apply_transaction` is the *legacy immediate-apply* path used **only for restore
-     (WAL replay) and a few test/bench helpers** (`apply_transaction_at_next_timestamp`).
-     It mutates rows as it goes and rolls back by `pop()`. It is safe **only because restore
-     is single-threaded**. It has **no conflict detection**.
-   - `apply_transaction` is only ever called with `ApplyMode::Restore`. Its
-     `ApplyMode::Request` branches are **dead code** — a trap. If you route live writes
-     through it you silently bypass the write-set and conflict detection.
+   - `replay_transaction` is the *immediate-apply* path used **only for restore (WAL replay)
+     and the `apply_transaction_at_next_timestamp` test/bench helper**. It mutates rows as it
+     goes and rolls back by `pop()`, which is safe **only because restore is single-threaded**.
+     It has **no conflict detection** — never route live writes through it.
+   - (Cleaned up — was next-work #2) The old `apply_transaction(mode: ApplyMode)` with its
+     dead `ApplyMode::Request` branches is gone, and the `ApplyMode` enum was removed.
+     `replay_transaction` takes no mode; the WAL's `commit()` now takes a `resolver` directly
+     (live path) and `record_restored_transaction()` handles restore size bookkeeping.
 
 2. **Visibility is advanced by the WAL thread after fsync, not at publish.** A committed
    version is published into the row (under `commit_lock`) but stays invisible until the WAL
@@ -107,8 +108,8 @@
 ## Next work (roughly ranked)
 
 1. **Idle/abandoned-transaction reaper** (timeout). Gotcha #8 — most impactful for real use.
-2. **Delete the dead `ApplyMode::Request` branches in `apply_transaction`** (gotcha #1) and/or
-   split it into a clearly-named `replay_transaction`. Reduces the foot-gun.
+2. ~~Delete the dead `ApplyMode::Request` branches in `apply_transaction`.~~ **DONE** —
+   `ApplyMode` removed; `apply_transaction` → `replay_transaction` (restore-only). See gotcha #1.
 3. **Restore tests**, especially interactive-commit → WAL → replay (gotcha #11).
 4. **fsync-failure handling**: today a failed fsync leaves the batch published-but-invisible
    and a later successful batch advances the watermark past it. Treating fsync failure as

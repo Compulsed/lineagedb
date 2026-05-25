@@ -29,14 +29,6 @@ enum CommitStatus {
     Rollback(String),
 }
 
-/// Transactions can be created from a client submitting a request or from a restore operation
-pub enum ApplyMode {
-    /// Return the result of the transaction to the client
-    Request(oneshot::Sender<DatabaseCommandResponse>),
-    /// Do not return the result of the transaction to the client
-    Restore,
-}
-
 /// Server-side state of an open interactive (long-lived) transaction. Held in
 /// `Database::interactive_transactions` between `Begin` and `Commit`/`Rollback`.
 pub(super) struct InteractiveTransaction {
@@ -223,14 +215,11 @@ impl Database {
             // Then add states from the transaction log. The WAL is ordered by commit id, so
             //  replaying in order reproduces the committed state.
             for transaction in restored_transactions {
-                let apply_transaction_result = self.apply_transaction(
-                    transaction.id,
-                    transaction.statements,
-                    ApplyMode::Restore,
-                );
+                let replay_result =
+                    self.replay_transaction(transaction.id, transaction.statements);
 
                 if let DatabaseCommandTransactionResponse::Rollback(rollback_message) =
-                    apply_transaction_result
+                    replay_result
                 {
                     panic!(
                         "All committed transactions should be replayable on startup: {}",
@@ -439,7 +428,7 @@ impl Database {
                         DatabaseCommandResponse::DatabaseCommandTransactionResponse(
                             success_response,
                         ),
-                        ApplyMode::Request(resolver),
+                        resolver,
                     );
 
                     CommitOutcome::Sequenced(commit_ts)
@@ -598,11 +587,18 @@ impl Database {
     /// Immediate-apply path used for restore (WAL replay) and tests. Unlike
     /// `commit_transaction` it mutates rows as it goes and rolls back by popping on error.
     /// This is safe here because it only runs single-threaded (startup replay / unit tests).
-    pub fn apply_transaction(
+    /// Replays a single already-committed transaction from the WAL during restore.
+    ///
+    /// This is the legacy immediate-apply path: it mutates rows as it goes and, on error,
+    /// rolls back by popping. That is safe **only because restore is single-threaded** --
+    /// the live, concurrent write path is `commit_transaction` (write-set buffer +
+    /// first-committer-wins), and the two must not be confused. A committed transaction is
+    /// expected to replay cleanly; a `Rollback` here indicates corruption and the caller
+    /// (`run`) panics.
+    pub fn replay_transaction(
         &self,
         applying_transaction_id: TransactionId,
         statements: Vec<Statement>,
-        mode: ApplyMode,
     ) -> DatabaseCommandTransactionResponse {
         let mut status = CommitStatus::Commit;
 
@@ -613,7 +609,7 @@ impl Database {
 
         let mut statement_stack: Vec<StatementAndResult> = Vec::new();
 
-        for statement in statements.clone() {
+        for statement in statements {
             let apply_result = self
                 .person_table
                 .apply(statement.clone(), applying_transaction_id.clone());
@@ -633,10 +629,6 @@ impl Database {
 
         match status {
             CommitStatus::Commit => {
-                if let ApplyMode::Request(_) = &mode {
-                    log::info!("✅ Committed: [TX: {}]", &applying_transaction_id);
-                }
-
                 let action_result_stack: Vec<StatementResult> = statement_stack
                     .into_iter()
                     .map(|action_and_result| action_and_result.result)
@@ -644,41 +636,24 @@ impl Database {
 
                 let response = DatabaseCommandTransactionResponse::Commit(action_result_stack);
 
-                // Make the replayed/applied transaction visible by advancing the watermark.
+                // The transaction is already durable on disk; make it visible and count it.
                 self.persistence
                     .transaction_wal
-                    .advance_watermark(applying_transaction_id.clone());
+                    .advance_watermark(applying_transaction_id);
+                self.persistence
+                    .transaction_wal
+                    .record_restored_transaction();
 
-                // Send the TX off, and increment the transaction id -- Refactor this out
-                self.persistence.transaction_wal.commit(
-                    applying_transaction_id,
-                    statements,
-                    DatabaseCommandResponse::DatabaseCommandTransactionResponse(response.clone()),
-                    mode,
-                );
-
-                return response;
+                response
             }
             CommitStatus::Rollback(error_status) => {
-                if let ApplyMode::Request(_) = &mode {
-                    log::info!("⚠️  Rolled back: [TX: {}]", &applying_transaction_id);
-                }
-
-                // TODO: Write a test to ensure that we rollback in the correct order
+                // Should not happen for a committed transaction; undo the partial apply.
                 for StatementAndResult {
                     statement,
                     result: _,
                 } in statement_stack.into_iter().rev()
                 {
                     self.person_table.apply_rollback(statement)
-                }
-
-                // Rollbacks are not committed to the WAL so we can just return the response
-                if let ApplyMode::Request(resolver) = mode {
-                    let _ =
-                        resolver.send(DatabaseCommandResponse::DatabaseCommandTransactionResponse(
-                            DatabaseCommandTransactionResponse::Rollback(error_status.clone()),
-                        ));
                 }
 
                 DatabaseCommandTransactionResponse::Rollback(error_status)
@@ -1081,7 +1056,7 @@ pub mod test_utils {
         time::{Duration, Instant},
     };
 
-    use super::{ApplyMode, DatabaseOptions};
+    use super::DatabaseOptions;
 
     #[derive(Debug)]
     pub enum Mode {
@@ -1238,14 +1213,14 @@ pub mod test_utils {
         metrics
     }
 
-    /// This test helper allows us to use the simple apply_transaction interface but still maintain
-    /// the incrementing transaction id
+    /// This test/bench helper applies a transaction at the next commit timestamp via the
+    /// single-threaded `replay_transaction` path, mirroring how restore applies transactions.
     pub fn apply_transaction_at_next_timestamp(
         database: &Database,
         statements: Vec<Statement>,
     ) -> DatabaseCommandTransactionResponse {
         let next_timestamp = database.persistence.transaction_wal.allocate_commit_id();
 
-        database.apply_transaction(next_timestamp, statements, ApplyMode::Restore)
+        database.replay_transaction(next_timestamp, statements)
     }
 }

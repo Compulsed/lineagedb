@@ -6,7 +6,6 @@ use std::thread;
 
 use crate::consts::consts::TransactionId;
 use crate::database::commands::DatabaseCommandResponse;
-use crate::database::database::ApplyMode;
 use crate::database::options::DatabaseOptions;
 use crate::database::orchestrator::DatabasePauseEvent;
 use crate::database::utils::crash::{crash_database, DatabaseCrash};
@@ -286,35 +285,42 @@ impl TransactionWAL {
         self.commit_id_sequence.set(committed.0 + 1);
     }
 
+    /// Hands a committed transaction to the WAL thread, which durably writes it (fsync) and
+    /// then responds to the client via `resolver`. Called only from the live commit path.
     pub fn commit(
         &self,
         applied_transaction_id: TransactionId,
         statements: Vec<Statement>,
         response: DatabaseCommandResponse,
-        mode: ApplyMode,
+        resolver: oneshot::Sender<DatabaseCommandResponse>,
     ) {
-        if let ApplyMode::Request(resolver) = mode {
-            let commit_data = TransactionCommitData {
-                applied_transaction_id: applied_transaction_id.clone(),
-                statements,
-                response,
-                resolver,
-            };
+        let commit_data = TransactionCommitData {
+            applied_transaction_id,
+            statements,
+            response,
+            resolver,
+        };
 
-            match self.commit_sender {
-                TransactionWalStatus::Ready(ref sender) => {
-                    sender.send(commit_data).unwrap();
-                }
-                TransactionWalStatus::Uninitialized => {
-                    panic!(
-                        r#"The WAL must be initialized before we can perform a commit. This is a programmer error because WAL initialization
+        match self.commit_sender {
+            TransactionWalStatus::Ready(ref sender) => {
+                sender.send(commit_data).unwrap();
+            }
+            TransactionWalStatus::Uninitialized => {
+                panic!(
+                    r#"The WAL must be initialized before we can perform a commit. This is a programmer error because WAL initialization
                         is not dynamic and should be performed as a part of the database initialization"#
-                    );
-                }
+                );
             }
         }
 
         // We have committed a transaction, add it to our counter
+        self.size.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Counts a transaction replayed from the WAL during restore. The transaction is already
+    /// durable on disk, so unlike `commit` this only updates the in-memory size counter --
+    /// no WAL write and no client response.
+    pub fn record_restored_transaction(&self) {
         self.size.fetch_add(1, Ordering::SeqCst);
     }
 
