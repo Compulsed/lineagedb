@@ -62,6 +62,95 @@ impl PersonTable {
         }
     }
 
+    /// Aggressive MVCC GC: reclaims every version that no transaction reading at `oldest`
+    /// (or later) can still see -- i.e. everything strictly older than each row's floor.
+    /// Rows that collapse to a delete tombstone are dropped entirely. Returns the number of
+    /// versions reclaimed.
+    ///
+    /// Must be called under a `DatabasePauseEvent` (stop-the-world): a concurrent reader
+    /// could have captured a snapshot below `oldest` and still need a version we reap.
+    /// Pausing guarantees no transaction is in flight, so `oldest` (the current watermark)
+    /// is genuinely the oldest reachable snapshot.
+    pub fn vacuum(&self, _: &DatabasePauseEvent, oldest: &TransactionId) -> usize {
+        let mut reclaimed = 0;
+        let mut dead_rows = Vec::new();
+
+        for entry in &self.person_rows {
+            let mut row = entry.value().write().unwrap();
+            reclaimed += row.reap_below_floor(oldest);
+
+            if row.is_tombstone() {
+                dead_rows.push(entry.key().clone());
+            }
+        }
+
+        for id in dead_rows {
+            self.person_rows.remove(&id);
+            reclaimed += 1;
+        }
+
+        reclaimed
+    }
+
+    /// Reads the committed person for an entity as visible at `snapshot`. Used by the
+    /// write-set buffer to resolve the current state during statement execution.
+    pub fn read_at_snapshot(&self, id: &EntityId, snapshot: &TransactionId) -> Option<Person> {
+        match self.person_rows.get(id) {
+            Some(row) => row.value().read().unwrap().at_transaction_id(snapshot),
+            None => None,
+        }
+    }
+
+    /// The commit timestamp of the most recent version of a row, regardless of visibility
+    /// (i.e. including versions published but not yet durable). `None` if the row has never
+    /// existed. Used for write-write conflict detection.
+    pub fn latest_commit_ts(&self, id: &EntityId) -> Option<TransactionId> {
+        self.person_rows
+            .get(id)
+            .map(|row| row.value().read().unwrap().current_version().commit_ts.clone())
+    }
+
+    /// First-committer-wins conflict detection. Returns the first written entity that some
+    /// other transaction committed to *after* this transaction's snapshot — meaning this
+    /// transaction read a now-stale version (or tried to create a row that now exists).
+    /// Must be called inside the commit critical section so the answer is stable through
+    /// publishing.
+    pub fn find_write_conflict(
+        &self,
+        entities: &[EntityId],
+        snapshot: &TransactionId,
+    ) -> Option<EntityId> {
+        for id in entities {
+            if let Some(latest) = self.latest_commit_ts(id) {
+                if &latest > snapshot {
+                    return Some(id.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Publishes a committed version produced by a transaction's write-set. Called only
+    /// from within the commit critical section, so the mutation has already been validated
+    /// and no other writer can interleave. A brand new row is created only by an `Add`
+    /// (`Update`/`Remove` require the row to already exist, verified during execution).
+    pub fn publish(&self, id: &EntityId, state: PersonVersionState, commit_ts: TransactionId) {
+        match self.person_rows.get(id) {
+            Some(existing) => existing
+                .value()
+                .write()
+                .unwrap()
+                .append_committed(state, commit_ts),
+            None => {
+                if let PersonVersionState::State(person) = state {
+                    self.person_rows
+                        .insert(id.clone(), RwLock::new(PersonRow::new(person, commit_ts)));
+                }
+            }
+        }
+    }
+
     pub fn restore_table(&self, version_snapshots: Vec<PersonVersion>) {
         for version_snapshot in version_snapshots {
             let id = version_snapshot.id.clone();
@@ -593,7 +682,7 @@ mod tests {
                         id: person.id.clone(),
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
-                        transaction_id: TransactionId(1),
+                        commit_ts: TransactionId(1),
                     })
                 );
             }
@@ -621,7 +710,7 @@ mod tests {
                         id: person.id.clone(),
                         state: PersonVersionState::State(person),
                         version: VersionId(1),
-                        transaction_id: TransactionId(1),
+                        commit_ts: TransactionId(1),
                     })
                 );
 
@@ -631,7 +720,7 @@ mod tests {
                         id: updated_person.id.clone(),
                         state: PersonVersionState::State(updated_person),
                         version: VersionId(2),
-                        transaction_id: TransactionId(2),
+                        commit_ts: TransactionId(2),
                     })
                 );
             }
@@ -663,7 +752,7 @@ mod tests {
                         id: add_person.id.clone(),
                         state: PersonVersionState::State(add_person),
                         version: VersionId(1),
-                        transaction_id: TransactionId(1),
+                        commit_ts: TransactionId(1),
                     })
                 );
 
@@ -673,7 +762,7 @@ mod tests {
                         id: updated_person.id.clone(),
                         state: PersonVersionState::State(updated_person.clone()),
                         version: VersionId(2),
-                        transaction_id: TransactionId(2),
+                        commit_ts: TransactionId(2),
                     })
                 );
 
@@ -683,7 +772,7 @@ mod tests {
                         id: updated_person.id.clone(),
                         state: PersonVersionState::Delete,
                         version: VersionId(3),
-                        transaction_id: TransactionId(3),
+                        commit_ts: TransactionId(3),
                     })
                 );
             }
@@ -897,6 +986,61 @@ mod tests {
             let actual_added_person_list = get_test_list_person(&mut table, next_transaction_id);
 
             assert_eq!(&vec![expected_updated_person], &actual_added_person_list);
+        }
+    }
+
+    mod conflict_detection {
+        use super::*;
+
+        #[test]
+        fn no_conflict_when_row_never_existed() {
+            let table = PersonTable::new();
+
+            // A brand new entity has no committed version, so nothing to conflict with.
+            assert_eq!(
+                table.find_write_conflict(&[EntityId("absent".to_string())], &TransactionId(5)),
+                None
+            );
+        }
+
+        #[test]
+        fn conflict_when_committed_after_snapshot() {
+            let table = PersonTable::new();
+            let person = Person::new_test();
+
+            // Someone committed this row at commit_ts 10.
+            table
+                .apply(Statement::Add(person.clone()), TransactionId(10))
+                .unwrap();
+
+            // A transaction whose snapshot predates 10 read a stale version -> conflict.
+            assert_eq!(
+                table.find_write_conflict(&[person.id.clone()], &TransactionId(5)),
+                Some(person.id)
+            );
+        }
+
+        #[test]
+        fn no_conflict_when_snapshot_at_or_after_latest() {
+            let table = PersonTable::new();
+            let person = Person::new_test();
+
+            table
+                .apply(Statement::Add(person.clone()), TransactionId(10))
+                .unwrap();
+
+            // Snapshot exactly at the version's commit_ts: it was visible to us, no writer
+            // committed after us.
+            assert_eq!(
+                table.find_write_conflict(&[person.id.clone()], &TransactionId(10)),
+                None
+            );
+
+            // Snapshot strictly after: definitely no conflict.
+            assert_eq!(
+                table.find_write_conflict(&[person.id], &TransactionId(15)),
+                None
+            );
         }
     }
 

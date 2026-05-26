@@ -6,7 +6,6 @@ use std::thread;
 
 use crate::consts::consts::TransactionId;
 use crate::database::commands::DatabaseCommandResponse;
-use crate::database::database::ApplyMode;
 use crate::database::options::DatabaseOptions;
 use crate::database::orchestrator::DatabasePauseEvent;
 use crate::database::utils::crash::{crash_database, DatabaseCrash};
@@ -60,7 +59,21 @@ pub enum TransactionWalStatus {
 // By decoupling init from thread start we are able to initialize anything (files, directories, etc). that is needed for the WAL to start
 //  without immediately starting it.
 pub struct TransactionWAL {
-    current_transaction_id: LocalClock,
+    /// Allocates commit timestamps. Read under the database commit lock so that the order
+    /// in which transactions are assigned a commit id matches the order they are published.
+    /// Starts at 1: commit ids are always >= 1, the watermark starts at 0 (nothing
+    /// committed), so a reader at the initial snapshot sees no data.
+    commit_id_sequence: LocalClock,
+    /// The highest commit timestamp that is durable and therefore visible. Readers take
+    /// this as their snapshot ("read the latest committed state"). It is advanced by the
+    /// WAL thread *after* a transaction's WAL entry has been fsynced, so a version becomes
+    /// visible only once it is durable. Shared (`Arc`) so the WAL thread can advance it.
+    /// Advancement is monotonic because the WAL thread processes commits in commit-id order.
+    committed_watermark: Arc<LocalClock>,
+    /// The oldest snapshot still answerable. Vacuum advances this to the snapshot it
+    /// reclaimed below; reads at a snapshot lower than this are rejected as "snapshot too
+    /// old" because their versions may have been reaped.
+    gc_horizon: LocalClock,
     database_options: DatabaseOptions,
     size: AtomicUsize,
     commit_sender: TransactionWalStatus,
@@ -73,7 +86,9 @@ impl TransactionWAL {
         storage: Arc<Mutex<dyn Storage + Sync + Send>>,
     ) -> Self {
         Self {
-            current_transaction_id: LocalClock::new(),
+            commit_id_sequence: LocalClock::new_with(1),
+            committed_watermark: Arc::new(LocalClock::new_with(0)),
+            gc_horizon: LocalClock::new_with(0),
             size: AtomicUsize::new(0),
             database_options,
             commit_sender: TransactionWalStatus::Uninitialized,
@@ -84,6 +99,7 @@ impl TransactionWAL {
     pub fn init(&mut self) {
         let sync_file_write = self.database_options.write_mode.clone();
         let storage_thread = self.storage.clone();
+        let committed_watermark = self.committed_watermark.clone();
 
         let (sender, receiver) = flume::unbounded::<TransactionCommitData>();
 
@@ -98,6 +114,11 @@ impl TransactionWAL {
                 loop {
                     let mut batch: Vec<(Sender<DatabaseCommandResponse>, DatabaseCommandResponse)> =
                         vec![];
+
+                    // The highest commit id in this batch. The channel delivers commits in
+                    //  commit-id order, so once this batch is durable we can advance the
+                    //  visibility watermark to this value and make them all visible at once.
+                    let mut highest_commit_in_batch: Option<TransactionId> = None;
 
                     log::debug!("Start");
 
@@ -122,6 +143,9 @@ impl TransactionWAL {
                             response,
                             resolver,
                         } = transaction_data;
+
+                        // Channel order is commit-id order, so the last seen is the highest.
+                        highest_commit_in_batch = Some(applied_transaction_id.clone());
 
                         if matches!(sync_file_write, TransactionWriteMode::File(_)) {
                             let transaction_json_line = format!(
@@ -183,9 +207,19 @@ impl TransactionWAL {
     
                                     continue;
                                 }
-    
+
                             }
                         }
+                    }
+
+                    // The batch is now durable, so make it visible by advancing the
+                    //  watermark to the highest commit id in the batch. This happens before
+                    //  replying, so a client that receives "committed" can immediately read
+                    //  its own write. On fsync failure above we `continue`d, leaving those
+                    //  versions published-but-invisible (the database is in a degraded state
+                    //  at that point regardless).
+                    if let Some(highest) = &highest_commit_in_batch {
+                        committed_watermark.set(highest.0);
                     }
 
                     for (resolver, response) in batch {
@@ -210,39 +244,83 @@ impl TransactionWAL {
         self.size.load(Ordering::SeqCst)
     }
 
-    pub fn get_increment_current_transaction_id(&self) -> TransactionId {
-        self.current_transaction_id.get_timestamp()
+    /// Allocates the next commit timestamp. Must be called inside the commit critical
+    /// section so allocation order matches publish order.
+    pub fn allocate_commit_id(&self) -> TransactionId {
+        self.commit_id_sequence.get_timestamp()
     }
 
+    /// The snapshot a new transaction should read at: the latest committed state.
+    pub fn current_snapshot_id(&self) -> TransactionId {
+        self.committed_watermark.current()
+    }
+
+    /// Makes a committed transaction's writes visible by advancing the watermark. Called
+    /// inside the commit critical section, after the versions have been published.
+    pub fn advance_watermark(&self, commit_ts: TransactionId) {
+        self.committed_watermark.set(commit_ts.0);
+    }
+
+    /// The oldest snapshot still answerable; reads below it are "snapshot too old".
+    pub fn gc_low_water_mark(&self) -> TransactionId {
+        self.gc_horizon.current()
+    }
+
+    /// Records that vacuum has reclaimed versions below `oldest`.
+    pub fn set_gc_low_water_mark(&self, oldest: TransactionId) {
+        self.gc_horizon.set(oldest.0);
+    }
+
+    /// Resets the clocks to their empty-database state (no data committed, nothing GC'd).
+    pub fn reset_clocks(&self) {
+        self.committed_watermark.set(0);
+        self.commit_id_sequence.set(1);
+        self.gc_horizon.set(0);
+    }
+
+    /// Seeds the clocks during restore: the watermark is the highest commit id restored so
+    /// far, and the next allocated commit id is one past it.
+    pub fn restore_clocks(&self, committed: TransactionId) {
+        self.committed_watermark.set(committed.0);
+        self.commit_id_sequence.set(committed.0 + 1);
+    }
+
+    /// Hands a committed transaction to the WAL thread, which durably writes it (fsync) and
+    /// then responds to the client via `resolver`. Called only from the live commit path.
     pub fn commit(
         &self,
         applied_transaction_id: TransactionId,
         statements: Vec<Statement>,
         response: DatabaseCommandResponse,
-        mode: ApplyMode,
+        resolver: oneshot::Sender<DatabaseCommandResponse>,
     ) {
-        if let ApplyMode::Request(resolver) = mode {
-            let commit_data = TransactionCommitData {
-                applied_transaction_id: applied_transaction_id.clone(),
-                statements,
-                response,
-                resolver,
-            };
+        let commit_data = TransactionCommitData {
+            applied_transaction_id,
+            statements,
+            response,
+            resolver,
+        };
 
-            match self.commit_sender {
-                TransactionWalStatus::Ready(ref sender) => {
-                    sender.send(commit_data).unwrap();
-                }
-                TransactionWalStatus::Uninitialized => {
-                    panic!(
-                        r#"The WAL must be initialized before we can perform a commit. This is a programmer error because WAL initialization
+        match self.commit_sender {
+            TransactionWalStatus::Ready(ref sender) => {
+                sender.send(commit_data).unwrap();
+            }
+            TransactionWalStatus::Uninitialized => {
+                panic!(
+                    r#"The WAL must be initialized before we can perform a commit. This is a programmer error because WAL initialization
                         is not dynamic and should be performed as a part of the database initialization"#
-                    );
-                }
+                );
             }
         }
 
         // We have committed a transaction, add it to our counter
+        self.size.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Counts a transaction replayed from the WAL during restore. The transaction is already
+    /// durable on disk, so unlike `commit` this only updates the in-memory size counter --
+    /// no WAL write and no client response.
+    pub fn record_restored_transaction(&self) {
         self.size.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -258,9 +336,6 @@ impl TransactionWAL {
         Ok(transactions)
     }
 
-    pub fn set_current_transaction_id(&self, transaction_id: TransactionId) {
-        self.current_transaction_id.set(transaction_id.0)
-    }
 }
 
 // TODO: Usize seems odd, but that's what transaction id uses. Should change to u64
@@ -271,8 +346,12 @@ pub struct LocalClock {
 
 impl LocalClock {
     pub fn new() -> Self {
+        Self::new_with(0)
+    }
+
+    pub fn new_with(start: usize) -> Self {
         Self {
-            ts_sequence: AtomicUsize::new(0),
+            ts_sequence: AtomicUsize::new(start),
         }
     }
 }
@@ -283,12 +362,16 @@ impl LocalClock {
         TransactionId(self.ts_sequence.fetch_add(1, Ordering::SeqCst))
     }
 
+    /// Reads the current value without advancing it.
+    fn current(&self) -> TransactionId {
+        TransactionId(self.ts_sequence.load(Ordering::SeqCst))
+    }
+
     #[allow(dead_code)]
     fn reset(&self) {
         self.ts_sequence.store(0, Ordering::SeqCst);
     }
 
-    #[allow(dead_code)]
     fn set(&self, value: usize) {
         self.ts_sequence.store(value, Ordering::SeqCst);
     }

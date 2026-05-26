@@ -38,6 +38,7 @@ impl<'a> ControlContext<'a> {
             Control::PauseDatabase(r) => self.pause(r),
             Control::ResetDatabase => self.reset(),
             Control::SnapshotDatabase => self.snapshot(),
+            Control::VacuumDatabase => self.vacuum(),
         }
     }
 
@@ -185,11 +186,11 @@ impl<'a> ControlContext<'a> {
             crash_database(DatabaseCrash::InconsistentStorageFromReset(e));
         }
 
-        // Reset the transaction id counter
+        // Reset the commit-id allocator and visibility watermark to the empty state
         self.database
             .persistence
             .transaction_wal
-            .set_current_transaction_id(TransactionId::new_first_transaction());
+            .reset_clocks();
 
         // Clean out snapshot and transaction log
         let result = self.database.persistence.reset();
@@ -204,6 +205,37 @@ impl<'a> ControlContext<'a> {
         let response = DatabaseCommandResponse::control_success(&format!(
             "Successfully reset database, dropped: {} rows",
             dropped_row_count
+        ));
+
+        self.send_response(response);
+
+        DatabaseControlAction::Continue
+    }
+
+    pub fn vacuum(self) -> DatabaseControlAction {
+        // Stop-the-world: pausing the other worker threads guarantees no one-shot
+        //  transaction is mid-read. Long-lived (interactive) transactions DO survive the
+        //  pause, so the oldest reachable snapshot is the minimum of the current watermark
+        //  and the oldest snapshot held by an open interactive transaction.
+        let pause = &DatabasePauseEvent::new(self.database_request_managers);
+
+        let watermark = self.transaction_timestamp.clone();
+        let oldest = match self.database.active_snapshots.oldest() {
+            Some(active) if active < watermark => active,
+            _ => watermark,
+        };
+
+        let reclaimed = self.database.person_table.vacuum(pause, &oldest);
+
+        // Reads at a snapshot below this can no longer be answered correctly.
+        self.database
+            .persistence
+            .transaction_wal
+            .set_gc_low_water_mark(oldest.clone());
+
+        let response = DatabaseCommandResponse::control_success(&format!(
+            "Successfully vacuumed database: reclaimed {} versions, gc low-water mark now {}",
+            reclaimed, oldest
         ));
 
         self.send_response(response);

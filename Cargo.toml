@@ -1,7 +1,7 @@
 [workspace]
 
 workspace.resolver = "2"
-members = ["database", "clients/graphql", "clients/tcp-server"]
+members = ["database", "clients/graphql", "clients/tcp-server", "clients/postgres"]
 
 # cargo run defaults to the clients/graphql binary
 default-members = ["clients/graphql"]

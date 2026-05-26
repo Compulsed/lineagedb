@@ -37,6 +37,20 @@ impl Statement {
             | Statement::GetVersion(_, _) => false,
         }
     }
+
+    /// The entity a mutation statement targets. Returns `None` for query statements,
+    /// which are not keyed to a single entity (e.g. `List`).
+    pub fn mutation_entity_id(&self) -> Option<EntityId> {
+        match self {
+            Statement::Add(person) => Some(person.id.clone()),
+            Statement::Update(id, _) => Some(id.clone()),
+            Statement::Remove(id) => Some(id.clone()),
+            Statement::List(_)
+            | Statement::ListLatestVersions
+            | Statement::Get(_)
+            | Statement::GetVersion(_, _) => None,
+        }
+    }
 }
 
 // TODO: Is there a better way to type this? Like if we know we are going to get a SuccessStatus, we should be able to unwrap it

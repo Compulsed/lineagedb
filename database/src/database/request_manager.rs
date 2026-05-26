@@ -2,6 +2,7 @@ use core::panic;
 use rand::{seq::SliceRandom, thread_rng};
 use std::{ops::Deref, sync::Arc, time::Duration};
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::{
     consts::consts::{EntityId, VersionId},
@@ -14,8 +15,8 @@ use crate::{
 use super::{
     commands::{
         Control, DatabaseCommand, DatabaseCommandControlResponse, DatabaseCommandRequest,
-        DatabaseCommandResponse, DatabaseCommandTransactionResponse, ShutdownRequest,
-        TransactionContext,
+        DatabaseCommandResponse, DatabaseCommandTransactionResponse, InteractiveCommand,
+        ShutdownRequest, TransactionContext,
     },
     table::{query::QueryPersonData, row::UpdatePersonData},
 };
@@ -248,6 +249,68 @@ impl RequestManager {
             .get()
     }
 
+    // -- Interactive (long-lived) transaction methods --
+
+    /// Opens a long-lived transaction and returns its handle. Subsequent statements run
+    /// against the snapshot taken here until the transaction is committed or rolled back.
+    pub fn send_begin_transaction(&self) -> Result<Uuid, RequestManagerError> {
+        let response =
+            self.send_database_command(DatabaseCommand::Interactive(InteractiveCommand::Begin))?;
+
+        match response {
+            DatabaseCommandResponse::TransactionBegan(handle) => Ok(handle),
+            _ => panic!("Begin should return a transaction handle"),
+        }
+    }
+
+    /// Runs statements within an open transaction, returning their results. Reads see the
+    /// transaction's snapshot plus its own buffered writes; mutations are buffered.
+    pub fn send_transaction_statements(
+        &self,
+        handle: Uuid,
+        statements: Vec<Statement>,
+    ) -> Result<Vec<StatementResult>, RequestManagerError> {
+        let response = self.send_database_command(DatabaseCommand::Interactive(
+            InteractiveCommand::Execute(handle, statements),
+        ))?;
+
+        match response {
+            DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                DatabaseCommandTransactionResponse::Commit(results),
+            ) => Ok(results),
+            _ => panic!("Execute should return statement results"),
+        }
+    }
+
+    /// Commits an open transaction. Returns `Err(TransactionRollback)` on a write-write
+    /// conflict (the caller should retry the whole transaction).
+    pub fn send_commit_transaction(&self, handle: Uuid) -> Result<(), RequestManagerError> {
+        let response = self.send_database_command(DatabaseCommand::Interactive(
+            InteractiveCommand::Commit(handle),
+        ))?;
+
+        match response {
+            DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                DatabaseCommandTransactionResponse::Commit(_),
+            ) => Ok(()),
+            _ => panic!("Commit should return a commit response"),
+        }
+    }
+
+    /// Rolls back (discards) an open transaction.
+    pub fn send_rollback_transaction(&self, handle: Uuid) -> Result<(), RequestManagerError> {
+        let response = self.send_database_command(DatabaseCommand::Interactive(
+            InteractiveCommand::Rollback(handle),
+        ))?;
+
+        match response {
+            DatabaseCommandResponse::DatabaseCommandTransactionResponse(
+                DatabaseCommandTransactionResponse::Commit(_),
+            ) => Ok(()),
+            _ => panic!("Rollback should return a commit response"),
+        }
+    }
+
     // -- Control Methods --
 
     /// Sends a shutdown request to the database and returns the database's response
@@ -285,6 +348,10 @@ impl RequestManager {
 
     pub fn send_snapshot_request(&self) -> Result<String, RequestManagerError> {
         return self.send_control(Control::SnapshotDatabase);
+    }
+
+    pub fn send_vacuum_request(&self) -> Result<String, RequestManagerError> {
+        return self.send_control(Control::VacuumDatabase);
     }
 
     pub fn send_sleep_request(&self, duration: Duration) -> Result<String, RequestManagerError> {
@@ -391,6 +458,10 @@ fn map_response(
                     Err(RequestManagerError::DatabaseErrorStatus(s))
                 }
             }
+        }
+        // Interactive transaction handle (response to Begin)
+        Ok(DatabaseCommandResponse::TransactionBegan(handle)) => {
+            Ok(DatabaseCommandResponse::TransactionBegan(handle))
         }
         // Issues with the channel
         Err(oneshot::RecvTimeoutError::Timeout) => Err(RequestManagerError::DatabaseTimeout),

@@ -49,7 +49,11 @@ pub struct PersonVersion {
     pub id: EntityId,
     pub state: PersonVersionState,
     pub version: VersionId, // Version Ids are re-indexed back to 1 on a restore
-    pub transaction_id: TransactionId,
+    /// The commit timestamp of the transaction that produced this version. A version is
+    /// visible to a reader only once a transaction has committed (i.e. this value is set
+    /// when the version is published) and `commit_ts <= reader_snapshot`. Because commits
+    /// are serialized, versions within a row are appended in ascending `commit_ts` order.
+    pub commit_ts: TransactionId,
 }
 
 impl PersonVersion {
@@ -67,16 +71,58 @@ pub struct PersonRow {
     versions: Vec<PersonVersion>,
 }
 
+/// Computes the new person produced by applying an update to a previous person. Pure: it
+/// does not touch any row state, so it can be reused both by the immediate row apply path
+/// (restore / tests) and by the buffered write-set commit path.
+pub fn apply_update_to_person(
+    previous: &Person,
+    update: &UpdatePersonData,
+) -> Result<Person, ApplyErrors> {
+    let mut current_person = previous.clone();
+
+    match &update.full_name {
+        UpdateStatement::Set(full_name) => current_person.full_name = full_name.clone(),
+        UpdateStatement::Unset => {
+            return Err(ApplyErrors::NotNullConstraintViolation(
+                "Full Name".to_string(),
+            ))
+        }
+        UpdateStatement::NoChanges => {}
+    }
+
+    match &update.email {
+        UpdateStatement::Set(email) => current_person.email = Some(email.clone()),
+        UpdateStatement::Unset => current_person.email = None,
+        UpdateStatement::NoChanges => {}
+    }
+
+    Ok(current_person)
+}
+
 impl PersonRow {
-    pub fn new(person: Person, transaction_id: TransactionId) -> Self {
+    pub fn new(person: Person, commit_ts: TransactionId) -> Self {
         PersonRow {
             versions: vec![PersonVersion {
                 id: person.id.clone(),
                 state: PersonVersionState::State(person),
                 version: VersionId::new_first_version(),
-                transaction_id,
+                commit_ts,
             }],
         }
+    }
+
+    /// Appends an already-computed committed state as the next version. Used by the
+    /// write-set publish path, which has already validated the mutation, so this only
+    /// needs to stamp the version number and commit timestamp.
+    pub fn append_committed(&mut self, state: PersonVersionState, commit_ts: TransactionId) {
+        let current_version = self.current_version();
+
+        self.versions.push(PersonVersion {
+            id: current_version.id.clone(),
+            state,
+            version: current_version.version.increment(),
+            commit_ts,
+        });
     }
 
     /// Used when restoring from a snapshot
@@ -127,23 +173,7 @@ impl PersonRow {
             PersonVersionState::State(s) => s,
         };
 
-        let mut current_person = previous_person.clone();
-
-        match &update.full_name {
-            UpdateStatement::Set(full_name) => current_person.full_name = full_name.clone(),
-            UpdateStatement::Unset => {
-                return Err(ApplyErrors::NotNullConstraintViolation(
-                    "Full Name".to_string(),
-                ))
-            }
-            UpdateStatement::NoChanges => {}
-        }
-
-        match &update.email {
-            UpdateStatement::Set(email) => current_person.email = Some(email.clone()),
-            UpdateStatement::Unset => current_person.email = None,
-            UpdateStatement::NoChanges => {}
-        }
+        let current_person = apply_update_to_person(&previous_person, &update)?;
 
         // Apply
         self.apply_new_version(
@@ -185,13 +215,13 @@ impl PersonRow {
         &mut self,
         current_version: &PersonVersion,
         new_state: PersonVersionState,
-        transaction_id: TransactionId,
+        commit_ts: TransactionId,
     ) {
         self.versions.push(PersonVersion {
             id: current_version.id.clone(),
             state: new_state,
             version: current_version.version.increment(),
-            transaction_id,
+            commit_ts,
         });
     }
 
@@ -234,31 +264,46 @@ impl PersonRow {
     pub fn at_version(
         &self,
         version_id: VersionId,
-        transaction_id: &TransactionId,
+        snapshot: &TransactionId,
     ) -> Option<PersonVersion> {
-        // TODO: Filter out the versions that are not committed?
-        let versions_at_snapshot = self
-            .versions
+        // Find the version by its version id rather than by Vec position, so this stays
+        // correct after vacuum has reclaimed older versions (positions shift, ids don't).
+        // The version must also be visible at the reader's snapshot. If it has been
+        // vacuumed away, this returns None.
+        self.versions
             .iter()
-            .filter(|version| &version.transaction_id <= transaction_id)
-            .collect::<Vec<&PersonVersion>>();
-
-        // Versions are 1 indexed, subtract 1 to get the correct vector index
-        match versions_at_snapshot.get(version_id.to_number() - 1) {
-            Some(version) => Some((*version).clone()),
-            None => None,
-        }
+            .find(|version| version.version == version_id && &version.commit_ts <= snapshot)
+            .cloned()
     }
 
     pub fn version_count(&self) -> usize {
         self.versions.len()
     }
 
-    pub fn at_transaction_id(&self, transaction_id: &TransactionId) -> Option<Person> {
+    /// Vacuum: removes versions strictly older than the floor -- the latest version visible
+    /// at `oldest` -- keeping the floor and everything after it. Returns the number removed.
+    /// Only safe when no transaction is reading at a snapshot below `oldest`.
+    pub fn reap_below_floor(&mut self, oldest: &TransactionId) -> usize {
+        match self.versions.iter().rposition(|v| &v.commit_ts <= oldest) {
+            Some(floor_idx) if floor_idx > 0 => {
+                self.versions.drain(0..floor_idx);
+                floor_idx
+            }
+            _ => 0,
+        }
+    }
+
+    /// True when the only remaining version is a delete tombstone, so the row holds no live
+    /// data and the whole row can be dropped.
+    pub fn is_tombstone(&self) -> bool {
+        self.versions.len() == 1 && matches!(self.versions[0].state, PersonVersionState::Delete)
+    }
+
+    pub fn at_transaction_id(&self, snapshot: &TransactionId) -> Option<Person> {
         // TODO: Can optimize this with a binary search
         for version in self.versions.iter().rev() {
-            // May contain newer uncommited versions, we want to find the closest committed version
-            if &version.transaction_id <= transaction_id {
+            // Find the latest version visible at the reader's snapshot
+            if &version.commit_ts <= snapshot {
                 return version.get_person();
             }
         }
@@ -266,18 +311,84 @@ impl PersonRow {
         None
     }
 
-    pub fn version_at_transaction_id(
-        &self,
-        transaction_id: &TransactionId,
-    ) -> Option<PersonVersion> {
+    pub fn version_at_transaction_id(&self, snapshot: &TransactionId) -> Option<PersonVersion> {
         // Can optimize this with a binary search
         for version in self.versions.iter().rev() {
-            // May contain newer uncommited versions, we want to find the closest committed version
-            if &version.transaction_id <= transaction_id {
+            // Find the latest version visible at the reader's snapshot
+            if &version.commit_ts <= snapshot {
                 return Some(version.clone());
             }
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn person(name: &str) -> Person {
+        Person {
+            id: EntityId("r".to_string()),
+            full_name: name.to_string(),
+            email: None,
+        }
+    }
+
+    /// A row with versions v1@ts1, v2@ts2, v3@ts3.
+    fn three_version_row() -> PersonRow {
+        let mut row = PersonRow::new(person("v1"), TransactionId(1));
+        row.append_committed(PersonVersionState::State(person("v2")), TransactionId(2));
+        row.append_committed(PersonVersionState::State(person("v3")), TransactionId(3));
+        row
+    }
+
+    #[test]
+    fn reap_keeps_floor_and_newer() {
+        let mut row = three_version_row();
+
+        // Oldest snapshot 2 -> floor is v2 (latest <= 2); v1 is reclaimed.
+        assert_eq!(row.reap_below_floor(&TransactionId(2)), 1);
+        assert_eq!(row.version_count(), 2);
+
+        // at_version finds surviving versions by id (not position) and reports v1 as gone.
+        let high = TransactionId(100);
+        assert!(row.at_version(VersionId(1), &high).is_none());
+        assert!(row.at_version(VersionId(2), &high).is_some());
+        assert!(row.at_version(VersionId(3), &high).is_some());
+    }
+
+    #[test]
+    fn reap_nothing_when_oldest_precedes_all_versions() {
+        let mut row = three_version_row();
+
+        // No version is <= 0, so there is no floor and nothing is reclaimable.
+        assert_eq!(row.reap_below_floor(&TransactionId(0)), 0);
+        assert_eq!(row.version_count(), 3);
+    }
+
+    #[test]
+    fn at_version_finds_by_id_after_reap_shifts_positions() {
+        let mut row = three_version_row();
+
+        // Floor at snapshot 3 is v3; v1 and v2 are reclaimed and v3 moves to position 0.
+        assert_eq!(row.reap_below_floor(&TransactionId(3)), 2);
+        assert_eq!(row.version_count(), 1);
+
+        let found = row
+            .at_version(VersionId(3), &TransactionId(100))
+            .expect("v3 should still be found by its version id");
+        assert_eq!(found.version, VersionId(3));
+    }
+
+    #[test]
+    fn delete_collapses_to_tombstone() {
+        let mut row = three_version_row();
+        row.append_committed(PersonVersionState::Delete, TransactionId(4));
+
+        // Floor at snapshot 4 is the delete; everything before collapses away.
+        assert_eq!(row.reap_below_floor(&TransactionId(4)), 3);
+        assert!(row.is_tombstone());
     }
 }
