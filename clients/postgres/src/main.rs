@@ -30,7 +30,10 @@ use pgwire::api::results::{
 use pgwire::api::store::PortalStore;
 use pgwire::api::{ClientInfo, ClientPortalStore, PgWireServerHandlers, Type};
 use pgwire::error::{ErrorInfo, PgWireResult};
+use pgwire::messages::response::TransactionStatus;
 use pgwire::tokio::process_socket;
+
+use uuid::Uuid;
 
 use sqlparser::ast;
 use sqlparser::dialect::PostgreSqlDialect;
@@ -298,9 +301,38 @@ fn plan_select(query: ast::Query) -> Result<Planned, ErrorInfo> {
     Ok(Planned::ListPerson)
 }
 
+fn in_failed_transaction() -> ErrorInfo {
+    // SQLSTATE 25P02 = in_failed_sql_transaction
+    ErrorInfo::new(
+        "ERROR".to_string(),
+        "25P02".to_string(),
+        "current transaction is aborted, commands ignored until end of transaction block"
+            .to_string(),
+    )
+}
+
+/// Turns a single engine statement result into a wire response.
+fn response_from_results(results: Vec<StatementResult>) -> Response {
+    match results.into_iter().next() {
+        Some(StatementResult::List(people)) => Response::Query(person_query_response(people)),
+        Some(StatementResult::Single(_)) => {
+            // Postgres reports inserts as `INSERT <oid> <rows>`; oid is 0 for our table.
+            Response::Execution(Tag::new("INSERT").with_oid(0).with_rows(1))
+        }
+        other => Response::Error(Box::new(internal_error(format!(
+            "unexpected engine result: {:?}",
+            other
+        )))),
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Wire handler
 // ---------------------------------------------------------------------------------------
+
+/// Per-connection key under which the open interactive-transaction handle is stashed in the
+/// pgwire client's metadata. Present iff this connection is inside a `BEGIN ... COMMIT` block.
+const TX_KEY: &str = "lineagedb.transaction_handle";
 
 /// Speaks SQL over the Postgres wire protocol, backed by the lineagedb engine.
 struct LineageHandler {
@@ -308,57 +340,126 @@ struct LineageHandler {
 }
 
 impl LineageHandler {
-    /// Runs an already-validated planned statement against the engine and produces a wire
-    /// response. The engine's `RequestManager` is blocking, so it runs on a blocking thread.
-    async fn execute(&self, statement: ast::Statement) -> Response {
-        let planned = match plan(statement) {
-            Ok(planned) => planned,
-            Err(info) => return Response::Error(Box::new(info)),
+    // --- engine transaction lifecycle (each wraps the blocking RequestManager) ---
+
+    async fn begin_engine_tx(&self) -> Result<Uuid, ErrorInfo> {
+        let request_manager = self.request_manager.clone();
+        tokio::task::spawn_blocking(move || request_manager.send_begin_transaction())
+            .await
+            .map_err(|_| internal_error("begin task panicked"))?
+            .map_err(engine_error)
+    }
+
+    async fn commit_engine_tx(&self, handle: Uuid) -> Result<(), ErrorInfo> {
+        let request_manager = self.request_manager.clone();
+        tokio::task::spawn_blocking(move || request_manager.send_commit_transaction(handle))
+            .await
+            .map_err(|_| internal_error("commit task panicked"))?
+            .map_err(engine_error)
+    }
+
+    async fn rollback_engine_tx(&self, handle: Uuid) {
+        let request_manager = self.request_manager.clone();
+        // Best effort: a rollback discards buffered writes, so failures aren't fatal.
+        let _ =
+            tokio::task::spawn_blocking(move || request_manager.send_rollback_transaction(handle))
+                .await;
+    }
+
+    /// Runs a data statement (SELECT/INSERT) either within the open transaction (`handle`) or
+    /// as a one-shot autocommit transaction. The engine API is blocking, so it runs on a
+    /// blocking thread.
+    async fn run_data_statement(&self, planned: Planned, handle: Option<Uuid>) -> Response {
+        let engine_statement = match planned {
+            Planned::ListPerson => Statement::List(None),
+            Planned::AddPerson(person) => Statement::Add(person),
         };
 
-        match planned {
-            Planned::ListPerson => match self.list_people().await {
-                Ok(people) => Response::Query(person_query_response(people)),
-                Err(info) => Response::Error(Box::new(info)),
-            },
-            Planned::AddPerson(person) => match self.add_person(person).await {
-                // Postgres reports inserts as `INSERT <oid> <rows>`; oid is 0 for our table.
-                Ok(()) => Response::Execution(Tag::new("INSERT").with_oid(0).with_rows(1)),
-                Err(info) => Response::Error(Box::new(info)),
-            },
+        let request_manager = self.request_manager.clone();
+        let join = tokio::task::spawn_blocking(move || match handle {
+            Some(handle) => request_manager.send_transaction_statements(handle, vec![engine_statement]),
+            None => {
+                request_manager.send_transaction(vec![engine_statement], TransactionContext::default())
+            }
+        })
+        .await;
+
+        match join {
+            Ok(Ok(results)) => response_from_results(results),
+            Ok(Err(e)) => Response::Error(Box::new(engine_error(e))),
+            Err(_) => Response::Error(Box::new(internal_error("statement task panicked"))),
         }
     }
 
-    async fn list_people(&self) -> Result<Vec<Person>, ErrorInfo> {
-        let request_manager = self.request_manager.clone();
-
-        // The engine API is synchronous (blocks on a channel); keep it off the async runtime.
-        let result = tokio::task::spawn_blocking(move || {
-            request_manager
-                .send_transaction(vec![Statement::List(None)], TransactionContext::default())
-        })
-        .await
-        .map_err(|_| internal_error("query task panicked"))?;
-
-        let statement_results = result.map_err(engine_error)?;
-
-        match statement_results.into_iter().next() {
-            Some(StatementResult::List(people)) => Ok(people),
-            _ => Err(internal_error("unexpected engine result for SELECT")),
+    /// Processes one parsed statement, threading the per-connection transaction state:
+    /// `handle` is the open interactive transaction (if any) and `failed` whether the current
+    /// transaction block is aborted.
+    async fn run_statement(
+        &self,
+        statement: ast::Statement,
+        handle: &mut Option<Uuid>,
+        failed: &mut bool,
+    ) -> Response {
+        match &statement {
+            ast::Statement::StartTransaction { .. } => {
+                if handle.is_some() {
+                    log::warn!("BEGIN issued inside a transaction; ignoring");
+                    return Response::TransactionStart(Tag::new("BEGIN"));
+                }
+                return match self.begin_engine_tx().await {
+                    Ok(new_handle) => {
+                        *handle = Some(new_handle);
+                        Response::TransactionStart(Tag::new("BEGIN"))
+                    }
+                    Err(info) => Response::Error(Box::new(info)),
+                };
+            }
+            ast::Statement::Commit { .. } => {
+                let Some(open) = handle.take() else {
+                    log::warn!("COMMIT with no transaction in progress");
+                    return Response::TransactionEnd(Tag::new("COMMIT"));
+                };
+                if *failed {
+                    // Committing an aborted transaction rolls it back (matches Postgres).
+                    self.rollback_engine_tx(open).await;
+                    *failed = false;
+                    return Response::TransactionEnd(Tag::new("ROLLBACK"));
+                }
+                return match self.commit_engine_tx(open).await {
+                    Ok(()) => Response::TransactionEnd(Tag::new("COMMIT")),
+                    Err(info) => Response::Error(Box::new(info)),
+                };
+            }
+            ast::Statement::Rollback { .. } => {
+                if let Some(open) = handle.take() {
+                    self.rollback_engine_tx(open).await;
+                }
+                *failed = false;
+                return Response::TransactionEnd(Tag::new("ROLLBACK"));
+            }
+            _ => {}
         }
-    }
 
-    async fn add_person(&self, person: Person) -> Result<(), ErrorInfo> {
-        let request_manager = self.request_manager.clone();
+        // Inside an aborted transaction block, reject everything until COMMIT/ROLLBACK.
+        if *failed {
+            return Response::Error(Box::new(in_failed_transaction()));
+        }
 
-        let result = tokio::task::spawn_blocking(move || {
-            request_manager
-                .send_transaction(vec![Statement::Add(person)], TransactionContext::default())
-        })
-        .await
-        .map_err(|_| internal_error("insert task panicked"))?;
+        let planned = match plan(statement) {
+            Ok(planned) => planned,
+            Err(info) => {
+                if handle.is_some() {
+                    *failed = true;
+                }
+                return Response::Error(Box::new(info));
+            }
+        };
 
-        result.map(|_| ()).map_err(engine_error)
+        let response = self.run_data_statement(planned, *handle).await;
+        if handle.is_some() && matches!(response, Response::Error(_)) {
+            *failed = true;
+        }
+        response
     }
 }
 
@@ -381,7 +482,7 @@ impl NoopStartupHandler for LineageHandler {}
 
 #[async_trait]
 impl SimpleQueryHandler for LineageHandler {
-    async fn do_query<C>(&self, _client: &mut C, query: &str) -> PgWireResult<Vec<Response>>
+    async fn do_query<C>(&self, client: &mut C, query: &str) -> PgWireResult<Vec<Response>>
     where
         C: ClientInfo + ClientPortalStore + Unpin + Send + Sync,
         C::PortalStore: PortalStore,
@@ -403,10 +504,38 @@ impl SimpleQueryHandler for LineageHandler {
             return Ok(vec![Response::EmptyQuery]);
         }
 
+        // Per-connection transaction state. The open engine handle is stashed in the client's
+        // metadata so it survives across messages (BEGIN and COMMIT arrive separately); the
+        // aborted-block flag is read from pgwire's transaction status (set on the prior reply).
+        let mut handle: Option<Uuid> = client
+            .metadata()
+            .get(TX_KEY)
+            .and_then(|raw| Uuid::parse_str(raw).ok());
+        let mut failed = matches!(client.transaction_status(), TransactionStatus::Error);
+
         let mut responses = Vec::with_capacity(statements.len());
         for statement in statements {
-            responses.push(self.execute(statement).await);
+            let response = self.run_statement(statement, &mut handle, &mut failed).await;
+            let is_error = matches!(response, Response::Error(_));
+            responses.push(response);
+            if is_error {
+                // A simple-query message aborts at the first error (Postgres semantics).
+                break;
+            }
         }
+
+        // Persist the (possibly changed) transaction handle back onto the connection.
+        match &handle {
+            Some(open) => {
+                client
+                    .metadata_mut()
+                    .insert(TX_KEY.to_string(), open.to_string());
+            }
+            None => {
+                client.metadata_mut().remove(TX_KEY);
+            }
+        }
+
         Ok(responses)
     }
 }
