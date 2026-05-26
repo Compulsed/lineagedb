@@ -68,7 +68,49 @@ assert_contains() {
     fi
 }
 
+assert_absent() {
+    local label="$1" unexpected="$2" actual="$3"
+    if printf '%s' "$actual" | grep -qF -- "$unexpected"; then
+        echo "  FAIL: $label"
+        echo "        did not expect: $unexpected"
+        echo "        actual: $actual"
+        fail=$((fail + 1))
+    else
+        echo "  PASS: $label"
+        pass=$((pass + 1))
+    fi
+}
+
 q() { psql "$CONN" -c "$1" 2>&1; }
+
+# Drives two interleaved sessions that both insert the same id at the same snapshot, then
+# commit one after the other. Echoes both sessions' combined output. First-committer-wins:
+# one COMMIT succeeds, the other reports a write-write conflict.
+concurrent_conflict_output() {
+    local dir
+    dir="$(mktemp -d)"
+    local fa="$dir/a.fifo" fb="$dir/b.fifo"
+    mkfifo "$fa" "$fb"
+
+    psql "$CONN" -f "$fa" >"$dir/out_a" 2>&1 &
+    local pa=$!
+    psql "$CONN" -f "$fb" >"$dir/out_b" 2>&1 &
+    local pb=$!
+
+    exec 3>"$fa" 4>"$fb"
+    printf "BEGIN;\nINSERT INTO person (id, full_name) VALUES ('conc','sessionA');\n" >&3
+    printf "BEGIN;\nINSERT INTO person (id, full_name) VALUES ('conc','sessionB');\n" >&4
+    sleep 0.5
+    printf "COMMIT;\n" >&3 # A commits first -> wins
+    sleep 0.5
+    printf "COMMIT;\n" >&4 # B commits second -> conflicts
+    sleep 0.3
+    exec 3>&- 4>&-
+    wait "$pa" "$pb" 2>/dev/null
+
+    cat "$dir/out_a" "$dir/out_b"
+    rm -rf "$dir"
+}
 
 echo "running checks..."
 
@@ -110,6 +152,47 @@ assert_contains "table list shows person" "person" \
     "$(q "SELECT table_name, table_schema, table_type FROM information_schema.tables")"
 assert_contains "columns list shows person columns" "full_name" \
     "$(q "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='person'")"
+
+# --- Transactions (M-T1..M-T4) ---
+psql "$CONN" >/dev/null 2>&1 <<'EOF'
+BEGIN;
+INSERT INTO person (id, full_name) VALUES ('tx-commit', 'CommittedInTx');
+COMMIT;
+EOF
+assert_contains "BEGIN/COMMIT persists" "CommittedInTx" "$(q "SELECT * FROM person")"
+
+psql "$CONN" >/dev/null 2>&1 <<'EOF'
+BEGIN;
+INSERT INTO person (id, full_name) VALUES ('tx-rollback', 'RolledBackInTx');
+ROLLBACK;
+EOF
+assert_absent "BEGIN/ROLLBACK discards" "RolledBackInTx" "$(q "SELECT * FROM person")"
+
+# Read-your-writes: the in-transaction SELECT sees the not-yet-committed insert.
+ryw="$(psql "$CONN" 2>&1 <<'EOF'
+BEGIN;
+INSERT INTO person (id, full_name) VALUES ('tx-ryw', 'ReadYourWrites');
+SELECT * FROM person;
+ROLLBACK;
+EOF
+)"
+assert_contains "read-your-writes inside a tx" "ReadYourWrites" "$ryw"
+
+# Failed transaction: an error aborts the block; later statements are rejected; COMMIT rolls back.
+failed="$(psql "$CONN" 2>&1 <<'EOF'
+BEGIN;
+SELECT * FROM nonexistent;
+INSERT INTO person (id, full_name) VALUES ('tx-fail', 'ShouldNotPersist');
+COMMIT;
+EOF
+)"
+assert_contains "aborted tx rejects later statements" "current transaction is aborted" "$failed"
+assert_absent "aborted tx persists nothing" "ShouldNotPersist" "$(q "SELECT * FROM person")"
+
+# Concurrent first-committer-wins.
+conc="$(concurrent_conflict_output)"
+assert_contains "concurrent: one session commits" "COMMIT" "$conc"
+assert_contains "concurrent: the other conflicts" "Write-write conflict" "$conc"
 
 echo
 echo "RESULT: $pass passed, $fail failed"
