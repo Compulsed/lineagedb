@@ -98,9 +98,10 @@
     the same entity twice in a transaction publishes a single version. The interactive
     transaction's `mutations: Vec<Statement>` keeps the *full* statement sequence (for the WAL).
 
-13. **`List`/`GetVersion` inside a write/interactive transaction read the committed snapshot
-    only** — they do NOT overlay the transaction's own buffered writes. Only `Get` does. (Noted
-    in `write_set.rs`.)
+13. **`Get` and `List` inside a write/interactive transaction overlay the transaction's own
+    buffered writes** (read-your-writes), via `WriteSet::query` in `write_set.rs`.
+    `GetVersion` / `ListLatestVersions` are point-in-time / version-history reads and read the
+    committed snapshot only (overlaying them isn't meaningful).
 
 14. **Clocks:** `commit_id_sequence` starts at 1, `committed_watermark` and `gc_horizon` start
     at 0. First commit gets id 1, watermark → 1. Restore seeds via `restore_clocks`.
@@ -116,7 +117,8 @@
    fatal (like a WAL *write* failure already is) would be cleaner.
 5. **Unique secondary index** (would let the email-uniqueness tests pass; builds on the
    conflict-detection machinery).
-6. **`List`/`GetVersion` buffer overlay** inside write transactions (gotcha #13).
+6. ~~`List` buffer overlay inside write transactions.~~ **DONE** — `WriteSet::query` overlays
+   the buffer for both `Get` and `List` (read-your-writes). See gotcha #13.
 7. If write throughput matters: revisit the single global `commit_lock` (lock-free commit
    sequencer) and/or concurrent vacuum (needs gotcha #6's per-reader snapshot publishing).
 

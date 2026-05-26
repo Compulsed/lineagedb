@@ -9,6 +9,7 @@ use crate::{
 };
 
 use super::{
+    query::filter,
     row::{apply_update_to_person, PersonVersionState},
     table::{ApplyErrors, PersonTable},
 };
@@ -135,26 +136,146 @@ impl WriteSet {
         Ok(result)
     }
 
-    /// Executes a read statement within a write transaction. A `Get` consults this
-    /// transaction's own buffered writes first (read-your-writes); other reads are served
-    /// from the committed table at the transaction's snapshot.
+    /// Executes a read statement within a write transaction, overlaying the transaction's own
+    /// buffered writes on top of the committed snapshot (read-your-writes):
+    /// - `Get` returns the buffered value if the entity was written in this transaction.
+    /// - `List` starts from the committed rows visible at the snapshot and applies this
+    ///   transaction's buffered inserts/updates/deletes before filtering.
     ///
-    /// NOTE: `List`/`ListLatestVersions`/`GetVersion` currently read the committed snapshot
-    /// only and do not overlay this transaction's not-yet-committed writes. Single-shot
-    /// transactions rarely mix these reads with writes; full overlay is deferred to the
-    /// long-lived-transaction work (Stage 5).
+    /// `GetVersion` / `ListLatestVersions` are point-in-time / version-history reads that read
+    /// the committed snapshot only (overlaying them is not meaningful).
     pub fn query(
         &self,
         table: &PersonTable,
         snapshot: &TransactionId,
         statement: Statement,
     ) -> Result<StatementResult, ApplyErrors> {
-        if let Statement::Get(id) = &statement {
-            if self.latest.contains_key(id) {
-                return Ok(StatementResult::GetSingle(self.resolve(table, snapshot, id)));
+        match statement {
+            Statement::Get(id) => {
+                if self.latest.contains_key(&id) {
+                    Ok(StatementResult::GetSingle(self.resolve(table, snapshot, &id)))
+                } else {
+                    table.query_statement(Statement::Get(id), snapshot)
+                }
+            }
+            Statement::List(query_person_data) => {
+                let mut people = self.overlaid_list(table, snapshot);
+
+                if let Some(query) = query_person_data {
+                    people = filter(people, query);
+                }
+
+                people.sort_by(|a, b| a.id.cmp(&b.id));
+
+                Ok(StatementResult::List(people))
+            }
+            other => table.query_statement(other, snapshot),
+        }
+    }
+
+    /// The committed rows visible at `snapshot`, overlaid with this transaction's buffered
+    /// writes (inserts/updates applied, deletes removed). Unfiltered and unsorted.
+    fn overlaid_list(&self, table: &PersonTable, snapshot: &TransactionId) -> Vec<Person> {
+        let committed = match table.query_statement(Statement::List(None), snapshot) {
+            Ok(StatementResult::List(people)) => people,
+            _ => Vec::new(),
+        };
+
+        let mut by_id: HashMap<EntityId, Person> = committed
+            .into_iter()
+            .map(|person| (person.id.clone(), person))
+            .collect();
+
+        for (id, state) in &self.latest {
+            match state {
+                PersonVersionState::State(person) => {
+                    by_id.insert(id.clone(), person.clone());
+                }
+                PersonVersionState::Delete => {
+                    by_id.remove(id);
+                }
             }
         }
 
-        table.query_statement(statement, snapshot)
+        by_id.into_values().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::table::row::{UpdatePersonData, UpdateStatement};
+
+    fn person(id: &str, full_name: &str) -> Person {
+        Person {
+            id: EntityId(id.to_string()),
+            full_name: full_name.to_string(),
+            email: None,
+        }
+    }
+
+    fn names(result: StatementResult) -> Vec<String> {
+        match result {
+            StatementResult::List(people) => people.into_iter().map(|p| p.full_name).collect(),
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_overlays_buffered_inserts_and_deletes() {
+        let table = PersonTable::new();
+        // Committed at snapshot 1: Alice.
+        table
+            .apply(Statement::Add(person("1", "Alice")), TransactionId(1))
+            .unwrap();
+
+        let snapshot = TransactionId(1);
+        let mut write_set = WriteSet::new();
+        // In the transaction: add Bob, delete Alice.
+        write_set
+            .apply_mutation(&table, &snapshot, Statement::Add(person("2", "Bob")))
+            .unwrap();
+        write_set
+            .apply_mutation(&table, &snapshot, Statement::Remove(EntityId("1".to_string())))
+            .unwrap();
+
+        // The transaction sees its own writes: Bob present, Alice gone.
+        let result = write_set
+            .query(&table, &snapshot, Statement::List(None))
+            .unwrap();
+        assert_eq!(names(result), vec!["Bob".to_string()]);
+
+        // The committed table at the snapshot is untouched (still just Alice).
+        let committed = table.query_statement(Statement::List(None), &snapshot).unwrap();
+        assert_eq!(names(committed), vec!["Alice".to_string()]);
+    }
+
+    #[test]
+    fn list_overlays_buffered_update() {
+        let table = PersonTable::new();
+        table
+            .apply(Statement::Add(person("1", "Alice")), TransactionId(1))
+            .unwrap();
+
+        let snapshot = TransactionId(1);
+        let mut write_set = WriteSet::new();
+        write_set
+            .apply_mutation(
+                &table,
+                &snapshot,
+                Statement::Update(
+                    EntityId("1".to_string()),
+                    UpdatePersonData {
+                        full_name: UpdateStatement::Set("Alice 2".to_string()),
+                        email: UpdateStatement::NoChanges,
+                    },
+                ),
+            )
+            .unwrap();
+
+        let result = write_set
+            .query(&table, &snapshot, Statement::List(None))
+            .unwrap();
+        assert_eq!(names(result), vec!["Alice 2".to_string()]);
     }
 }

@@ -277,9 +277,9 @@ optimize.
     transaction timeout.
   - A failed `Execute` statement leaves the transaction open with partial buffered writes;
     the client is expected to roll back (no automatic abort-on-error yet).
-  - `List` / `GetVersion` inside a write transaction read the committed snapshot only and do
-    not overlay the transaction's own buffered writes (only `Get` does); see the note in
-    `write_set.rs`.
+  - (Resolved) `Get` and `List` inside a write transaction now overlay the transaction's own
+    buffered writes (read-your-writes), via `WriteSet::query`. `GetVersion` /
+    `ListLatestVersions` still read the committed snapshot only (point-in-time reads).
 - This is where the GraphQL session work in `docs/notes.md` plugs in.
 
 ---
